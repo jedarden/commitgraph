@@ -75,7 +75,12 @@ independently of this redesign's timeline.
    produces today (`containers/clone-worker/worker.py:338`).
 3. Runs `shared/detection.py` inline per commit (reused as-is — it already
    operates on a single commit's message/trailer text, no interface change
-   needed).
+   needed). **Adopted (2026-08-04, plan-idea-gen run 1): poison-pill
+   isolation** — the per-commit detection call is wrapped so a single
+   malformed commit message that crashes or hangs detection is caught,
+   logged, and skipped, rather than blocking extraction for the whole repo.
+   Real, low-cost hardening; not built until a first real incident makes it
+   worth prioritizing over other Phase 1 work.
 4. Computes `(user, repo, tool, day, count)` rollup rows for the whole repo.
 5. In one pass: **(a)** upserts the rollup into Postgres, **(b)** writes the
    full per-repo commit-history artifact (the extracted rows from step 2,
@@ -221,6 +226,25 @@ via ARMOR on a daily `ScheduledBackup`; this Postgres instance needs the
 equivalent wired before it's trusted with anything, not left unaddressed as
 a "someday" item.
 
+**Adopted (2026-08-04, plan-idea-gen run 1): a backup/restore runbook is now
+a required Phase 0 deliverable, not just a flagged risk.** Mirror the
+`queue-db` precedent directly — `barmanObjectStore` + daily `ScheduledBackup`
+to ARMOR — and additionally **document and rehearse** the manual
+promote-from-backup procedure with a stated target RTO before this instance
+carries any real traffic. This is also the mechanism storage/compute
+expansion depends on (see the Postgres-node-expansion question raised in
+conversation): a Cinder volume can't grow in place, so restoring into a
+larger PVC from this same backup is the actual expansion path — meaning no
+expansion path exists at all until this is done.
+
+**Adopted (2026-08-04, plan-idea-gen run 1): infra cost must be surfaced,
+tool-agnostic — explicitly not a Grafana panel by default.** Visibility into
+actual Rackspace Spot bid spend for this node plus ARMOR write volume,
+against the percentile pricing already cited above — but the mechanism is
+deliberately unspecified here; pick whatever fits the org's existing
+observability stack when this is built, not a prescribed tool choice made
+during planning.
+
 This is comfortably more capacity than CNPG + the rollup table actually
 need — see the corrected sizing note in the schema section below.
 Allocatable-vs-capacity ratio for this specific class hasn't been
@@ -333,6 +357,15 @@ interval. Flagged as an open gap rather than silently assumed away — worth
 picking a concrete trigger (a row count, or a measured query-latency
 ceiling) before this becomes a live problem instead of a planning question.
 
+**Adopted (2026-08-04, plan-idea-gen run 1): the trigger is a measured
+query-latency SLO, not a row count.** Row count was the more obvious choice
+but is a proxy for the thing that actually matters — pick one number now
+(e.g., the ranking query's p99 latency staying under 2s) and monitor it;
+when it's breached, that's the signal to build the materialized/precomputed
+ranking table this section already names as the fallback, not before. This
+deliberately doesn't build that materialization now — the SLO decides
+whether it's ever needed at all, rather than assuming it will be.
+
 Write pattern per repo, one transaction: `DELETE ... WHERE repo_id=$1` on
 both rollup tables, then a single set-based bulk `INSERT` via
 `UNNEST($1::bigint[], ...)` (not row-by-row — matters once multiple
@@ -399,6 +432,17 @@ repos is exactly the race Postgres is being brought in to survive.
   **not yet validated at the corpus's actual large-repo scale** or under
   concurrent multi-replica access — treat as a real, working mechanism with
   a real, unclosed scale question, not as fully proven.
+  **Adopted (2026-08-04, plan-idea-gen run 1): a two-part mitigation, in
+  order, not both at once.** (1) Run the smoke test this gap already calls
+  for — against the corpus's genuinely large repos — before assuming
+  mitigation is even needed; the mechanism may simply hold at scale. (2)
+  Only if that smoke test finds a real problem: sticky worker affinity
+  scoped *specifically* to large repos (not the fleet generally, which
+  deliberately has no affinity today) enabling local caching, combined with
+  keeping any repack step append-only — never invoking `git gc`/`repack`
+  the way the rejected bundle transport did, since that's the exact
+  mechanism that produced the 127x bloat this design already worked around.
+  Framed as a fallback gated on evidence, not a default addition.
 - **Leaderboard snapshot** (`aggregates/leaderboard.parquet`, full ranked
   list, hundreds of thousands of rows): also via ARMOR, not direct B2 — no
   component in the new pipeline talks to B2 directly. No `leaderboard.json`
@@ -635,6 +679,14 @@ clone-worker). The migration:
 
 - Migration idempotency test (Phase 3, step 6 above) must pass before any
   dual-write phase begins.
+- **Adopted (2026-08-04, plan-idea-gen run 1): the idempotency check becomes
+  a permanent CI gate, not a one-time pre-flight.** The one-time migration
+  check above stays as written — but rollup-writing code isn't only the
+  migration, it's clone-worker's every-job write path, which keeps changing
+  after launch as the codebase evolves. Add an automated test (run the same
+  repo through clone-worker's rollup write twice, assert `users.total_commits`
+  is unchanged the second time) to CI, so this stays enforced on an ongoing
+  basis rather than verified once and assumed to hold forever.
 - Phase 4's continuous `leaderboard.json` diff is the primary correctness
   gate for cutover — not "pods are Running" (the same false-positive
   pattern that cost real time earlier in this project's history).

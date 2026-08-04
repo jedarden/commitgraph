@@ -48,7 +48,7 @@ goes away.
 ## What one call to detection actually checks
 
 `detect_tools_for_commit()` (the entry point both a fresh clone and a
-redetect job call) checks **all ~15 cataloged tools in one pass** per
+redetect job call) checks **all 21 cataloged tools in one pass** per
 commit — four signal tiers (Co-Authored-By trailer emails, author emails,
 author name patterns, body text patterns), each a dict/set lookup keyed by
 tool, unioned into one result set. It is never clone-once-per-agent or

@@ -27,8 +27,13 @@ the rollup itself was never the expensive part.
 
 This plan applies that lesson to commitgraph without discarding the things
 commitgraph got right that claude-leaderboard never needed: multi-tool
-detection (15 tools vs. claude-leaderboard's single hardcoded
-`Co-Authored-By: Claude` trailer) and the ability to retroactively re-detect
+detection (21 tools in the full catalog, per `shared/detection.py`'s
+`ALL_TOOLS` — a different number from, and not to be confused with, the
+separate 11-tool discovery-footprint gap covered in "Explicitly out of
+scope" below, which is about coverage of the *discovery* query list, not
+the size of the detection catalog itself — vs. claude-leaderboard's single
+hardcoded `Co-Authored-By: Claude` trailer) and the ability to retroactively
+re-detect
 history when a new tool signature is added — which is a real, already-built
 capability (`catalog_version` / `last_filter_catalog_version` in queue-api's
 schema) that a naive "just inline everything into clone-worker" redesign
@@ -75,12 +80,7 @@ independently of this redesign's timeline.
    produces today (`commitgraph-deprecated/containers/clone-worker/worker.py:338`).
 3. Runs `shared/detection.py` inline per commit (reused as-is — it already
    operates on a single commit's message/trailer text, no interface change
-   needed). **Adopted (2026-08-04, plan-idea-gen run 1): poison-pill
-   isolation** — the per-commit detection call is wrapped so a single
-   malformed commit message that crashes or hangs detection is caught,
-   logged, and skipped, rather than blocking extraction for the whole repo.
-   Real, low-cost hardening; not built until a first real incident makes it
-   worth prioritizing over other Phase 1 work.
+   needed).
 4. Computes `(user, repo, tool, day, count)` rollup rows for the whole repo.
 5. In one pass: **(a)** upserts the rollup into Postgres, **(b)** writes the
    full per-repo commit-history artifact (the extracted rows from step 2,
@@ -90,6 +90,15 @@ independently of this redesign's timeline.
    **overwritten wholesale** on every rescan, same idempotency pattern as
    (b). All writes happen in the same job; if any fails the job fails and
    gets re-claimed (no partial-state).
+
+**Deferred hardening, not Phase 1 scope (2026-08-04, plan-idea-gen run 1):
+poison-pill isolation around step 3's detection call.** Wrap the per-commit
+`shared/detection.py` call so a single malformed commit message that
+crashes or hangs detection is caught, logged, and skipped, rather than
+blocking extraction for the whole repo. Real, low-cost hardening — but not
+built until a first real incident makes it worth prioritizing over other
+Phase 1 work, so step 3 above describes the call as it actually ships in
+Phase 1, without this wrapper.
 
 This mirrors claude-leaderboard's core idempotency trick — full re-derive +
 whole-slice replace — applied to three destinations instead of one SQLite
@@ -127,7 +136,17 @@ queue-api keeps `catalog_version`. When a new tool signature is added to
 `shared/detection.py`, the version bumps and a **redetect job** is enqueued
 per affected repo (a new lightweight job kind, likely a `kind` column on the
 existing `repo_queue` table rather than a whole new table — a Phase 1
-implementation detail). clone-worker (or a thin variant using the same
+implementation detail). **Verified against the live schema
+(`commitgraph-deprecated/containers/queue-api/schema.sql`): adding a `kind`
+column alone is not sufficient.** `repo_queue`'s existing `UNIQUE (provider,
+repo_full_name)` constraint is keyed on repo identity alone, so a bare new
+column would make a repo's pending redetect-job row collide with its
+pending normal-clone-job row the first time both are due at once — e.g. a
+catalog-version bump firing a redetect job for a repo that's also
+independently due for its normal rescan — and the second `INSERT` would
+violate the unique constraint. The constraint must widen to `UNIQUE
+(provider, repo_full_name, kind)` (or equivalent) as part of this change,
+not just "add a column." clone-worker (or a thin variant using the same
 detection code) claims it, reads the **already-stored** Parquet artifact
 from ARMOR — no re-clone, no GitHub API cost — re-runs detection, and
 upserts only the rollup rows that changed. Same code path, same Postgres
@@ -186,9 +205,35 @@ clone-worker/filter-worker/aggregator cycle — so queue-api's existing SQLite
 should be adequate; re-measure contention after Phase 2 before considering
 any change here.
 
+**Clarified (2026-08-04, closing a gap flagged by adversarial review):
+"kept as-is" means the codebase, not one shared running instance.** Phase 1
+stands up a **new, second queue-api deployment** — the same unmodified
+39K-LOC codebase, not a fork — for the new clone-worker/aggregator to
+build and test against, entirely separate from the instance the live old
+pipeline depends on throughout Phases 1-3. Phase 4's "repoint discovery
+workers... at the new queue-api using the already-proven `QUEUE_API_URL`-swap
+pattern" (below) refers to this same new instance: search-worker/user-worker
+switch their `QUEUE_API_URL` from the old instance to this one, the same
+mechanism this project has used before to move traffic between two
+simultaneously-running queue-api instances, not to edit one shared
+instance's config in place.
+
 **Postgres**: new CNPG cluster on a **dedicated large Rackspace Spot node in
 ord-devimprint** (user's explicit choice — keeps clone-worker's rollup
 upserts same-cluster, no cross-cluster network hop on the hot write path).
+**Storage class, stated explicitly (2026-08-04, closing a gap flagged by
+adversarial review): `storageClassName: sata`** — this org's hard rule for
+Rackspace Spot Cinder storage is always `sata`/`sata-large`, never
+`ssd`/`ssd-large`, with the class always set explicitly rather than left to
+a cluster default; this section discussed the PVC at length without ever
+stating one. `sata`'s 5-20GB range comfortably covers the corrected sizing
+below (~0.9-1.0GB now, ~9-10GB projected at 10x scale); `sata-large` (75GB
+minimum) would be the wrong tier to provision up front at this size. Mirrors
+`queue-db`'s CNPG cluster (`storageClass: sata`, see "Critical files
+referenced" below). If growth ever exceeds `sata`'s 20GB ceiling, the
+backup/restore-into-larger-PVC path already described below is how to move
+to `sata-large` — Cinder volumes can't grow in place or change class in
+place either way.
 
 **Confirmed via `./k8s/capacity-check.sh ord-devimprint` (2026-08-04, live):**
 the existing 6-node `compute1-4` fleet is already committed 41% CPU / 50%
@@ -214,10 +259,21 @@ here.
 **Percentile pricing is a historical bid-clearing distribution, not an
 availability guarantee or a reservation** — p20/p50/p80 describe what a Spot
 market *has* cleared at, not what it's guaranteed to clear at when this
-class is actually requested. Rackspace Spot nodepools are bid-based; a
-nodepool's `fulfilled` count can come in under `desired`
-(`rackspace-spot-terraform/notes/bf-1qt.md` shows this field exists because
-it happens in practice on this account). No fallback class is specified if
+class is actually requested. Rackspace Spot nodepools are bid-based, and
+`fulfilled` can in principle come in under `desired` on any bid-based
+market. **Corrected (2026-08-04, from adversarial review): the cited note
+doesn't actually show this happening.**
+`rackspace-spot-terraform/notes/bf-1qt.md` was previously cited here as
+evidence this "happens in practice on this account," but the note documents
+exactly one nodepool snapshot —
+`desired=6, fulfilled=6`, fully satisfied — in the context of an unrelated
+issue (stale Terraform state referencing a deleted cloudspace); it's also
+the only note in that repo, and no other file there mentions `fulfilled` at
+all. The field exists specifically to track under-fulfillment risk, but
+this account's own history doesn't yet show a concrete instance of it — the
+risk is real in principle (inherent to how Spot bid markets work,
+independent of any one account's history), just not yet evidenced on this
+account. No fallback class is specified if
 `mh.vs1.large-ord` doesn't fulfill — decide one before attempting
 provisioning, don't discover this live. This matters more than usual here
 because the plan proposes a **single dedicated node** (`instances: 1`,
@@ -268,9 +324,14 @@ ardenone-cluster, apexalgo-iad, iad-ci, **and rs-manager** — this would be a
 
 ### Postgres schema
 
-Two tables, not one — claude-leaderboard's single-tool design doesn't fit;
-only ~0.3% of commits are AI-tagged (234K of 76.6M), so tool-tagged data is
-sparse relative to total activity:
+Two rollup tables, not one — claude-leaderboard's single-tool design
+doesn't fit; only ~0.3% of commits are AI-tagged (234K of 76.6M), so
+tool-tagged data is sparse relative to total activity. **Clarified
+(2026-08-04, closing a gap flagged by adversarial review): a third table,
+`users`, follows the two rollups below.** It isn't a rollup — it's a
+lifetime per-developer counter table, carried over in spirit from
+claude-leaderboard's own `users` table — so don't expect the header's "two"
+to match a count of `CREATE TABLE` statements in the block that follows:
 
 ```sql
 CREATE TABLE repo_user_daily (       -- tool-agnostic totals
@@ -321,8 +382,11 @@ baseline, ~10.9 commits/row):
 
 - `repo_user_daily` (tool-agnostic, ~7.03M rows extrapolated): ~75-85
   bytes/row for the table (~560-600MB) + a comparable-magnitude
-  `(author_key, day)` index (~250-280MB) → **~800MB-1.1GB**, the dominant
-  cost by far.
+  `(author_key, day)` index (~250-280MB) → **~810-880MB** (**corrected
+  2026-08-04**: 560-600MB + 250-280MB sums to 810-880MB, not the
+  previously-stated ~800MB-1.1GB — the upper bound didn't follow from its
+  own cited sub-ranges; same arithmetic-error pattern as the `users`
+  correction just below), the dominant cost by far.
 - `repo_user_daily_tool` (sparse, AI-tagged only — ~21-25K rows from
   234,263 AI-tagged commits at the same ratio): negligible, well under
   10MB including both indexes.
@@ -332,14 +396,15 @@ baseline, ~10.9 commits/row):
   ~98-109MB — the previously-stated ~150-170MB didn't follow from its own
   per-row estimate; this was an arithmetic error, not a re-estimate).
 
-**Total at current scale: roughly 0.9-1.2GB** (recomputed from the
-corrected `users` figure: ~800MB-1.1GB + <10MB + ~100-110MB) — a materially different
-number from "several hundred MB," though the provisioning conclusion still
-doesn't change: the `mh.vs1.large-ord` node's 30GB of RAM absorbs even a
-10x-scale rollup (~10-12GB) with room to spare. The number keeps getting
-corrected because each pass checked the previous one against real data
-rather than trusting it — worth remembering next time a "trivial" sizing
-claim shows up in this document.
+**Total at current scale: roughly 0.9-1.0GB** (recomputed from the
+corrected `repo_user_daily` and `users` figures: ~810-880MB + <10MB +
+~100-110MB) — a materially different number from "several hundred MB,"
+though the provisioning conclusion still doesn't change: the
+`mh.vs1.large-ord` node's 30GB of RAM absorbs even a 10x-scale rollup
+(~9-10GB) with room to spare. The number keeps getting corrected because
+each pass checked the previous one against real data rather than trusting
+it — worth remembering next time a "trivial" sizing claim shows up in this
+document.
 
 **Leaderboard snapshot sizing (ARMOR, Parquet, the full ranked list):**
 per-row shape matches the live JSON schema (rank, username,
@@ -523,10 +588,15 @@ clone-worker). The migration:
    with the schema above.
 2. **Phase 1 — isolated build.** New Forgejo repo, new clone-worker
    (Postgres rollup write + ARMOR per-repo artifact write, detection logic
-   inlined), new aggregator (Postgres read + ARMOR-published snapshot).
-   Built and tested against a handful of real repos, zero production
-   traffic — queue-api and the live pipeline are completely untouched at
-   this stage.
+   inlined), new aggregator (Postgres read + ARMOR-published snapshot). Also
+   provisions a **new, second queue-api instance** — same unmodified
+   codebase as the live one, a separate deployment, not a fork (see
+   "Clarified" note in the queue-api Architecture paragraph above) — for the
+   new clone-worker/aggregator to claim/lease jobs against during Phase 1-3
+   development and validation. Built and tested against a handful of real
+   repos, zero production traffic — the live pipeline and the queue-api
+   instance it depends on are completely untouched at this stage; Phase 4 is
+   what repoints discovery workers at this new instance (see below).
 3. **Phase 2 — subset validation.** Drive a bounded repo set through the
    new path in parallel with the untouched old pipeline. Cross-check rollup
    counts against the existing corpus for the same repos. **Load-test

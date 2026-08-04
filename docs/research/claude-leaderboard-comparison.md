@@ -101,7 +101,7 @@ commits for ranking — only the rollup and the incrementally-maintained
 ## What claude-leaderboard never had to solve, and why that matters here
 
 Single-tool detection (`Co-Authored-By: Claude` only), single-provider
-(GitHub only), single process. `commitgraph`'s 12-15-tool multi-provider
+(GitHub only), single process. `commitgraph`'s 21-tool multi-provider
 scope is real added complexity claude-leaderboard's architecture doesn't
 address at all — this redesign keeps that breadth (via
 `shared/detection.py` and the `repo_user_daily_tool` sparse table, since

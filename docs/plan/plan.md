@@ -147,15 +147,43 @@ memory, and the largest pod that fits anywhere on it is 1.20 CPU / 1.64 GiB
 — there genuinely is no room to squeeze Postgres onto existing capacity.
 This validates the dedicated-node decision; it wasn't just a preference.
 
-**Confirmed via Rackspace Spot's public percentile pricing data (2026-08-04,
-`us-central-ord-1`):** `mh.vs1.large-ord` (4 CPU / 30 GiB capacity) prices at
-p50 **$0.006/hr** — cheaper than the `gp.vs1.medium-ord` class this cluster
-already runs (p50 $0.016/hr), while offering roughly 8x the memory. This is
-the current recommended class: comfortably more than CNPG + the rollup table
-need (the rollup itself measures in the tens of MB, see the schema section
-below), enough headroom that Postgres is never contending for resources the
-way the existing fleet already is, at a lower expected cost than the status
-quo. Allocatable-vs-capacity ratio for this specific class hasn't been
+**Node-class naming, corrected (2026-08-04):** `compute1-4` (used above and
+in `k8s/ord-devimprint/CLAUDE.md`) is the Kubernetes-facing generic
+instance-type label, not the actual Rackspace Spot server class the pricing
+API keys on. Live-checked via node labels (`servers.ngpc.rxt.io/class`):
+ord-devimprint's current class is **`ch.vs1.medium-ord`**, not
+`gp.vs1.medium-ord` as an earlier pass through this document assumed —
+those are different hardware tiers at the identical advertised shape (2
+CPU/3.75GB) and different prices. Corrected pricing comparison against
+`us-central-ord-1` percentile data: `ch.vs1.medium-ord` (current) prices at
+p50 **$0.006/hr**; `mh.vs1.large-ord` (proposed, 4 CPU/30GB) also prices at
+p50 **$0.006/hr** — same expected cost tier, not cheaper as previously
+stated, while still offering 2x CPU and ~8x memory. The capacity/headroom
+case for this class stands; the "cheaper" framing was wrong and is corrected
+here.
+
+**Percentile pricing is a historical bid-clearing distribution, not an
+availability guarantee or a reservation** — p20/p50/p80 describe what a Spot
+market *has* cleared at, not what it's guaranteed to clear at when this
+class is actually requested. Rackspace Spot nodepools are bid-based; a
+nodepool's `fulfilled` count can come in under `desired`
+(`rackspace-spot-terraform/notes/bf-1qt.md` shows this field exists because
+it happens in practice on this account). No fallback class is specified if
+`mh.vs1.large-ord` doesn't fulfill — decide one before attempting
+provisioning, don't discover this live. This matters more than usual here
+because the plan proposes a **single dedicated node** (`instances: 1`,
+matching the `iad-ci/queue-db` CNPG precedent, which also runs single-
+instance with no built-in HA) as the sole write target for every
+clone-worker replica's rollup upserts — a preemption event on this node is a
+hard outage for the entire rollup path, not a graceful degrade. The
+`queue-db` precedent mitigates this with `barmanObjectStore` backups to B2
+via ARMOR on a daily `ScheduledBackup`; this Postgres instance needs the
+equivalent wired before it's trusted with anything, not left unaddressed as
+a "someday" item.
+
+This is comfortably more capacity than CNPG + the rollup table actually
+need — see the corrected sizing note in the schema section below.
+Allocatable-vs-capacity ratio for this specific class hasn't been
 empirically confirmed (only `compute1-4`'s ~75% CPU / ~70% memory ratio is
 known from live clusters) — verify once actually provisioned, don't assume
 it holds exactly.
@@ -167,8 +195,8 @@ the Spot web UI or a locally-run Terraform apply from the separate
 (in-cluster Terraform automation for this was retired org-wide 2026-04-22
 after a reliability incident); (2) CNPG operator does not exist on
 ord-devimprint yet and needs installing fresh (it already runs on
-ardenone-cluster, apexalgo-iad, iad-ci — this would be a 5th install, not a
-reuse).
+ardenone-cluster, apexalgo-iad, iad-ci, **and rs-manager** — this would be a
+5th install, not a reuse).
 
 ### Postgres schema
 
@@ -206,6 +234,32 @@ CREATE TABLE users (
 );
 ```
 
+**Sizing, corrected:** an earlier pass through this document claimed the
+rollup "measures in the tens of MB." That undercounted by not extrapolating
+from data this same document already cites — claude-leaderboard's own
+directly-comparable rollup measured 209MB for 3.48M rows from 37.9M commits
+(see Context above and the research doc). commitgraph already has 76.6M
+commits, ~2x that scale; applying the same ratio puts this rollup at
+**several hundred MB**, not tens. The `mh.vs1.large-ord` node's 30GB of RAM
+absorbs that correction with enormous headroom either way, so the
+provisioning conclusion doesn't change — but the number was wrong and is
+fixed here rather than left standing uncorrected next to the data that
+contradicts it.
+
+**No re-evaluation trigger is defined for "Postgres computes ranking
+directly" past current scale.** The "trivial at this row count" claim is
+calibrated against today's snapshot. commitgraph's own history shows the
+corpus went from 1,313 commits to 402,980 in the flywheel's first hour, then
+to 76.6M within about two weeks — and discovery/clone throughput are
+explicitly *unclosed* ceilings (see "Explicitly out of scope" below), so
+continued growth at a non-trivial rate should be assumed, not treated as a
+one-time snapshot. This plan does not state a row-count or query-latency
+threshold at which the direct-SQL-ranking approach should be revisited in
+favor of, e.g., a materialized/precomputed ranking table refreshed on an
+interval. Flagged as an open gap rather than silently assumed away — worth
+picking a concrete trigger (a row count, or a measured query-latency
+ceiling) before this becomes a live problem instead of a planning question.
+
 Write pattern per repo, one transaction: `DELETE ... WHERE repo_id=$1` on
 both rollup tables, then a single set-based bulk `INSERT` via
 `UNNEST($1::bigint[], ...)` (not row-by-row — matters once multiple
@@ -219,14 +273,46 @@ repos is exactly the race Postgres is being brought in to survive.
 
 - **Raw per-repo commit-history artifact** (Parquet, sha/author/email/day/
   message): ARMOR, per-repo key, whole-object overwrite on every rescan.
-  ADR-009's original objection to ARMOR (whole-file encryption defeats
-  DuckDB range-read pruning) was measured against the **old** architecture,
-  where the corpus was hot — read every aggregator/filter-worker cycle. In
-  this redesign the corpus becomes cold/archival: written once per
-  clone/rescan, read back only for rare catalog-triggered redetect jobs.
-  Whole-file decrypt-on-read is a non-issue at that access frequency, so the
-  reason ADR-009 avoided ARMOR doesn't apply to what this artifact has
-  become.
+  ADR-009's stated objection to ARMOR (whole-file encryption defeats DuckDB
+  range-read pruning) was measured against the **old** architecture, where
+  the corpus was hot — read every aggregator/filter-worker cycle. In this
+  redesign the corpus becomes cold/archival: written once per clone/rescan,
+  read back only for rare catalog-triggered redetect jobs, so the
+  cold-access argument for using ARMOR here holds regardless of the
+  following correction.
+  **Correction (2026-08-04, from adversarial review): the "whole-file
+  encryption" characterization of ARMOR was never independently
+  re-verified against ARMOR's actual current behavior.** ARMOR's own
+  README claims the opposite is true today — seekable AES-256-CTR with
+  64KB blocks, explicit DuckDB range-read/column-pruning compatibility.
+  Either ADR-009 mischaracterized ARMOR at the time it was written, or
+  ARMOR gained seekability afterward; this was never checked before being
+  repeated as settled fact in this plan's earlier notes. This doesn't
+  overturn the decision to keep this artifact cold/internal (the
+  access-pattern argument above is independent of it), but the plan's
+  stated *technical justification* was weaker than presented. Given
+  ARMOR's own repo also documents a recent, non-trivial history of
+  multipart-encryption corruption bugs (as recently as 2026-07-18 per its
+  own ADRs), verify ARMOR's actual current range-read behavior empirically
+  before relying on any specific performance characteristic of it, rather
+  than trusting either ADR-009's or ARMOR's own README's claims
+  uncritically.
+  **ADR-009's other two objections to ARMOR — proxy-as-SPOF and
+  cross-namespace coupling — are not addressed by this reversal and should
+  be named rather than silently reintroduced.** This design's actual ARMOR
+  exposure is much narrower than what ADR-009 was reacting to: ARMOR sits
+  in the write path for clone-worker's raw-history artifact and the
+  aggregator's periodic snapshot publish, but is **not** in the hot query
+  path at all — every live ranking query goes to Postgres directly, so
+  ARMOR being briefly unavailable delays extraction/publishing, it doesn't
+  take down ranking. That materially shrinks the SPOF concern versus
+  ADR-009's original worry (every corpus read routing through one proxy).
+  The cross-namespace coupling is real and knowingly accepted, not
+  resolved: clone-worker (namespace `commitgraph`) depends on ARMOR running
+  in namespace `devimprint`, the exact shape ADR-009 wanted to move away
+  from. Worth an explicit decision — accept the coupling, or give this
+  redesign its own ARMOR deployment scoped to `commitgraph` — rather than
+  leaving it as an unstated assumption.
 - **Leaderboard snapshot** (`aggregates/leaderboard.parquet`, full ranked
   list, hundreds of thousands of rows): also via ARMOR, not direct B2 — no
   component in the new pipeline talks to B2 directly. No `leaderboard.json`
@@ -311,25 +397,55 @@ clone-worker). The migration:
    already-proven `QUEUE_API_URL`-swap pattern from this project's own
    history. Run both pipelines in parallel for a defined burn-in window —
    long enough to see at least one catalog-version bump and one full
-   aggregator publish cycle. Continuously diff `leaderboard.json` output
-   between old and new as the acceptance gate.
+   aggregator publish cycle.
+   **Corrected diff mechanism (2026-08-04):** the acceptance gate as
+   originally written here — "diff `leaderboard.json` output between old
+   and new" — directly contradicted the Architecture/Storage-placement
+   sections, which say this pipeline produces **no public-serving artifact
+   at all** (the ranked-list snapshot is internal-only, in ARMOR, for a
+   separate downstream pipeline to consume — see above). There is nothing
+   of that shape to diff. The actual gate: a validation script queries the
+   new pipeline's Postgres ranking directly (same SQL the aggregator runs)
+   and compares its output against the old pipeline's public
+   `leaderboard.json`, row-for-row on rank/username/counts — comparing two
+   different representations of the same computed ranking, not two files
+   of identical shape.
 6. **Phase 5 — final delta + cutover.** The old pipeline keeps discovering
    and cloning new repos through phases 1-4 — the corpus is not a static
    migration target. Run one final delta migration pass immediately before
-   cutover to catch everything scanned during the migration window. Flip
-   the public read path (DNS/config pointer, not a rebuild — both pipelines
-   emit the same `leaderboard.json` shape) only after a clean diff for the
-   whole burn-in window.
+   cutover to catch everything scanned during the migration window.
+   **Open decision, not yet resolved (flagged by adversarial review,
+   2026-08-04): what happens to public serving at the moment of cutover?**
+   The old pipeline's public `leaderboard.json`/dashboard is the only
+   public-facing artifact that exists today. Under the internal-only
+   snapshot decision, the new pipeline has no artifact to replace it with
+   at cutover — the downstream devimprint presentation layer that would
+   consume the internal snapshot is explicitly out of scope and not
+   started. So literally as designed, decommissioning the old pipeline's
+   public serving at cutover (Phase 6) leaves public serving **dark** until
+   that separate downstream effort ships. This may be an acceptable,
+   deliberate tradeoff — but it hasn't been decided, only exposed by
+   working through the mechanism in detail. The alternatives are: (a)
+   accept the gap, treat "public dashboard" as intentionally offline
+   between old-pipeline shutdown and the downstream pipeline shipping; (b)
+   keep the old pipeline's public serving alive past Phase 6 even after its
+   data pipeline is decommissioned, pointed at a bridge export from the new
+   corpus, until the downstream piece is ready; (c) have this pipeline
+   additionally publish a minimal public artifact (small top-N, not the
+   full list) purely to avoid a hard outage, despite the internal-only
+   decision. Needs an explicit choice before Phase 5 can actually execute.
 7. **Phase 6 — shutdown & decommission.** Per user's explicit instruction:
    shut down the live pipeline once parity is confirmed. **The repo rename
    already happened (2026-08-04, ahead of the rest of this phase)** —
    `jedarden/commitgraph` → `commitgraph-deprecated`, this repo took over
    the canonical `commitgraph` name, on both Forgejo and GitHub, with
-   push-mirrors, local remotes, and every found reference to the old name
-   (CI `git-repo` defaults, the GitHub webhook registration, claude-leaderboard's
-   blocklist) updated in the same pass — see `docs/notes/` for the full
-   account. ArgoCD's `repoURL` needed no change (it syncs from
-   `declarative-config`, never referenced `jedarden/commitgraph` directly).
+   push-mirrors, local remotes, and most found references to the old name
+   updated in the same pass. **This was not fully complete — a live CI gap
+   from it is still open as of this writing; see
+   `docs/notes/repo-rename-2026-08-04.md` for the full account, including
+   what the reference sweep did and didn't cover.** ArgoCD's `repoURL`
+   needed no change (it syncs from `declarative-config`, never referenced
+   `jedarden/commitgraph` directly) — that part held up under scrutiny.
    What's left for this phase is unchanged: shut down the live pipeline once
    parity is confirmed, then decommission old k8s manifests via the existing
    "disable in git (`.disabled` suffix) → push → prune, direct-kubectl-delete
@@ -378,10 +494,28 @@ clone-worker). The migration:
   `/resolve` endpoint enforces claim/lease state (`ErrClaimConflict` is a
   real return path per `internal/server/email_resolution.go`), so it's not
   a fit for a one-time bulk historical import; `/upsert` would just re-queue
-  these as pending work, wasting the exact budget being saved. This can run
-  against the **currently live** deprecated pipeline immediately, doesn't
-  need to wait for any phase of this redesign, and the new pipeline should
-  do the same seed during its own bootstrap. Not built yet — deferred until
+  these as pending work, wasting the exact budget being saved.
+  **Conflict-handling rule, specified (2026-08-04, from adversarial
+  review):** an earlier pass through this document left the seed's write
+  semantics unstated, which matters — the schema's `claimed_by` /
+  `lease_expires_at` / `attempted_at` columns exist precisely to prevent
+  two writers racing the same email. The correct rule: the seed endpoint
+  only writes a row where **`status = 'pending'`** (i.e., never claimed by
+  any worker, ever) — skip everything else outright, including rows
+  currently `claimed`, even if their lease looks expired. This sidesteps
+  the race with a live enrichment worker entirely rather than trying to
+  detect and resolve it, at the cost of very rarely leaving a handful of
+  already-in-flight rows unseeded — acceptable, since those resolve
+  normally through the live worker regardless. This also makes the seed
+  naturally idempotent: a second run only ever touches rows still pending,
+  never re-touches what it or a live worker already resolved. Do **not**
+  seed by overwriting `claimed` or already-`resolved`/`unresolvable` rows —
+  the frozen cache is 5-8+ weeks stale by the time it would run, so a stale
+  seed value must never be allowed to beat a live worker's fresher result.
+  This can run against the **currently live** deprecated pipeline
+  immediately, doesn't need to wait for any phase of this redesign, and the
+  new pipeline should do the same seed during its own bootstrap. Not built
+  yet — deferred until
   Phase 1 implementation starts.
 - **The detection footprint gap is real but deliberately not fixed here.**
   `shared/detection.py`'s catalog covers 15 tools; `search-worker`'s active

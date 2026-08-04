@@ -44,8 +44,8 @@ this design in a system already proven at comparable scale.
 ## Status
 
 Design/planning stage — no application code yet. The predecessor
-(`jedarden/commitgraph`) remains live and running; see its README for
-current deprecation status. Cutover follows the phased rollout in
+(`jedarden/commitgraph-deprecated`) remains live and running; see its README
+for current deprecation status. Cutover follows the phased rollout in
 `docs/plan/plan.md` (build in isolation → validate → migrate the existing
 corpus → shadow/dual-write burn-in → cutover → decommission the
 predecessor).

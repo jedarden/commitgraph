@@ -21,9 +21,23 @@ radically simpler: single SQLite file, a `(repo, user, day)` rollup table
 maintained by idempotent whole-repo-slice replace on every rescan, read-time
 identity aliasing, no distributed coordination. That system reached 37.9M
 commits / 695K users on one box with no equivalent contention. Live-measured
-this session: its rollup table is 209MB for 3.48M rows; the full 27.9GB
-database is 95.8% raw commit log + indexes, only 2.6% rollup — confirming
-the rollup itself was never the expensive part.
+this session: `hot.db` — a separate, frozen, pruned working-set file with no
+raw `commits` table at all — has a rollup table of 209MB for 3.48M rows,
+the ~10.9-commits/row ratio the Postgres sizing section below extrapolates
+from. **Corrected 2026-08-04 (gap-review round 3): the full-database
+breakdown below was previously computed by dividing that 209MB figure into
+a *different* file's total, and the resulting percentage didn't even follow
+from that division.** Measured self-consistently instead, against
+`leaderboard.db` — the one file that actually holds the raw commit log and
+the rollup side by side (27.9GB total, 52.5M commits at last measurement,
+grown since `hot.db`'s freeze): the raw commit log + its five indexes is
+95.8% of the file; the rollup (table + its two indexes) is 738MB / 7.97M
+rows, **2.8%** — not the previously-stated 2.6% (which came from dividing
+`hot.db`'s 209MB by `leaderboard.db`'s 27.9GB, two different files, and
+doesn't even arithmetically yield 2.6% — that division is actually ~0.8%).
+Either way, correctly computed: confirming the rollup itself was never the
+expensive part. Full measurement in
+`docs/research/claude-leaderboard-comparison.md`.
 
 This plan applies that lesson to commitgraph without discarding the things
 commitgraph got right that claude-leaderboard never needed: multi-tool
@@ -58,6 +72,24 @@ concrete, not-yet-built follow-up (seeding `email_resolution` from
 claude-leaderboard's own frozen resolution cache) that would help
 independently of this redesign's timeline.
 
+## Open decisions
+
+Pointers only, added 2026-08-04 (gap-review round 3) for skimmability —
+each item is discussed in full where it's flagged inline elsewhere in this
+document.
+
+- **Spot fallback node class** if `mh.vs1.large-ord` doesn't fulfill on the
+  bid market (Postgres provisioning section; Phase 0).
+- **ARMOR cross-namespace coupling**: accept `commitgraph` depending on
+  ARMOR in `devimprint`, or give this redesign its own scoped ARMOR
+  deployment (Storage placement section).
+- **ARMOR instance/prefix scoping**: `ARMOR_PREFIX` is unset and at least
+  two org-wide ARMOR instances exist — confirm which is in scope before
+  writing (Storage placement section).
+- **Public serving at Phase 5/6 cutover**: stays dark until the downstream
+  presentation layer ships, unless one of the three named alternatives is
+  adopted first (Phase 5 section).
+
 ## Architecture
 
 **clone-worker** (rewritten, absorbs filter-worker's logic):
@@ -76,8 +108,24 @@ independently of this redesign's timeline.
    warm start fetched the delta in under a second with a ~300-byte
    negotiation, versus re-downloading full history every scan.
 2. Walks full history, extracts `(sha, author_name, author_email,
-   committed_at, message)` per commit — the same shape clone-worker already
-   produces today (`commitgraph-deprecated/containers/clone-worker/worker.py:338`).
+   committed_at, message)` per commit. **Corrected 2026-08-04 (gap-review
+   round 3): this is a deliberate subset of clone-worker's current 10-field
+   Parquet schema — `schema_version, sha, provider, repo, username,
+   author_name, author_email, committed_at, subject, message`
+   (`commitgraph-deprecated/containers/clone-worker/worker.py:328-339`; the
+   previously-cited line 338 alone is only the schema's trailing `message`
+   field, not evidence of the claimed shape).** The four dropped fields are
+   intentional, not an oversight: `provider`/`repo` are redundant with the
+   per-repo ARMOR key the new artifact is already written under (step 5b
+   below); `username` is dropped because clone-worker doesn't meaningfully
+   resolve it today either (`resolve_username()` is noreply-regex-only,
+   zero network cost — everything else is deferred to
+   user-enrichment-worker, same file) and the new design keeps identity
+   resolution read-time via `email_resolution`/`user_aliases` (aggregator,
+   below) rather than carrying a raw-parsed username forward; `subject` is
+   dropped because today's own `msg = f"{subj}\n\n{body}"` construction
+   already puts it at the top of `message`, making a separate column
+   redundant with it.
 3. Runs `shared/detection.py` inline per commit (reused as-is — it already
    operates on a single commit's message/trailer text, no interface change
    needed).
@@ -186,7 +234,8 @@ percentile-distribution all run as native Postgres SQL (window functions,
 Parquet round-trip in the computation path. DuckDB/Parquet's role in this
 design is **output-format only**: the aggregator exports the already-computed
 result (a few thousand rows) to Parquet + JSON for public serving, matching
-the existing `query_leaderboard.py --parquet` read path. Routing the
+the existing `commitgraph-deprecated/query_leaderboard.py --parquet` read
+path. Routing the
 computation itself through an export-to-Parquet-then-DuckDB-query step would
 add an ETL hop directly in the path of the thing this redesign exists to fix
 (freshness), for no benefit — the usual reason to separate write-store from
@@ -255,6 +304,28 @@ p50 **$0.006/hr** — same expected cost tier, not cheaper as previously
 stated, while still offering 2x CPU and ~8x memory. The capacity/headroom
 case for this class stands; the "cheaper" framing was wrong and is corrected
 here.
+
+**Sourced and reconciled (2026-08-04, gap-review round 3): the $0.006/hr
+figures above come from a live query against Rackspace Spot's public
+percentile-pricing endpoint**
+(`https://ngpc-prod-public-data.s3.us-east-2.amazonaws.com/percentiles.json`,
+`regions.us-central-ord-1.serverclasses`, checked 2026-08-04) — both
+`ch.vs1.medium-ord` and `mh.vs1.large-ord` show `50_percentile: 0.006`
+there, confirming the figure is real and current, not stale or invented.
+**This is a different number from, and doesn't contradict, this account's
+own $0.001/hr bid** for the live `ch.vs1.medium-ord` nodepool — recorded in
+`rackspace-spot-terraform/clusters/ord-devimprint/main.tf` (`bid_price =
+0.001`) and confirmed live in `notes/bf-1qt.md` (`bidPrice=$0.001`,
+`fulfilled=6`). A p50 percentile describes what the broader market has
+historically cleared at across all bidders; this account's own bid is one
+specific choice on that market and can legitimately sit well below p50 when
+optimizing for cost over preemption risk — which is exactly what's
+happening here (the same percentiles.json response's `market_price` field
+for `ch.vs1.medium-ord` is `0.001000`, matching this account's bid exactly).
+Provisioning `mh.vs1.large-ord` at a similarly low bid rather than at its
+$0.006/hr p50 is the reasonable default to carry forward, but hasn't been
+explicitly decided — worth stating as an actual bid-price choice before
+Phase 0 provisioning, not left implicit.
 
 **Percentile pricing is a historical bid-clearing distribution, not an
 availability guarantee or a reservation** — p20/p50/p80 describe what a Spot
@@ -382,11 +453,11 @@ baseline, ~10.9 commits/row):
 
 - `repo_user_daily` (tool-agnostic, ~7.03M rows extrapolated): ~75-85
   bytes/row for the table (~560-600MB) + a comparable-magnitude
-  `(author_key, day)` index (~250-280MB) → **~810-880MB** (**corrected
-  2026-08-04**: 560-600MB + 250-280MB sums to 810-880MB, not the
-  previously-stated ~800MB-1.1GB — the upper bound didn't follow from its
-  own cited sub-ranges; same arithmetic-error pattern as the `users`
-  correction just below), the dominant cost by far.
+  `(author_key, day)` index (~250-280MB) → **~810-880MB**, the dominant
+  cost by far. (**Corrected 2026-08-04**: 560-600MB + 250-280MB sums to
+  810-880MB, not the previously-stated ~800MB-1.1GB — the upper bound
+  didn't follow from its own cited sub-ranges; same arithmetic-error
+  pattern as the `users` correction just below.)
 - `repo_user_daily_tool` (sparse, AI-tagged only — ~21-25K rows from
   234,263 AI-tagged commits at the same ratio): negligible, well under
   10MB including both indexes.
@@ -573,6 +644,28 @@ clone-worker). The migration:
    `users.total_commits` is unchanged on the second run (the delta-update
    pattern is not naturally idempotent the way the DELETE+INSERT rollup
    rows are — verify explicitly before trusting it).
+
+**Consequence not yet stated (2026-08-04, gap-review round 3): every
+migrated repo hits clone-worker's full-clone fallback on its first
+post-cutover scan.** Step 3 above writes the Parquet commit-history
+artifact for redetection, but explicitly does not run `git clone` — so
+migration never produces the separate warm-start artifact (raw pack files +
+loose ref + promisor config, see Architecture above) that clone-worker's
+warm-start step depends on. Warm-start's own fallback rule (Architecture,
+step 1: absent artifact → full `git clone --bare --filter=blob:none`)
+therefore fires for all 98,747+ migrated repos the first time each is
+rescanned after cutover — not the fast, sub-second warm-start delta this
+plan otherwise emphasizes. Against the independently-measured ~1,000
+repos/hour/replica ceiling (see "Explicitly out of scope" below): using the
+only clone-worker replica count this plan states anywhere (4, per Context
+above, for the old architecture — the new pipeline's replica count isn't
+separately stated), even running all 4 flat-out on nothing else, one
+full-clone pass over the migrated corpus is ~25 hours (98,747 ÷
+4,000/hour) — longer in practice, since those same replicas are also
+handling live discovery/rescan traffic concurrently, not dedicated solely
+to this one-time wave. A real, one-time throughput cost of cutover, not
+solved here — just made explicit so Phase 5/6 timeline expectations
+account for it.
 
 ## Phased rollout
 
@@ -812,6 +905,9 @@ from there, not from this repo, until Phase 1 copies/ports it in.
   current `catalog_version` / `dirty_partitions` mechanism
 - `/home/coding/commitgraph-deprecated/docs/adr/009-encrypted-public-b2-storage.md`
   — ADR-009, being partially reversed for the reasons stated above
+- `/home/coding/commitgraph-deprecated/query_leaderboard.py` — existing
+  `--parquet` read path the new aggregator's public export matches (see
+  "Postgres computes the ranking, not DuckDB" above)
 - `/home/coding/vibecodeleaderboard-backend/src/extractor_v4.py` — the
   reference idempotent DELETE+INSERT rollup pattern
 - `/home/coding/declarative-config/k8s/iad-ci/queue-db/cnpg-cluster.yaml` —

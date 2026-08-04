@@ -52,20 +52,38 @@ Postgres is being brought in to survive.
 Queried directly via `sqlite3`/`dbstat` against the real frozen databases,
 not estimated:
 
-| Structure | Size | Rows |
-|---|---|---|
-| `repo_user_daily` (rollup) + its one index | 209 MB | 3.48M |
-| Full `leaderboard.db` (raw `commits` + 5 indexes + rollup + caches) | 27.9 GB | 37.9M commits |
+| Structure | Size | Rows | File |
+|---|---|---|---|
+| `repo_user_daily` (rollup) + its one index | 209 MB | 3.48M | `hot.db` (frozen, pruned working set — no raw `commits` table) |
+| `repo_user_daily` (rollup) + its two indexes | 738 MB | 7.97M | `leaderboard.db` |
+| Full `leaderboard.db` (raw `commits` + 5 indexes + rollup + caches) | 27.9 GB | 52.5M commits | `leaderboard.db` |
 
-**95.8% of the full database is the raw `commits` table plus its five
-indexes; only 2.6% is the rollup.** The row-count multiplier (11x: one row
-per commit vs. one row per `(repo,user,day)` bucket) and row-width
-multiplier (~9x: full SHA + full `owner/repo` string + up to 200 bytes of
-message per row, vs. an int repo_id + short strings for the rollup) compound
-with index proliferation (six structures on the `commits` table, several
-overlapping composites that a later index likely made partially redundant)
-into a roughly 130x size difference between the raw commit log and the
-rollup that actually drives ranking.
+**Corrected 2026-08-04 (gap-review round 3): the original 95.8%/2.6%
+breakdown divided `hot.db`'s rollup size by `leaderboard.db`'s total — two
+different physical files treated as one measurement — and the resulting
+2.6% didn't even follow from that division (209MB/27.9GB is actually
+~0.8%).** Re-measured self-consistently within `leaderboard.db` alone, the
+one file that holds the raw commit log and the rollup side by side: 95.8%
+of the full database is the raw `commits` table plus its five indexes;
+**2.8%** is the rollup (not 2.6%). `hot.db`'s separately-measured
+209MB/3.48M-row rollup figure is real and still the baseline this redesign's
+Postgres sizing extrapolates from — it's just a different file than the
+27.9GB total, so the two shouldn't be divided against each other. The
+row-count multiplier (`hot.db`'s own ratio: ~11x, one row per commit vs.
+one row per `(repo,user,day)` bucket, 37.9M source commits / 3.48M rollup
+rows) and row-width multiplier (full SHA + full `owner/repo` string + up to
+200 bytes of message per row, vs. an int repo_id + short strings for the
+rollup) both point the same direction — fewer, narrower rows — and index
+proliferation adds more on top (six structures on the `commits` table,
+several overlapping composites that a later index likely made partially
+redundant). The previously-stated "roughly 130x" aggregate was itself
+downstream of the same file-mixing bug (`hot.db`'s 209MB divided into
+`leaderboard.db`'s ~26.7GB commits-table size); measured self-consistently
+within `leaderboard.db` alone, the raw `commits` table + its five indexes
+(26.7GB) is **~34.5x** the size of the rollup table + its two indexes
+(738MB) — smaller than the earlier cross-file estimate, but the qualitative
+conclusion is unchanged: the rollup that actually drives ranking is a small
+fraction of the real cost.
 
 This is the concrete evidence behind `build_hot_db.py`'s own design
 decision to ship `hot.db` (the rollup + `users` + a few small caches, no

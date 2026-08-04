@@ -47,11 +47,20 @@ signature needs retroactively applying.
 
 The predecessor's own ADR (ADR-009) deliberately avoided routing the corpus
 through ARMOR, specifically because whole-file encryption defeats DuckDB's
-range-read pruning on Parquet — a real, measured tradeoff (0.42MB fetched
-of a 48MB file for a point query, encrypted vs. plaintext, identical). That
-reasoning doesn't transfer here, because it was measured against the OLD
-architecture's access pattern: the corpus was hot, read on every
-aggregator/filter-worker cycle. In this redesign, the raw commit-history
+range-read pruning on Parquet — measured at the time as 0.42MB fetched of a
+48MB file for a point query, encrypted vs. plaintext, identical.
+**Correction (2026-08-04, gap-review round 3): that characterization was
+never independently re-verified against ARMOR's actual current behavior,
+and shouldn't be repeated as settled fact.** ARMOR's own README claims the
+opposite is true today — seekable AES-256-CTR with 64KB blocks, explicit
+DuckDB range-read/column-pruning compatibility. Either ADR-009
+mischaracterized ARMOR at the time it was written, or ARMOR gained
+seekability afterward; verify empirically before relying on either claim
+uncritically (full account, including ARMOR's recent multipart-encryption
+corruption history, in `docs/plan/plan.md`'s Storage placement section).
+Regardless, that ADR-009 reasoning doesn't transfer to this design anyway,
+because it was measured against the OLD architecture's access pattern: the
+corpus was hot, read on every aggregator/filter-worker cycle. In this redesign, the raw commit-history
 artifact is cold — written once per clone/rescan, read back only for rare
 catalog-triggered redetect jobs. Whole-file decrypt-on-read costs nothing
 meaningful at that access frequency, so the specific reason ADR-009 avoided

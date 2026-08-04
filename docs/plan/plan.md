@@ -40,9 +40,18 @@ immediate (rollup written in the same pass as extraction), the aggregator's
 five-incident OOM history goes away (it becomes a thin SQL query instead of a
 DuckDB engine decrypting/materializing large partitions), and queue-api's
 write contention drops to its original, much lower-volume job-coordination
-role. Discovery throughput (capped by GitHub's shared ~30 req/min search
-budget) and per-value identity fragmentation are **not** fixed by this — they
-are separate problems, noted but out of scope here.
+role — which plausibly also fixes a live bug where that same contention
+silently broke identity resolution's feed (`fed 0 new emails`). What this
+redesign does **not** fix: discovery and clone throughput, both hard
+ceilings on the shared GitHub API budget and clone-worker's own measured
+per-replica rate; and identity resolution *throughput*, capped by that same
+shared API budget regardless of storage architecture (commitgraph already
+reuses claude-leaderboard's identity-resolution design — cached per-email
+resolution + read-time alias merge — this isn't a missing piece to borrow).
+See "Explicitly out of scope" below for the full accounting, including a
+concrete, not-yet-built follow-up (seeding `email_resolution` from
+claude-leaderboard's own frozen resolution cache) that would help
+independently of this redesign's timeline.
 
 ## Architecture
 
@@ -131,17 +140,35 @@ any change here.
 **Postgres**: new CNPG cluster on a **dedicated large Rackspace Spot node in
 ord-devimprint** (user's explicit choice — keeps clone-worker's rollup
 upserts same-cluster, no cross-cluster network hop on the hot write path).
-Two known costs, both one-time: (1) node provisioning is a manual,
-out-of-band step — Rackspace Spot node pools are provisioned via the Spot
-web UI or a locally-run Terraform apply from the separate
+
+**Confirmed via `./k8s/capacity-check.sh ord-devimprint` (2026-08-04, live):**
+the existing 6-node `compute1-4` fleet is already committed 41% CPU / 50%
+memory, and the largest pod that fits anywhere on it is 1.20 CPU / 1.64 GiB
+— there genuinely is no room to squeeze Postgres onto existing capacity.
+This validates the dedicated-node decision; it wasn't just a preference.
+
+**Confirmed via Rackspace Spot's public percentile pricing data (2026-08-04,
+`us-central-ord-1`):** `mh.vs1.large-ord` (4 CPU / 30 GiB capacity) prices at
+p50 **$0.006/hr** — cheaper than the `gp.vs1.medium-ord` class this cluster
+already runs (p50 $0.016/hr), while offering roughly 8x the memory. This is
+the current recommended class: comfortably more than CNPG + the rollup table
+need (the rollup itself measures in the tens of MB, see the schema section
+below), enough headroom that Postgres is never contending for resources the
+way the existing fleet already is, at a lower expected cost than the status
+quo. Allocatable-vs-capacity ratio for this specific class hasn't been
+empirically confirmed (only `compute1-4`'s ~75% CPU / ~70% memory ratio is
+known from live clusters) — verify once actually provisioned, don't assume
+it holds exactly.
+
+Two known costs, both one-time and still unstarted: (1) node provisioning is
+a manual, out-of-band step — Rackspace Spot node pools are provisioned via
+the Spot web UI or a locally-run Terraform apply from the separate
 `jedarden/rackspace-spot-terraform` repo, **not** a declarative-config PR
 (in-cluster Terraform automation for this was retired org-wide 2026-04-22
 after a reliability incident); (2) CNPG operator does not exist on
 ord-devimprint yet and needs installing fresh (it already runs on
 ardenone-cluster, apexalgo-iad, iad-ci — this would be a 5th install, not a
-reuse). Node class/pricing for anything larger than the `gp.vs1.medium-ord`
-class already in use has not been checked — verify live availability/bid
-price before provisioning.
+reuse).
 
 ### Postgres schema
 
@@ -294,26 +321,84 @@ clone-worker). The migration:
    emit the same `leaderboard.json` shape) only after a clean diff for the
    whole burn-in window.
 7. **Phase 6 — shutdown & decommission.** Per user's explicit instruction:
-   shut down the live pipeline once parity is confirmed. Rename the current
-   `jedarden/commitgraph` Forgejo repo to `commitgraph-deprecated` (update
-   GitHub push-mirror config, ArgoCD `repoURL`, CI WorkflowTemplate source
-   refs, and both local clones — this box and the lab — in the same change
-   so nothing silently stops syncing mid-transition). Decommission old k8s
-   manifests via the existing "disable in git (`.disabled` suffix) → push →
-   prune, direct-kubectl-delete only for objects git no longer declares"
-   playbook already used once before for a structurally identical teardown
-   in this project's own history.
+   shut down the live pipeline once parity is confirmed. **The repo rename
+   already happened (2026-08-04, ahead of the rest of this phase)** —
+   `jedarden/commitgraph` → `commitgraph-deprecated`, this repo took over
+   the canonical `commitgraph` name, on both Forgejo and GitHub, with
+   push-mirrors, local remotes, and every found reference to the old name
+   (CI `git-repo` defaults, the GitHub webhook registration, claude-leaderboard's
+   blocklist) updated in the same pass — see `docs/notes/` for the full
+   account. ArgoCD's `repoURL` needed no change (it syncs from
+   `declarative-config`, never referenced `jedarden/commitgraph` directly).
+   What's left for this phase is unchanged: shut down the live pipeline once
+   parity is confirmed, then decommission old k8s manifests via the existing
+   "disable in git (`.disabled` suffix) → push → prune, direct-kubectl-delete
+   only for objects git no longer declares" playbook already used once
+   before for a structurally identical teardown in this project's own
+   history.
 
 ## Explicitly out of scope
 
-- **Discovery throughput** (GitHub's shared ~30 req/min search budget) is
-  unrelated to this redesign — freshness of already-discovered repos
-  improves, discovery rate of new repos does not.
-- **Identity fragmentation** (raw author-email vs. resolved GitHub login,
-  the likely dominant cause of the specific 5,000-vs-124 gap that started
-  this investigation) is addressed only insofar as identity resolution
-  moves to a read-time join instead of a live write-path worker — the
-  underlying resolution quality/coverage is not changed by this plan.
+- **Discovery and clone throughput are hard, confirmed ceilings, not gaps
+  this redesign closes.** Discovery is capped at GitHub's shared ~30 req/min
+  search budget. Clone throughput has its own independently-measured
+  ceiling: a single clone-worker replica processes roughly 1,000 repos/hour,
+  against a discovered-repo backlog that has run into the tens of thousands
+  (28.9k+ pending at last measurement). Freshness of already-discovered
+  repos improves under this redesign (rollup written in the same pass as
+  extraction, not up to 24h later); the *rate* new repos get discovered and
+  cloned does not change at all.
+- **Identity resolution — architecture is already shared with
+  claude-leaderboard, not something this redesign needs to newly borrow.**
+  commitgraph's `email_resolution` (cached per-email API resolution) and
+  `user_aliases` (hand-curated read-time merge) are already the same
+  two-layer design claude-leaderboard's `author_login_cache` +
+  `_load_username_aliases()` used — this redesign explicitly keeps both
+  verbatim and applies the alias join at read time in the aggregator,
+  matching `generate_leaderboard_v3.py`'s `_apply_aliases` pattern exactly.
+  What genuinely doesn't change: resolution *throughput* is capped by the
+  **same shared ~30 req/min GitHub API budget as discovery search** — this
+  redesign adds no resolution capacity, and the backlog (363k pending emails
+  at last measurement) is structurally bounded by that shared resource, the
+  same way discovery is. What plausibly *does* improve: a live bug where the
+  resolution feed silently failed (`fed 0 new emails`) traced directly to
+  queue-api write contention — the exact thing this redesign eliminates — so
+  already-rate-limited resolution progress should land reliably post-cutover
+  instead of intermittently dropping.
+  **Concrete, low-risk follow-up identified but not yet built:**
+  claude-leaderboard's frozen `author_login_cache` (349,425 already-resolved
+  email→login pairs, `~/backups/claude-leaderboard/hot.db`, spanning
+  2026-03-14 to 2026-06-29) can seed `email_resolution` directly — zero
+  GitHub API cost, immediate backlog relief. Positive resolutions only (no
+  negative-cache equivalent in the source), and coverage is necessarily
+  partial (claude-leaderboard only ever searched `Co-Authored-By: Claude`,
+  so this helps pre-freeze Claude-Code-tagged identities specifically, not
+  the other 11 tools or post-freeze activity). Needs a small new queue-api
+  endpoint (`POST /email-resolution/seed` or equivalent) — the existing
+  `/resolve` endpoint enforces claim/lease state (`ErrClaimConflict` is a
+  real return path per `internal/server/email_resolution.go`), so it's not
+  a fit for a one-time bulk historical import; `/upsert` would just re-queue
+  these as pending work, wasting the exact budget being saved. This can run
+  against the **currently live** deprecated pipeline immediately, doesn't
+  need to wait for any phase of this redesign, and the new pipeline should
+  do the same seed during its own bootstrap. Not built yet — deferred until
+  Phase 1 implementation starts.
+- **The detection footprint gap is real but deliberately not fixed here.**
+  `shared/detection.py`'s catalog covers 15 tools; `search-worker`'s active
+  discovery footprints (`GITHUB_FOOTPRINTS`) cover 12 — windsurf, codeium,
+  replit, tabnine, codestral, sweep, and netlify-coding have detection
+  patterns but no dedicated discovery query. Every commit in any cloned repo
+  is still checked against the full 15-tool catalog regardless (detection
+  runs one call per commit, all patterns at once — see
+  `docs/notes/detection-inlined-not-lost.md`), so these tools are detected
+  whenever a repo surfaces via some *other* footprint; they just can't be
+  the sole reason a repo gets discovered. Closing this gap is a pure
+  discovery-breadth-vs.-already-maxed-API-budget tradeoff — adding entries
+  to `GITHUB_FOOTPRINTS` trades search calls away from the existing 12
+  tools' freshness/history depth toward broader coverage. This tradeoff
+  predates this redesign, isn't caused or worsened by it, and is an
+  independent decision for whoever owns the discovery footprint list — not
+  bundled into this plan.
 - **The public devimprint.com presentation layer** — curated top-N vs. full
   list, anti-scraping design (rate-limiting, pagination, profile-lookup vs.
   bulk export), the general revival of devimprint.com as a display layer —

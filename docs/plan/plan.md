@@ -274,17 +274,50 @@ CREATE TABLE users (
 );
 ```
 
-**Sizing, corrected:** an earlier pass through this document claimed the
-rollup "measures in the tens of MB." That undercounted by not extrapolating
-from data this same document already cites — claude-leaderboard's own
-directly-comparable rollup measured 209MB for 3.48M rows from 37.9M commits
-(see Context above and the research doc). commitgraph already has 76.6M
-commits, ~2x that scale; applying the same ratio puts this rollup at
-**several hundred MB**, not tens. The `mh.vs1.large-ord` node's 30GB of RAM
-absorbs that correction with enormous headroom either way, so the
-provisioning conclusion doesn't change — but the number was wrong and is
-fixed here rather than left standing uncorrected next to the data that
-contradicts it.
+**Sizing, corrected twice now — this is the current best estimate.** An
+earlier pass through this document claimed the rollup "measures in the tens
+of MB," undercounting by not extrapolating from data this same document
+already cites — claude-leaderboard's own directly-comparable rollup
+measured 209MB for 3.48M rows from 37.9M commits (see Context above and the
+research doc). A first correction applied that ratio to commitgraph's 76.6M
+commits and landed on "several hundred MB." That correction was itself too
+low: it carried over SQLite's per-row cost without adjusting for Postgres,
+which has no equivalent to SQLite's `WITHOUT ROWID` clustered storage (the
+mechanism that made claude-leaderboard's 209MB figure so compact —
+~32 bytes/row for the table, ~31 for its index, per the exact `dbstat`
+breakdown measured earlier). Every Postgres row instead carries its own
+~24-byte tuple header plus alignment padding on top of the real column
+data. Worked through per table, at current 76.6M-commit / 1,094,043-developer
+scale (commits-to-rollup-row ratio held constant from the claude-leaderboard
+baseline, ~10.9 commits/row):
+
+- `repo_user_daily` (tool-agnostic, ~7.03M rows extrapolated): ~75-85
+  bytes/row for the table (~560-600MB) + a comparable-magnitude
+  `(author_key, day)` index (~250-280MB) → **~800MB-1.1GB**, the dominant
+  cost by far.
+- `repo_user_daily_tool` (sparse, AI-tagged only — ~21-25K rows from
+  234,263 AI-tagged commits at the same ratio): negligible, well under
+  10MB including both indexes.
+- `users` (one row per developer, 1,094,043 live count): ~90-100
+  bytes/row including its primary-key index → **~150-170MB**.
+
+**Total at current scale: roughly 1.0-1.2GB** — a materially different
+number from "several hundred MB," though the provisioning conclusion still
+doesn't change: the `mh.vs1.large-ord` node's 30GB of RAM absorbs even a
+10x-scale rollup (~10-12GB) with room to spare. The number keeps getting
+corrected because each pass checked the previous one against real data
+rather than trusting it — worth remembering next time a "trivial" sizing
+claim shows up in this document.
+
+**Leaderboard snapshot sizing (ARMOR, Parquet, the full ranked list):**
+per-row shape matches the live JSON schema (rank, username,
+ai_commits_30d, ai_commits_total, ship_streak, tools[], providers[],
+top_repo, last_active, verified) — roughly 110-115 bytes/row uncompressed,
+compressing to an estimated 35-50 bytes/row in Parquet given heavy
+repetition in low-cardinality columns (`providers` is almost always just
+`["github"]`) and small-range integers. At "hundreds of thousands of
+rows" (per the earlier full-list-not-top-N decision): **roughly 10-40MB**
+— never a real storage concern, unlike the rollup.
 
 **No re-evaluation trigger is defined for "Postgres computes ranking
 directly" past current scale.** The "trivial at this row count" claim is

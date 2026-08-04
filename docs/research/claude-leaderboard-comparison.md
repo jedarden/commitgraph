@@ -56,7 +56,7 @@ not estimated:
 |---|---|---|---|
 | `repo_user_daily` (rollup) + its one index | 209 MB | 3.48M | `hot.db` (frozen, pruned working set — no raw `commits` table) |
 | `repo_user_daily` (rollup) + its two indexes | 738 MB | 7.97M | `leaderboard.db` |
-| Full `leaderboard.db` (raw `commits` + 5 indexes + rollup + caches) | 27.9 GB | 52.5M commits | `leaderboard.db` |
+| Full `leaderboard.db` (raw `commits` + 6 index structures + rollup + caches) | 27.9 GB | 52.5M commits | `leaderboard.db` |
 
 **Corrected 2026-08-04 (gap-review round 3): the original 95.8%/2.6%
 breakdown divided `hot.db`'s rollup size by `leaderboard.db`'s total — two
@@ -64,7 +64,13 @@ different physical files treated as one measurement — and the resulting
 2.6% didn't even follow from that division (209MB/27.9GB is actually
 ~0.8%).** Re-measured self-consistently within `leaderboard.db` alone, the
 one file that holds the raw commit log and the rollup side by side: 95.8%
-of the full database is the raw `commits` table plus its five indexes;
+of the full database is the raw `commits` table plus its six index
+structures (**corrected 2026-08-04, gap-review round 4**: 5 explicit
+indexes plus the implicit `sqlite_autoindex_commits_1` its `PRIMARY KEY`
+creates on this rowid table — `.indexes commits` in `sqlite3` lists all
+six; summing only the 5 explicit indexes gives 85.3% of the file, not the
+95.8% cited here or in `plan.md`, so the sixth, implicit one has to be
+counted for either figure to reproduce);
 **2.8%** is the rollup (not 2.6%). `hot.db`'s separately-measured
 209MB/3.48M-row rollup figure is real and still the baseline this redesign's
 Postgres sizing extrapolates from — it's just a different file than the
@@ -79,8 +85,8 @@ several overlapping composites that a later index likely made partially
 redundant). The previously-stated "roughly 130x" aggregate was itself
 downstream of the same file-mixing bug (`hot.db`'s 209MB divided into
 `leaderboard.db`'s ~26.7GB commits-table size); measured self-consistently
-within `leaderboard.db` alone, the raw `commits` table + its five indexes
-(26.7GB) is **~34.5x** the size of the rollup table + its two indexes
+within `leaderboard.db` alone, the raw `commits` table + its six index
+structures (26.7GB) is **~34.5x** the size of the rollup table + its two indexes
 (738MB) — smaller than the earlier cross-file estimate, but the qualitative
 conclusion is unchanged: the rollup that actually drives ranking is a small
 fraction of the real cost.

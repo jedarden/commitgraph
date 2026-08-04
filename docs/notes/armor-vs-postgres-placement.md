@@ -46,12 +46,22 @@ rescan — this is the thing a redetect job reads back when a new tool
 signature needs retroactively applying.
 
 The predecessor's own ADR (ADR-009) deliberately avoided routing the corpus
-through ARMOR, specifically because whole-file encryption defeats DuckDB's
-range-read pruning on Parquet — measured at the time as 0.42MB fetched of a
-48MB file for a point query, encrypted vs. plaintext, identical.
-**Correction (2026-08-04, gap-review round 3): that characterization was
-never independently re-verified against ARMOR's actual current behavior,
-and shouldn't be repeated as settled fact.** ARMOR's own README claims the
+through ARMOR, on the stated grounds that whole-file encryption defeats
+DuckDB's range-read pruning on Parquet.
+**Correction (2026-08-04, gap-review round 4): the 0.42MB-of-a-48MB-file
+figure often cited alongside this decision is not a measurement of ARMOR at
+all.** It's from `docs/research/duckdb-encryption-spike/README.md`, which
+measured DuckDB-native Parquet Modular Encryption — the technology ADR-009
+adopted *instead of* ARMOR — against plaintext, and found range-pruning
+survives it byte-for-byte (0.42MB fetched of 48MB for a point query, encrypted
+vs. plaintext, identical). ARMOR itself never appears in that spike, and
+ADR-009's own Context section cites no number for ARMOR specifically. The
+figure is evidence for what ADR-009 chose instead of ARMOR, not a direct
+measurement of ARMOR's own range-read behavior.
+**Correction (2026-08-04, gap-review round 3): separately, the "whole-file
+encryption defeats pruning" characterization of ARMOR itself was never
+independently re-verified against ARMOR's actual current behavior, and
+shouldn't be repeated as settled fact.** ARMOR's own README claims the
 opposite is true today — seekable AES-256-CTR with 64KB blocks, explicit
 DuckDB range-read/column-pruning compatibility. Either ADR-009
 mischaracterized ARMOR at the time it was written, or ARMOR gained

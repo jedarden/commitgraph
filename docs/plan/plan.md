@@ -30,9 +30,11 @@ a *different* file's total, and the resulting percentage didn't even follow
 from that division.** Measured self-consistently instead, against
 `leaderboard.db` — the one file that actually holds the raw commit log and
 the rollup side by side (27.9GB total, 52.5M commits at last measurement,
-grown since `hot.db`'s freeze): the raw commit log + its five indexes is
-95.8% of the file; the rollup (table + its two indexes) is 738MB / 7.97M
-rows, **2.8%** — not the previously-stated 2.6% (which came from dividing
+grown since `hot.db`'s freeze): the raw commit log + its six index
+structures (5 explicit indexes plus the implicit `sqlite_autoindex_commits_1`
+its `PRIMARY KEY` creates on this rowid table) is 95.8% of the file; the
+rollup (table + its two indexes) is 738MB / 7.97M rows, **2.8%** — not the
+previously-stated 2.6% (which came from dividing
 `hot.db`'s 209MB by `leaderboard.db`'s 27.9GB, two different files, and
 doesn't even arithmetically yield 2.6% — that division is actually ~0.8%).
 Either way, correctly computed: confirming the rollup itself was never the
@@ -80,12 +82,19 @@ document.
 
 - **Spot fallback node class** if `mh.vs1.large-ord` doesn't fulfill on the
   bid market (Postgres provisioning section; Phase 0).
+- **`mh.vs1.large-ord` bid price**: a low bid (mirroring the current
+  `ch.vs1.medium-ord` nodepool's $0.001/hr) rather than the $0.006/hr p50 is
+  the reasonable default, but hasn't been explicitly decided (Postgres
+  provisioning section; Phase 0).
 - **ARMOR cross-namespace coupling**: accept `commitgraph` depending on
   ARMOR in `devimprint`, or give this redesign its own scoped ARMOR
   deployment (Storage placement section).
-- **ARMOR instance/prefix scoping**: `ARMOR_PREFIX` is unset and at least
-  two org-wide ARMOR instances exist — confirm which is in scope before
-  writing (Storage placement section).
+- **ARMOR instance/prefix scoping**: `ARMOR_PREFIX` is unset and four
+  org-wide ARMOR instances exist (**corrected 2026-08-04, gap-review round
+  4** — previously stated as "at least two"; verified via
+  `declarative-config/k8s/`: `devimprint` ns on ord-devimprint, `armor` ns
+  on iad-ci, `armor` ns on iad-kalshi, `armor` ns on rs-manager) — confirm
+  which is in scope before writing (Storage placement section).
 - **Public serving at Phase 5/6 cutover**: stays dark until the downstream
   presentation layer ships, unless one of the three named alternatives is
   adopted first (Phase 5 section).
@@ -118,9 +127,10 @@ document.
    intentional, not an oversight: `provider`/`repo` are redundant with the
    per-repo ARMOR key the new artifact is already written under (step 5b
    below); `username` is dropped because clone-worker doesn't meaningfully
-   resolve it today either (`resolve_username()` is noreply-regex-only,
-   zero network cost — everything else is deferred to
-   user-enrichment-worker, same file) and the new design keeps identity
+   resolve it today either (`resolve_username()`, in that same `worker.py`
+   cited just above, is noreply-regex-only, zero network cost — everything
+   else is deferred to user-enrichment-worker, a separate container with
+   its own file) and the new design keeps identity
    resolution read-time via `email_resolution`/`user_aliases` (aggregator,
    below) rather than carrying a raw-parsed username forward; `subject` is
    dropped because today's own `msg = f"{subj}\n\n{body}"` construction
@@ -201,6 +211,37 @@ upserts only the rollup rows that changed. Same code path, same Postgres
 target, triggered rarely instead of running as an always-on service.
 **filter-worker and compactor are retired as standalone deployments**; their
 logic lives inside clone-worker's two job kinds.
+
+**Gap identified and closed (2026-08-04, gap-review round 4): "their logic"
+above only accounts for filter-worker.** filter-worker's tool-detection is
+inlined into clone-worker's step 3 above, but compactor's other real job —
+quarantining commits with malformed/out-of-range `committed_at` — has no
+replacement anywhere in this design. The old compactor
+(`commitgraph-deprecated/containers/compactor/worker.py`) routed any commit
+dated before 2005-01-01 or more than 24h in the future to a
+`year=0000/month=00` partition, excluded from every downstream aggregate
+while still preserving the raw value on the row. This isn't a hypothetical
+risk: a single 2170-dated commit once reached the old aggregator unguarded
+and pulled its 30-day anchor 144 years forward, zeroing the board-wide
+AI-commit count until a defensive clamp was added (quarantine
+introduced in `bf-jyctj`/commit `93dc8d1`; aggregator incident fix in commit
+`946e815`). **This can recur here just as easily**: clone-worker's step 2
+extracts `committed_at` from `git log` against the raw clone, not the
+GitHub API — commit dates are entirely client-set (clock skew or a crafted
+`--date`) regardless of which pipeline reads them, so nothing about this
+redesign's ingestion path is structurally safer than the one that already
+needed this guard once. And Postgres's `day DATE` column has no bound
+constraint, so a malformed value wouldn't fail the INSERT — it would sit
+there silently corrupting any MIN/MAX-day-based read (`users.first_seen`/
+`last_seen`, any 30-day-window ranking), the same silent-corruption shape
+as the 2170 incident, just in Postgres instead of the old Python
+aggregator. **Fix: clone-worker's step 4 rollup computation must exclude
+commits with `committed_at` outside `[2005-01-01, today+1]`** from the
+`(user, repo, tool, day, count)` rollup — mirroring compactor's exact old
+bound — before any `day` value reaches Postgres. The raw per-repo Parquet
+artifact (step 5b) still retains the unclamped value verbatim, matching the
+old design's preserve-raw/exclude-from-aggregate split, since that artifact
+is read back for redetection, not for ranking.
 
 **aggregator** (simplified): every 15 minutes, queries Postgres directly —
 SQL rollup + a read-time identity-alias join, mirroring
@@ -452,24 +493,31 @@ scale (commits-to-rollup-row ratio held constant from the claude-leaderboard
 baseline, ~10.9 commits/row):
 
 - `repo_user_daily` (tool-agnostic, ~7.03M rows extrapolated): ~75-85
-  bytes/row for the table (~560-600MB) + a comparable-magnitude
-  `(author_key, day)` index (~250-280MB) → **~810-880MB**, the dominant
-  cost by far. (**Corrected 2026-08-04**: 560-600MB + 250-280MB sums to
-  810-880MB, not the previously-stated ~800MB-1.1GB — the upper bound
-  didn't follow from its own cited sub-ranges; same arithmetic-error
+  bytes/row for the table (~525-600MB) + a comparable-magnitude
+  `(author_key, day)` index (~250-280MB) → **~775-880MB**, the dominant
+  cost by far. (**Corrected 2026-08-04, second pass (gap-review round
+  4)**: 7.03M rows × 75-85 bytes/row is ~525-600MB, not the
+  previously-stated ~560-600MB — the round-3 correction (kept below for
+  the record) fixed the summing step but missed that the table's own
+  sub-figure didn't follow from the stated bytes/row either. 525-600MB +
+  250-280MB correctly sums
+  to ~775-880MB, not the round-3 figure of ~810-880MB. Round-3 note,
+  still accurate as far as it went: 560-600MB + 250-280MB sums to
+  810-880MB, not the previously-stated ~800MB-1.1GB, whose upper bound
+  didn't follow from its own cited sub-ranges — same arithmetic-error
   pattern as the `users` correction just below.)
 - `repo_user_daily_tool` (sparse, AI-tagged only — ~21-25K rows from
   234,263 AI-tagged commits at the same ratio): negligible, well under
   10MB including both indexes.
 - `users` (one row per developer, 1,094,043 live count): ~90-100
-  bytes/row including its primary-key index → **~100-110MB**
+  bytes/row including its primary-key index → **~98-109MB**
   (**corrected 2026-08-04**: 1,094,043 rows × 90-100 bytes/row is
   ~98-109MB — the previously-stated ~150-170MB didn't follow from its own
   per-row estimate; this was an arithmetic error, not a re-estimate).
 
 **Total at current scale: roughly 0.9-1.0GB** (recomputed from the
-corrected `repo_user_daily` and `users` figures: ~810-880MB + <10MB +
-~100-110MB) — a materially different number from "several hundred MB,"
+corrected `repo_user_daily` and `users` figures: ~775-880MB + <10MB +
+~98-109MB) — a materially different number from "several hundred MB,"
 though the provisioning conclusion still doesn't change: the
 `mh.vs1.large-ord` node's 30GB of RAM absorbs even a 10x-scale rollup
 (~9-10GB) with room to spare. The number keeps getting corrected because
@@ -596,8 +644,11 @@ repos is exactly the race Postgres is being brought in to survive.
   yet verified live): `ARMOR_PREFIX` is currently unset on the live
   `devimprint`-namespace ARMOR instance (dedicated-bucket mode) — decide and
   wire explicit scoping for commitgraph's objects before writing. Confirm
-  which ARMOR instance is in scope (there are at least two org-wide —
-  `devimprint` namespace on ord-devimprint vs. `armor` namespace on iad-ci).
+  which ARMOR instance is in scope (**corrected 2026-08-04, gap-review round
+  4**: there are four org-wide, not "at least two" — `devimprint` namespace
+  on ord-devimprint, plus separate `armor`-namespace deployments on iad-ci,
+  iad-kalshi, and rs-manager; verified against every `armor-deployment.y*ml`
+  under `declarative-config/k8s/`).
   Object sizes for the Parquet artifact are small relative to ARMOR's
   historical multipart corruption bug's trigger conditions (typically KBs
   to low tens of MB even for large repos) — low risk. **The warm-start

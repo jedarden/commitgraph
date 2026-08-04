@@ -7,6 +7,23 @@ future runs can dedupe against what's already been considered.
 
 ## 2026-08-04 — run 1 (first run, no PRIOR)
 
+**Adoption outcome**, decided same day: 6 finalists folded directly into
+`docs/plan/plan.md` (backup/restore runbook, tool-agnostic cost visibility,
+SLO-driven ranking-refresh trigger, large-repo warm-start mitigation,
+CI idempotency harness, poison-pill detection isolation) — each marked
+inline where it resolves a gap the plan had already flagged in its own
+text. 3 finalists captured as standalone notes docs instead, deliberately
+kept out of the core plan (public top-100 + explainability expands scope
+into public-serving territory the plan otherwise excludes; the
+why-am-I-not-on-the-leaderboard diagnostic and GitLab/Bitbucket parity are
+both genuine additive scope, not fixes to the current redesign):
+`public-leaderboard-with-explainability.md`,
+`why-am-i-not-on-the-leaderboard.md`, `gitlab-bitbucket-discovery-parity.md`.
+The live-migration-progress-dashboard finalist was explicitly declined —
+no action taken. No `.beads/` workspace exists in this repo yet, so no beads
+were created this run; adoption tracking lives in `plan.md` and these notes
+docs instead.
+
 POOL 100, generated across 8 lenses, none skipped. Full pool + clusters + triage
 reasoning archived at
 `/home/coding/.tmp/claude-1000/-home-coding/bcbe9644-8d09-468e-9dd3-fd33794653cb/scratchpad/commitgraph-ideas-pool.md`

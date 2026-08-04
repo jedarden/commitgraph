@@ -1,7 +1,9 @@
-# commitgraph-v2
+# commitgraph
 
-A redesign of [`commitgraph`](https://git.ardenone.com/jedarden/commitgraph)
-(deprecated), the AI-coding-tool-attribution data platform: discovers
+A redesign of the AI-coding-tool-attribution data platform previously at
+this name, now at
+[`commitgraph-deprecated`](https://git.ardenone.com/jedarden/commitgraph-deprecated).
+It discovers
 repositories and developers across git hosting providers, clones repos,
 detects AI-coding-tool footprints (Claude Code, Cursor, Aider, Codex, Devin,
 and 10+ others) in commit history, and rolls the results up into

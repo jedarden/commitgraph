@@ -46,3 +46,29 @@ able to fix it themselves (they can't force their own email resolution to
 happen faster; that's still bounded by the shared GitHub API budget). Worth
 pairing with realistic expectation-setting in the tool's own output ("this
 typically resolves within N days") rather than just a bare status flag.
+
+## Required amendment, not optional
+
+This idea shipped from the same ideation run as the public top-100 page
+(`public-leaderboard-with-explainability.md`), which got an explicit
+"required amendment, not optional" note on anti-scraping/rate-limiting
+(G3) before it could ever be built. This idea got no equivalent treatment
+here, which is an oversight, not a signal that it's lower-risk — if
+anything the risk shape is worse: a per-email/username lookup is a direct
+oracle for "does this identity exist in our system, and what's its
+status," which is more individually-identifying than a bulk ranked list.
+Unauthenticated and unthrottled, this is free infrastructure for
+enumerating which specific emails or usernames are active AI-coding-tool
+users, one guess at a time.
+
+Two things are required, not optional, if this is ever built, mirroring
+what H1 already requires: **(1) rate-limiting** on the endpoint, same as
+the public page's mandatory anti-scraping design; and **(2)** either
+**authentication** (only the account owner — once some identity-claim
+flow exists — can query their own email) **or** a response shape that
+never confirms or denies whether a raw email exists in the system at all
+(e.g., only accepting an already-resolved GitHub login rather than
+arbitrary raw emails, or returning an identical generic response
+regardless of whether the input is unseen, unresolved, or
+resolved-but-unranked). Absent one of those two, this tool is an
+enumeration oracle over every email address the corpus has ever touched.

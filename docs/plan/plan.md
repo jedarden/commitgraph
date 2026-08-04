@@ -27,7 +27,7 @@ the rollup itself was never the expensive part.
 
 This plan applies that lesson to commitgraph without discarding the things
 commitgraph got right that claude-leaderboard never needed: multi-tool
-detection (12 signatures vs. claude-leaderboard's single hardcoded
+detection (15 tools vs. claude-leaderboard's single hardcoded
 `Co-Authored-By: Claude` trailer) and the ability to retroactively re-detect
 history when a new tool signature is added — which is a real, already-built
 capability (`catalog_version` / `last_filter_catalog_version` in queue-api's
@@ -72,7 +72,7 @@ independently of this redesign's timeline.
    negotiation, versus re-downloading full history every scan.
 2. Walks full history, extracts `(sha, author_name, author_email,
    committed_at, message)` per commit — the same shape clone-worker already
-   produces today (`containers/clone-worker/worker.py:338`).
+   produces today (`commitgraph-deprecated/containers/clone-worker/worker.py:338`).
 3. Runs `shared/detection.py` inline per commit (reused as-is — it already
    operates on a single commit's message/trailer text, no interface change
    needed). **Adopted (2026-08-04, plan-idea-gen run 1): poison-pill
@@ -99,8 +99,8 @@ file.
 bundle`.** This was tested both ways. `git bundle create` on a
 `--filter=blob:none` clone produced a bundle **~127x larger** than the
 source repo's own pack (105MB from an 833KB source, for a sub-1,000-commit
-repo), took 22+ CPU-seconds to create, and left a bloated pack behind in
-the source repo as an undesirable side effect — confirmed specific to
+repo), took 22.6 seconds (~60 CPU-seconds, multi-threaded) to create, and
+left a bloated pack behind in the source repo as an undesirable side effect — confirmed specific to
 partial/blob-filtered clones via a control test (an ordinary unfiltered
 clone bundled smaller than its source, instantly). Rejected as a transport
 for exactly the reason this optimization exists: under the
@@ -135,14 +135,18 @@ target, triggered rarely instead of running as an always-on service.
 **filter-worker and compactor are retired as standalone deployments**; their
 logic lives inside clone-worker's two job kinds.
 
-**aggregator** (simplified): periodically queries Postgres directly — SQL
-rollup + a read-time identity-alias join, mirroring
+**aggregator** (simplified): every 15 minutes, queries Postgres directly —
+SQL rollup + a read-time identity-alias join, mirroring
 `generate_leaderboard_v3.py`'s `_apply_aliases` pattern — and publishes the
 **full ranked list** (every user with rollup activity, expected to be
 hundreds of thousands of rows, not a top-N cut) as a single Parquet snapshot
 to ARMOR. No direct B2 SDK calls anywhere in the new pipeline, corpus or
 snapshot. This removes the DuckDB decrypt/materialize-large-partition step
-that caused all five prior OOM incidents.
+that caused all five prior OOM incidents. **The "effectively immediate"
+freshness claim in Context above applies to the rollup write only** (same
+pass as extraction) — the published snapshot itself is only as fresh as
+this 15-minute publish cycle, so end-to-end freshness for anything reading
+the snapshot is bounded by that interval, not by the rollup's immediacy.
 
 **This snapshot is an internal pipeline artifact, not a public-facing
 one.** A separate, not-yet-built downstream pipeline consumes it to
@@ -169,7 +173,7 @@ add an ETL hop directly in the path of the thing this redesign exists to fix
 (freshness), for no benefit — the usual reason to separate write-store from
 analytical-query-store (OLTP/OLAP isolation) doesn't apply here, since public
 traffic never touches Postgres at all; only the aggregator's own periodic job
-reads it, on an interval, which is a light, bounded load.
+reads it, every 15 minutes, which is a light, bounded load.
 
 **queue-api**: kept as-is (39K LOC, well-tested) for `search_queue` /
 `repo_queue` / `user_queue` claim-lease-complete semantics and
@@ -323,9 +327,13 @@ baseline, ~10.9 commits/row):
   234,263 AI-tagged commits at the same ratio): negligible, well under
   10MB including both indexes.
 - `users` (one row per developer, 1,094,043 live count): ~90-100
-  bytes/row including its primary-key index → **~150-170MB**.
+  bytes/row including its primary-key index → **~100-110MB**
+  (**corrected 2026-08-04**: 1,094,043 rows × 90-100 bytes/row is
+  ~98-109MB — the previously-stated ~150-170MB didn't follow from its own
+  per-row estimate; this was an arithmetic error, not a re-estimate).
 
-**Total at current scale: roughly 1.0-1.2GB** — a materially different
+**Total at current scale: roughly 0.9-1.2GB** (recomputed from the
+corrected `users` figure: ~800MB-1.1GB + <10MB + ~100-110MB) — a materially different
 number from "several hundred MB," though the provisioning conclusion still
 doesn't change: the `mh.vs1.large-ord` node's 30GB of RAM absorbs even a
 10x-scale rollup (~10-12GB) with room to spare. The number keeps getting
@@ -503,9 +511,13 @@ clone-worker). The migration:
 
 ## Phased rollout
 
-1. **Phase 0 — capacity & provisioning.** Confirm real available node
-   classes/pricing for a large node in the ORD region (only
-   `gp.vs1.medium-ord`-class pricing is currently known). Provision the
+1. **Phase 0 — capacity & provisioning.** Node class and pricing for the
+   ORD region are already confirmed (see "Node-class naming, corrected"
+   above): `ch.vs1.medium-ord` (current) and `mh.vs1.large-ord` (proposed,
+   4 CPU/30GB) both price at p50 $0.006/hr. What's still genuinely open:
+   pick a fallback node class before provisioning — none is specified yet
+   if `mh.vs1.large-ord` doesn't fulfill on the bid market, and that needs
+   to be decided ahead of time rather than discovered live. Provision the
    dedicated Postgres node manually (Spot UI or `rackspace-spot-terraform`).
    Install CNPG operator on ord-devimprint. Stand up the Postgres cluster
    with the schema above.
@@ -527,7 +539,10 @@ clone-worker). The migration:
    pipeline).** Run the migration described above against the full existing
    corpus. Old pipeline keeps running untouched throughout.
 5. **Phase 4 — shadow / dual-write burn-in.** Repoint discovery workers
-   (search-worker, user-worker) at the new queue-api using the
+   (search-worker, user-worker — the repo-discovery/expansion worker that
+   turns a claimed user into more `repo_queue` entries; a distinct
+   component from user-enrichment-worker named in Context above, which
+   does email→login identity resolution) at the new queue-api using the
    already-proven `QUEUE_API_URL`-swap pattern from this project's own
    history. Run both pipelines in parallel for a defined burn-in window —
    long enough to see at least one catalog-version bump and one full
@@ -646,23 +661,35 @@ clone-worker). The migration:
   seed by overwriting `claimed` or already-`resolved`/`unresolvable` rows —
   the frozen cache is 5-8+ weeks stale by the time it would run, so a stale
   seed value must never be allowed to beat a live worker's fresher result.
+  **Caller/trust boundary, stated explicitly:** this endpoint is invoked by
+  a one-off internal migration script with direct network access to
+  queue-api, not a standing service — it is never exposed on any
+  authenticated-user-facing or public surface, and the downstream
+  devimprint presentation layer has no reason to ever call it.
   This can run against the **currently live** deprecated pipeline
   immediately, doesn't need to wait for any phase of this redesign, and the
   new pipeline should do the same seed during its own bootstrap. Not built
   yet — deferred until
   Phase 1 implementation starts.
 - **The detection footprint gap is real but deliberately not fixed here.**
-  `shared/detection.py`'s catalog covers 15 tools; `search-worker`'s active
-  discovery footprints (`GITHUB_FOOTPRINTS`) cover 12 — windsurf, codeium,
-  replit, tabnine, codestral, sweep, and netlify-coding have detection
-  patterns but no dedicated discovery query. Every commit in any cloned repo
-  is still checked against the full 15-tool catalog regardless (detection
+  `shared/detection.py`'s catalog covers 21 tools (`ALL_TOOLS`, counted
+  directly from the module — its own docstring's "15+" undercounts it);
+  `search-worker`'s `GITHUB_FOOTPRINTS` list has 12 query entries but only
+  10 distinct tool names (claude-code and cursor each get two entries — one
+  per signal channel). **Counts corrected 2026-08-04**: an earlier pass
+  through this document said "15 tools" vs. "cover 12" and then named only
+  7 tools as the gap, which never added up (15−12≠7) and undercounted the
+  real gap besides. Recounted directly against both files, the real gap is
+  11 tools with detection patterns but no dedicated discovery query:
+  blackbox, cody, codeium, codeium-bot, codestral, netlify-coding, replit,
+  replit-bot, sweep, tabnine, and windsurf. Every commit in any cloned repo
+  is still checked against the full 21-tool catalog regardless (detection
   runs one call per commit, all patterns at once — see
   `docs/notes/detection-inlined-not-lost.md`), so these tools are detected
   whenever a repo surfaces via some *other* footprint; they just can't be
   the sole reason a repo gets discovered. Closing this gap is a pure
   discovery-breadth-vs.-already-maxed-API-budget tradeoff — adding entries
-  to `GITHUB_FOOTPRINTS` trades search calls away from the existing 12
+  to `GITHUB_FOOTPRINTS` trades search calls away from the existing 10
   tools' freshness/history depth toward broader coverage. This tradeoff
   predates this redesign, isn't caused or worsened by it, and is an
   independent decision for whoever owns the discovery footprint list — not
@@ -687,9 +714,11 @@ clone-worker). The migration:
   repo through clone-worker's rollup write twice, assert `users.total_commits`
   is unchanged the second time) to CI, so this stays enforced on an ongoing
   basis rather than verified once and assumed to hold forever.
-- Phase 4's continuous `leaderboard.json` diff is the primary correctness
-  gate for cutover — not "pods are Running" (the same false-positive
-  pattern that cost real time earlier in this project's history).
+- Phase 4's continuous comparison of the new pipeline's Postgres-computed
+  ranking against the old pipeline's public `leaderboard.json` is the
+  primary correctness gate for cutover — not "pods are Running" (the same
+  false-positive pattern that cost real time earlier in this project's
+  history).
 - Phase 2's concurrent-write load test is the primary validation that
   Postgres actually solves the problem this redesign exists to fix — if it
   doesn't hold up under concurrent clone-worker replicas, the core premise
@@ -697,18 +726,31 @@ clone-worker). The migration:
 
 ## Critical files referenced
 
-- `/home/coding/commitgraph/shared/detection.py` — reused as-is by the new
-  clone-worker
-- `/home/coding/commitgraph/containers/clone-worker/worker.py` — current
-  extraction logic and Parquet schema to build on
-- `/home/coding/commitgraph/containers/queue-api/schema.sql` — current
-  `catalog_version` / `dirty_partitions` mechanism
-- `/home/coding/commitgraph/docs/adr/009-encrypted-public-b2-storage.md` —
-  ADR-009, being partially reversed for the reasons stated above
+**Note (2026-08-04): this repo (`commitgraph`) is design/planning-only —
+no application code exists here yet.** The four paths below now under
+`commitgraph-deprecated` point at the predecessor pipeline's actual code
+(`jedarden/commitgraph` renamed `jedarden/commitgraph-deprecated` on
+2026-08-04, when this repo took over the canonical `commitgraph` name —
+see `docs/notes/repo-rename-2026-08-04.md`); "reused as-is" means reused
+from there, not from this repo, until Phase 1 copies/ports it in.
+
+- `/home/coding/commitgraph-deprecated/shared/detection.py` — reused as-is
+  by the new clone-worker
+- `/home/coding/commitgraph-deprecated/containers/clone-worker/worker.py` —
+  current extraction logic and Parquet schema to build on
+- `/home/coding/commitgraph-deprecated/containers/queue-api/schema.sql` —
+  current `catalog_version` / `dirty_partitions` mechanism
+- `/home/coding/commitgraph-deprecated/docs/adr/009-encrypted-public-b2-storage.md`
+  — ADR-009, being partially reversed for the reasons stated above
 - `/home/coding/vibecodeleaderboard-backend/src/extractor_v4.py` — the
   reference idempotent DELETE+INSERT rollup pattern
 - `/home/coding/declarative-config/k8s/iad-ci/queue-db/cnpg-cluster.yaml` —
-  closest existing CNPG manifest precedent (schema/resources shape, not
-  cluster placement)
+  closest existing CNPG manifest precedent for schema/resources shape and
+  the `instances: 1`/no-HA replica topology (see the Postgres section
+  above). **Not** precedent for *which Kubernetes cluster* to place this
+  new instance on — `queue-db` runs on `iad-ci`, while this instance is
+  deliberately placed on a dedicated `ord-devimprint` node instead;
+  "cluster placement" here means which physical cluster/node, a separate
+  question from the replica/HA topology this file is precedent for
 - `/home/coding/declarative-config/k8s/ord-devimprint/commitgraph/` — old
   manifests to decommission in Phase 6

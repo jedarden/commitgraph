@@ -58,13 +58,18 @@ detection against an already-extracted commit is a pure-Python regex pass,
 not an I/O-bound operation.
 
 One open gap, not yet resolved: the live discovery footprint list
-(`search-worker`'s `GITHUB_FOOTPRINTS`, 12 entries) is narrower than the
-full detection catalog (15 tools) — a handful of tools (windsurf, codeium,
-replit, tabnine, codestral, sweep, netlify-coding) have detection patterns
-but no active GitHub-search discovery query. A repo only enters the
-pipeline if *some* footprint matches during discovery, so a tool with zero
-discovery footprints could in principle only ever be detected in repos that
-happened to be discovered for an unrelated reason. Worth deciding whether
-this is intentional (discovery breadth vs. API budget tradeoff) or a gap to
-close before relying on the catalog's full breadth for content/reporting
-purposes.
+(`search-worker`'s `GITHUB_FOOTPRINTS`) covers 10 distinct tool names (12
+query entries — claude-code and cursor each get two, one per signal
+channel) and is narrower than the full detection catalog (`ALL_TOOLS`, 21
+tools). **Counts corrected 2026-08-04**: an earlier pass here said "15
+tools" vs. "12" and named only 7 tools as the gap, which didn't add up
+(15−12≠7) and undercounted the real gap besides. Recounted directly
+against both files, the real gap is 11 tools with detection patterns but
+no active GitHub-search discovery query: blackbox, cody, codeium,
+codeium-bot, codestral, netlify-coding, replit, replit-bot, sweep,
+tabnine, and windsurf. A repo only enters the pipeline if *some* footprint
+matches during discovery, so a tool with zero discovery footprints could
+in principle only ever be detected in repos that happened to be discovered
+for an unrelated reason. Worth deciding whether this is intentional
+(discovery breadth vs. API budget tradeoff) or a gap to close before
+relying on the catalog's full breadth for content/reporting purposes.

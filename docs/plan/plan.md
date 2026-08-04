@@ -56,10 +56,20 @@ independently of this redesign's timeline.
 ## Architecture
 
 **clone-worker** (rewritten, absorbs filter-worker's logic):
-1. Clones a repo — commit-history only, blob-filtered
-   (`git clone --bare --filter=blob:none`, matching the original
-   claude-leaderboard discovery pipeline), so file contents are never
-   fetched, only commit/tree/trailer metadata.
+1. **Warm-starts from a stored snapshot before falling back to a full
+   clone.** Checks ARMOR for a previously-stored **warm-start artifact**
+   (see below) for this repo. If present: materializes it into a fresh
+   working directory and runs `git fetch origin` — retrieving only commits
+   added since the last scan, not the full history. If absent (first-ever
+   scan) or the warm-start fails for any reason: falls back to a full
+   `git clone --bare --filter=blob:none <url>` — always a safe fallback,
+   never a hard failure. Commit-history only either way, blob-filtered, so
+   file contents are never fetched, only commit/tree/trailer metadata.
+   **Empirically validated, 2026-08-04** — see
+   `docs/research/incremental-fetch-warm-start.md`: tested end-to-end
+   against a real repo and the real GitHub remote; a correctly-materialized
+   warm start fetched the delta in under a second with a ~300-byte
+   negotiation, versus re-downloading full history every scan.
 2. Walks full history, extracts `(sha, author_name, author_email,
    committed_at, message)` per commit — the same shape clone-worker already
    produces today (`containers/clone-worker/worker.py:338`).
@@ -70,12 +80,42 @@ independently of this redesign's timeline.
 5. In one pass: **(a)** upserts the rollup into Postgres, **(b)** writes the
    full per-repo commit-history artifact (the extracted rows from step 2,
    as Parquet — not a raw git bundle, so no git tooling is needed to re-scan
-   it later) to ARMOR at a per-repo key, **overwritten wholesale** on every
-   rescan. Both writes happen in the same job; if either fails the job
-   fails and gets re-claimed (no partial-state).
+   it later) to ARMOR at a per-repo key, **(c)** writes the updated
+   warm-start artifact (see below) to ARMOR at a separate per-repo key —
+   **overwritten wholesale** on every rescan, same idempotency pattern as
+   (b). All writes happen in the same job; if any fails the job fails and
+   gets re-claimed (no partial-state).
 
 This mirrors claude-leaderboard's core idempotency trick — full re-derive +
-whole-slice replace — applied to two destinations instead of one SQLite file.
+whole-slice replace — applied to three destinations instead of one SQLite
+file.
+
+**The warm-start artifact is a raw pack-file transport, not a `git
+bundle`.** This was tested both ways. `git bundle create` on a
+`--filter=blob:none` clone produced a bundle **~127x larger** than the
+source repo's own pack (105MB from an 833KB source, for a sub-1,000-commit
+repo), took 22+ CPU-seconds to create, and left a bloated pack behind in
+the source repo as an undesirable side effect — confirmed specific to
+partial/blob-filtered clones via a control test (an ordinary unfiltered
+clone bundled smaller than its source, instantly). Rejected as a transport
+for exactly the reason this optimization exists: under the
+whole-object-overwrite pattern, that cost would be paid on every single
+clone-worker job. The validated alternative: package the raw pack files
+(`objects/pack/*.pack`, `.idx`, `.promisor`, `.rev`) directly, plus the
+specific ref (the **loose** ref file, not `packed-refs` — the latter is a
+stale clone-time snapshot that doesn't reflect a later ref update), plus
+three git config values that turned out to be required —
+`core.repositoryformatversion`, `remote.origin.promisor`,
+`remote.origin.partialclonefilter` — without which the pack is present but
+git refuses to use it (`fatal: pack has 49 unresolved deltas`, verified as
+the actual cause by adding just those three values and re-testing with no
+other change). Tarring all of it together stayed at 796KB — matching the
+source almost exactly, no bloat. Full methodology, exact numbers, and every
+failure mode encountered are in
+`docs/research/incremental-fetch-warm-start.md` — not yet verified at real
+corpus scale (NEEDLE, the test repo, is a few hundred commits; the corpus
+includes far larger repos) or under the fleet's actual multi-replica
+claim/lease conditions.
 
 **Retroactive re-detection (the capability that must not be lost):**
 queue-api keeps `catalog_version`. When a new tool signature is added to
@@ -313,6 +353,19 @@ repos is exactly the race Postgres is being brought in to survive.
   from. Worth an explicit decision — accept the coupling, or give this
   redesign its own ARMOR deployment scoped to `commitgraph` — rather than
   leaving it as an unstated assumption.
+- **Warm-start artifact** (raw pack files + loose ref + three promisor
+  config values, tarred — see Architecture above and
+  `docs/research/incremental-fetch-warm-start.md` for the full
+  methodology): ARMOR, per-repo key **distinct from** the Parquet
+  commit-history artifact above — these are two different artifacts with
+  two different purposes (Parquet: redetection, no git tooling needed;
+  this: warm-starting the *next* clone so it fetches only new commits
+  instead of re-downloading full history). Same cold/whole-object-overwrite
+  reasoning as the Parquet artifact applies equally here. Validated
+  end-to-end against a real repo at real repo size (a few hundred commits);
+  **not yet validated at the corpus's actual large-repo scale** or under
+  concurrent multi-replica access — treat as a real, working mechanism with
+  a real, unclosed scale question, not as fully proven.
 - **Leaderboard snapshot** (`aggregates/leaderboard.parquet`, full ranked
   list, hundreds of thousands of rows): also via ARMOR, not direct B2 — no
   component in the new pipeline talks to B2 directly. No `leaderboard.json`
@@ -324,10 +377,14 @@ repos is exactly the race Postgres is being brought in to survive.
   wire explicit scoping for commitgraph's objects before writing. Confirm
   which ARMOR instance is in scope (there are at least two org-wide —
   `devimprint` namespace on ord-devimprint vs. `armor` namespace on iad-ci).
-  Object sizes here are small relative to ARMOR's historical multipart
-  corruption bug's trigger conditions (per-repo Parquet, typically KBs to
-  low tens of MB even for large repos) — low risk, but worth a smoke test
-  with a handful of real large repos before trusting it at scale.
+  Object sizes for the Parquet artifact are small relative to ARMOR's
+  historical multipart corruption bug's trigger conditions (typically KBs
+  to low tens of MB even for large repos) — low risk. **The warm-start
+  artifact's size at scale is a real, separate open question** — unlike
+  the compact Parquet extraction, it contains actual git pack data, and
+  the one real repo tested was a few hundred commits; a smoke test against
+  the corpus's genuinely large repos is needed before assuming this stays
+  cheap, not just for the Parquet artifact.
 
 ## Corpus migration (inherit, don't rediscover)
 

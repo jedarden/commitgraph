@@ -1,5 +1,11 @@
 # commitgraph v2 — redesign plan
 
+> **Read "Status — the old pipeline is gone" first.** The predecessor was
+> torn down on 2026-08-05. This Context section is written in the present
+> tense of 2026-08-04, when the pipeline was still running; it is retained
+> because the diagnosis it records is the entire reason for this redesign,
+> but "the live pipeline" below now means "the pipeline as it last ran."
+
 ## Context
 
 commitgraph (the live AI-coding-attribution pipeline on `ord-devimprint`, 76.6M
@@ -14,6 +20,27 @@ user-facing symptom: a user with 5,000+ real AI commits in the last 30 days
 sees only ~124 on the public board — a ~40x gap, only partially explained by
 identity fragmentation (raw email vs. resolved GitHub login) and partly by
 the pipeline's freshness lag (up to 24h between clone and rollup).
+
+**No acceptance target is set for that 40x gap, and that is deliberate
+(operator, 2026-08-05: "to be determined").** It is worth being explicit
+about why the target is hard to set rather than leaving the silence to be
+read as an oversight: this redesign closes the freshness half of the gap
+(24h → a 15-minute publish cycle) and improves the identity half only
+insofar as inheriting `email_resolution` and merging aliases before ranking
+resolves fragmentation that already had answers. It adds **no new resolution
+throughput** — that remains capped by the same shared ~30 req/min GitHub
+budget as discovery (see "Explicitly out of scope"). So the post-cutover
+number depends on which half dominates for any given user, which nothing has
+yet measured. The golden-snapshot comparison in "Verification" is the first
+opportunity to measure it: its own rank 1 is an unresolved raw email, which
+suggests fragmentation is not a minor term.
+
+What the operator does want post-cutover, and what this plan now delivers:
+**per-user visibility into how recently their repos were scanned** — see
+"`insert_time` — scan recency, not commit recency". A user seeing a number
+they think is too low should be able to tell whether the pipeline has looked
+at their work recently, which is a different and more answerable question
+than "is this number right."
 
 Investigating why led to comparing commitgraph against its predecessor,
 claude-leaderboard (`vibecodeleaderboard-backend`), whose architecture is
@@ -87,11 +114,51 @@ concrete, not-yet-built follow-up (seeding `email_resolution` from
 claude-leaderboard's own frozen resolution cache) that would help
 independently of this redesign's timeline.
 
+## Status — the old pipeline is gone
+
+**2026-08-05: the predecessor pipeline was torn down.** Per the operator's
+explicit instruction — *"The old system is gone and deprecated. This version
+has to work. There is no turning back."* — every processing workload in the
+`commitgraph` namespace on ord-devimprint was disabled in declarative-config
+and pruned by ArgoCD: aggregator, compactor, filter-worker, all three
+clone-worker variants, search-worker, user-worker, user-enrichment-worker,
+admin-ui, oauth2-proxy, admin-alias-sync.
+
+**Deliberately kept alive: `queue-api`, its Service, and its PVC.**
+`queue-api-data` holds `email_resolution` — 365K+ resolved email→login pairs
+representing months of spent GitHub API budget against a shared ~30 req/min
+ceiling — which this pipeline inherits rather than re-earns (see "Identity
+lives in Postgres" below). The `sata` StorageClass has
+`reclaimPolicy: Delete`, so pruning that PVC destroys the Cinder volume and
+every row in it. Extraction is blocked on a refreshed
+`ord-devimprint-admin.kubeconfig` (currently 401). Full completion checklist
+in `declarative-config/k8s/ord-devimprint/commitgraph/TEARDOWN.md`.
+
+Hand-curated aliases needed no extraction — they live in
+`admin-alias-configmap.yml` in git, not only in the database.
+
+**Consequences that ripple through this plan:**
+
+1. **There is no rollback target.** "Roll back" now means *forward recovery*
+   — restore Postgres from backup and replay — not "switch back to the old
+   pipeline." This raises the bar on the backup/restore rehearsal rather
+   than lowering it; see "Durability" below.
+2. **The old pipeline can no longer serve as a live correctness baseline.**
+   Its aggregator had already been failing readiness for ~5 days at teardown
+   (`Available: False / MinimumReplicasUnavailable`), so its output was
+   stale before it stopped. Phase 4's original gate — continuously diff
+   against the old pipeline's `leaderboard.json` — is void. Replaced with
+   two gates that don't need a running predecessor; see "Verification".
+3. **A golden snapshot was frozen before teardown.** The last published
+   `leaderboard.json` (generated 2026-08-03T22:05:42Z, 100 rows, sha256
+   `cf2ef378…77cc8`) is archived at
+   `~/backups/commitgraph-cutover/` on ex44 as the comparison baseline.
+   `commitgraph.jedarden.com` still serves that frozen file.
+
 ## Open decisions
 
-Pointers only, added 2026-08-04 (gap-review round 3) for skimmability —
-each item is discussed in full where it's flagged inline elsewhere in this
-document.
+Pointers only — each item is discussed in full where it's flagged inline
+elsewhere in this document.
 
 - **Spot fallback node class** if `mh.vs1.large-ord` doesn't fulfill on the
   bid market (Postgres provisioning section; Phase 0).
@@ -99,18 +166,28 @@ document.
   `ch.vs1.medium-ord` nodepool's $0.001/hr) rather than the $0.006/hr p50 is
   the reasonable default, but hasn't been explicitly decided (Postgres
   provisioning section; Phase 0).
+- **Postgres replica topology**: `instances: 1` (matching the `queue-db`
+  precedent) versus `instances: 3` with synchronous replication. With no
+  fallback system, a preemption on a single Spot node is a hard outage of
+  the only write target (Durability section; Phase 0).
+- **Identity ingest breadth**: does Postgres carry *every* resolved
+  email→login pair (~365K-1.09M rows), or only those appearing in the
+  AI-tagged rollup (a small fraction)? This is now the dominant term in
+  Postgres sizing — larger than the rollup itself (Sizing section).
+- **Write-path admission control**: lease-concurrency only, PgBouncer, or a
+  purpose-built rate-limiting write API in front of Postgres (Write-path
+  admission control section).
 - **ARMOR cross-namespace coupling**: accept `commitgraph` depending on
   ARMOR in `devimprint`, or give this redesign its own scoped ARMOR
   deployment (Storage placement section).
 - **ARMOR instance/prefix scoping**: `ARMOR_PREFIX` is unset and four
-  org-wide ARMOR instances exist (**corrected 2026-08-04, gap-review round
-  4** — previously stated as "at least two"; verified via
-  `declarative-config/k8s/`: `devimprint` ns on ord-devimprint, `armor` ns
-  on iad-ci, `armor` ns on iad-kalshi, `armor` ns on rs-manager) — confirm
-  which is in scope before writing (Storage placement section).
-- **Public serving at Phase 5/6 cutover**: stays dark until the downstream
-  presentation layer ships, unless one of the three named alternatives is
-  adopted first (Phase 5 section).
+  org-wide ARMOR instances exist (verified via `declarative-config/k8s/`:
+  `devimprint` ns on ord-devimprint, `armor` ns on iad-ci, `armor` ns on
+  iad-kalshi, `armor` ns on rs-manager) — confirm which is in scope before
+  writing (Storage placement section).
+- **How long the frozen public `leaderboard.json` can stay frozen** before
+  the downstream presentation layer must ship or the file must be pulled
+  (Phase 5 section).
 
 ## Architecture
 
@@ -152,7 +229,10 @@ document.
 3. Runs `shared/detection.py` inline per commit (reused as-is — it already
    operates on a single commit's message/trailer text, no interface change
    needed).
-4. Computes `(user, repo, tool, day, count)` rollup rows for the whole repo.
+4. Computes `(user, repo, tool, day, count, insert_time)` rollup rows for the
+   whole repo — **AI-tool-tagged commits only** (decided 2026-08-05, see
+   "The rollup holds AI commits only" below). Total commit counts are not
+   rolled up; they stay with the raw git data persisted to ARMOR.
 5. In one pass: **(a)** upserts the rollup into Postgres, **(b)** writes the
    full per-repo commit-history artifact (the extracted rows from step 2,
    as Parquet — not a raw git bundle, so no git tooling is needed to re-scan
@@ -257,8 +337,12 @@ old design's preserve-raw/exclude-from-aggregate split, since that artifact
 is read back for redetection, not for ranking.
 
 **aggregator** (simplified): every 15 minutes, queries Postgres directly —
-SQL rollup + a read-time identity-alias join, mirroring
-`generate_leaderboard_v3.py`'s `_apply_aliases` pattern — and publishes the
+SQL rollup joined to `email_resolution` and `user_aliases` in the same
+database, so the alias merge is a real join evaluated before `RANK()` rather
+than a post-hoc pass (see "Identity lives in Postgres" above; this is the
+same *semantics* as `generate_leaderboard_v3.py`'s `_apply_aliases`, which
+achieved it with an in-memory dict merge only because its rollup and its
+alias table were in one SQLite file) — and publishes the
 **full ranked list** (every user with rollup activity, expected to be
 hundreds of thousands of rows, not a top-N cut) as a single Parquet snapshot
 to ARMOR. No direct B2 SDK calls anywhere in the new pipeline, corpus or
@@ -300,26 +384,97 @@ reads it, every 15 minutes, which is a light, bounded load.
 **queue-api**: kept as-is (39K LOC, well-tested) for `search_queue` /
 `repo_queue` / `user_queue` claim-lease-complete semantics and
 `catalog_version`. `dirty_partitions` goes away (nothing left to coordinate
-once compactor/filter-worker are gone). `email_resolution` / `user_aliases`
-stay in queue-api verbatim; aggregator reads them at query time rather than
-duplicating identity data into Postgres. This is a materially lighter write
+once compactor/filter-worker are gone). This is a materially lighter write
 workload than today — no more dirty-partition-bump storm from every
 clone-worker/filter-worker/aggregator cycle — so queue-api's existing SQLite
 should be adequate; re-measure contention after Phase 2 before considering
 any change here.
 
-**Clarified (2026-08-04, closing a gap flagged by adversarial review):
-"kept as-is" means the codebase, not one shared running instance.** Phase 1
-stands up a **new, second queue-api deployment** — the same unmodified
-39K-LOC codebase, not a fork — for the new clone-worker/aggregator to
-build and test against, entirely separate from the instance the live old
-pipeline depends on throughout Phases 1-3. Phase 4's "repoint discovery
-workers... at the new queue-api using the already-proven `QUEUE_API_URL`-swap
-pattern" (below) refers to this same new instance: search-worker/user-worker
-switch their `QUEUE_API_URL` from the old instance to this one, the same
-mechanism this project has used before to move traffic between two
-simultaneously-running queue-api instances, not to edit one shared
-instance's config in place.
+### Identity lives in Postgres, not queue-api
+
+**Decided 2026-08-05. This reverses an earlier draft of this plan**, which
+kept `email_resolution` / `user_aliases` in queue-api verbatim and had the
+aggregator "read them at query time." That was not implementable as written:
+the rollup would be in Postgres while the identity tables sat in queue-api's
+SQLite behind an HTTP API, and there is no such thing as a SQL join across
+that boundary.
+
+**The decisive argument is ordering, not convenience: you cannot rank first
+and merge identities afterward.** When one person's commits sit under two
+email keys, ranking before the merge produces two wrong rows, and merging
+afterward changes their totals — which changes their rank, and everyone
+else's. Rank must be computed *after* alias resolution, so the identity data
+has to live wherever ranking happens. That is Postgres.
+
+The alternative — merging downstream, in the aggregator, at assembly time —
+was rejected for a second reason: it means pulling the rollup into aggregator
+memory to merge in Python, which is the exact materialize-everything shape
+behind the five prior OOM incidents this redesign exists to end.
+
+**The split is by role, not by table:**
+
+- **queue-api keeps the resolution *work queue*** — `claimed_by`,
+  `lease_expires_at`, `attempted_at`, and the pending backlog the enrichment
+  worker drains. That is job coordination, which is queue-api's actual job
+  and what its claim/lease machinery is for.
+- **Postgres owns the resolution *results*** — `email_resolution`
+  (email → login) and `user_aliases` (login → canonical login), both
+  read-only from the pipeline's perspective and written only through the
+  ingest path below.
+
+### Identity ingest endpoint
+
+Resolved mappings reach Postgres through one bulk-upsert ingest path, with
+three writers: the live enrichment worker as it resolves, the one-time
+claude-leaderboard seed (349,425 frozen pairs, see "Explicitly out of scope"),
+and manual alias curation.
+
+Every row carries a **`source`** (`live` / `seed` / `manual`) and a
+**`resolved_at`**. Conflict resolution is then a single rule:
+
+```sql
+ON CONFLICT (email) DO UPDATE
+  SET login = excluded.login, source = excluded.source,
+      resolved_at = excluded.resolved_at
+  WHERE excluded.source = 'manual'
+     OR (email_resolution.source <> 'manual'
+         AND excluded.resolved_at > email_resolution.resolved_at)
+```
+
+This is strictly better than the pending-only rule an earlier draft
+specified. A seed that is 5-8+ weeks stale by the time it runs can never beat
+a live result; hand curation is never clobbered by either; the operation is
+naturally idempotent; and because `source` is retained, every row's
+provenance stays auditable — which the pending-only rule could not offer.
+
+**Caller/trust boundary:** the ingest path is reachable only from inside the
+cluster, called by the enrichment worker and by one-off migration scripts. It
+is never exposed on a public or authenticated-user-facing surface, and the
+downstream devimprint presentation layer has no reason to call it.
+
+**Hand-curated aliases already survive outside the database.**
+`declarative-config/k8s/ord-devimprint/commitgraph/admin-alias-configmap.yml`
+holds the operator-authored `source_login → target_login` map in git;
+`user_aliases` rows with `reason='name-match'` are auto-derived and
+reproducible. Only `email_resolution` is genuinely irreplaceable, which is
+why the teardown preserved its volume.
+
+**Superseded 2026-08-05 by teardown — the preserved instance is reused, not
+duplicated.** A 2026-08-04 clarification specified that Phase 1 would stand
+up a *new, second* queue-api deployment, so the new pipeline could build and
+test without disturbing the instance the live old pipeline depended on. That
+rationale no longer exists: the old workers are gone, so the surviving
+instance is idle and uncontended.
+
+Reusing it is strictly better than a fresh deployment, because it already
+holds state a new instance would have to be given anyway — `repo_queue` with
+the 98,747 discovered repos, `repo_head_cursors`, and `catalog_version`. The
+`QUEUE_API_URL`-swap pattern is correspondingly unnecessary: there is only
+one instance, and discovery workers point at it when Phase 5 re-enables them.
+
+"Kept as-is" therefore now means both the codebase *and* the running
+instance — with the one change described above, that identity **results**
+move out of it into Postgres while the resolution **work queue** stays.
 
 **Postgres**: new CNPG cluster on a **dedicated large Rackspace Spot node in
 ord-devimprint** (user's explicit choice — keeps clone-worker's rollup
@@ -449,129 +604,253 @@ ord-devimprint yet and needs installing fresh (it already runs on
 ardenone-cluster, apexalgo-iad, iad-ci, **and rs-manager** — this would be a
 5th install, not a reuse).
 
+### The rollup holds AI commits only
+
+**Decided 2026-08-05.** Earlier drafts specified two rollup tables — a
+tool-agnostic `repo_user_daily` alongside the sparse tool-tagged one. The
+tool-agnostic table is **dropped entirely**. Total commit counts stay with
+the raw git data persisted to ARMOR; only AI-tool-tagged activity is rolled
+up into Postgres.
+
+**Verified against the live artifact before adopting this**, since it would
+be an expensive thing to get wrong: the last published `leaderboard.json`
+(archived at `~/backups/commitgraph-cutover/`) exposes per-developer fields
+`rank, username, ai_commits_30d, ai_commits_total, ship_streak, tools[],
+providers[], top_repo, last_active, verified` — **no non-AI commit count on
+any row**. Nothing at the presentation layer consumes tool-agnostic
+per-repo-per-day activity.
+
+The one place the corpus-wide total does surface is the document's `totals`
+object (`commits: 76,614,890`, `developers: 1,094,043`, `repositories:
+98,747`). Those are three scalars, not a rollup — maintain them in a small
+`corpus_stats` table updated per repo scan, rather than keeping an 11.6M-row
+table alive to compute three numbers.
+
+This is by far the largest sizing lever available: the dropped table was
+~1.29-1.45GB of the previous ~1.4-1.6GB estimate.
+
 ### Postgres schema
 
-Two rollup tables, not one — claude-leaderboard's single-tool design
-doesn't fit; only ~0.3% of commits are AI-tagged (234K of 76.6M), so
-tool-tagged data is sparse relative to total activity. **Clarified
-(2026-08-04, closing a gap flagged by adversarial review): a third table,
-`users`, follows the two rollups below.** It isn't a rollup — it's a
-lifetime per-developer counter table, carried over in spirit from
-claude-leaderboard's own `users` table — so don't expect the header's "two"
-to match a count of `CREATE TABLE` statements in the block that follows:
+Surrogate integer keys throughout, resolved identity in the same database,
+and `insert_time` carried on the rollup:
 
 ```sql
-CREATE TABLE repo_user_daily (       -- tool-agnostic totals
-  repo_id    BIGINT NOT NULL,
-  author_key TEXT   NOT NULL,        -- resolved login, or raw email fallback
-  day        DATE   NOT NULL,
-  commits    INT    NOT NULL,
-  PRIMARY KEY (repo_id, author_key, day)
+CREATE TABLE repos (
+  repo_id        BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  provider       TEXT NOT NULL,
+  repo_full_name TEXT NOT NULL,       -- e.g. owner/name
+  excluded_at    TIMESTAMPTZ,         -- non-NULL = excluded from ranking
+  excluded_reason TEXT,
+  UNIQUE (provider, repo_full_name)
 );
-CREATE INDEX ON repo_user_daily (author_key, day);
-
-CREATE TABLE repo_user_daily_tool (  -- sparse: only AI-tool-tagged rows
-  repo_id    BIGINT NOT NULL,
-  author_key TEXT   NOT NULL,
-  tool       TEXT   NOT NULL,        -- plain TEXT, not enum — catalog grows
-  day        DATE   NOT NULL,
-  commits    INT    NOT NULL,
-  PRIMARY KEY (repo_id, author_key, tool, day)
-);
-CREATE INDEX ON repo_user_daily_tool (author_key, tool, day);
-CREATE INDEX ON repo_user_daily_tool (tool, day);
 
 CREATE TABLE users (
-  login             TEXT PRIMARY KEY,
-  total_commits     BIGINT NOT NULL DEFAULT 0,  -- delta-updated, never COUNT(*)
-  total_ai_commits  BIGINT NOT NULL DEFAULT 0,
-  first_seen        TIMESTAMPTZ,
-  last_seen         TIMESTAMPTZ
+  user_id    BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  login      TEXT NOT NULL UNIQUE,    -- canonical GitHub login
+  profile_url TEXT,
+  avatar_url  TEXT
+);
+
+-- Resolution RESULTS (the work queue stays in queue-api; see above)
+CREATE TABLE email_resolution (
+  email       TEXT PRIMARY KEY,
+  login       TEXT NOT NULL,
+  source      TEXT NOT NULL,          -- 'live' | 'seed' | 'manual'
+  resolved_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX ON email_resolution (login);
+
+CREATE TABLE user_aliases (
+  source_login TEXT PRIMARY KEY,
+  target_login TEXT NOT NULL,
+  reason       TEXT NOT NULL,         -- 'admin' | 'name-match'
+  created_at   TIMESTAMPTZ NOT NULL
+);
+
+-- The rollup: AI-tool-tagged commits only
+CREATE TABLE repo_user_daily_tool (
+  repo_id     BIGINT NOT NULL REFERENCES repos(repo_id),
+  user_id     BIGINT NOT NULL REFERENCES users(user_id),
+  tool        TEXT   NOT NULL,        -- plain TEXT, not enum — catalog grows
+  day         DATE   NOT NULL,
+  commits     INT    NOT NULL,
+  insert_time TIMESTAMPTZ NOT NULL,   -- when this repo was last scanned
+  PRIMARY KEY (repo_id, user_id, tool, day)
+);
+CREATE INDEX ON repo_user_daily_tool (user_id, tool, day);
+CREATE INDEX ON repo_user_daily_tool (tool, day);
+CREATE INDEX ON repo_user_daily_tool (user_id, insert_time);
+
+CREATE TABLE corpus_stats (           -- the three `totals` scalars
+  stat  TEXT PRIMARY KEY,             -- 'commits' | 'developers' | 'repositories'
+  value BIGINT NOT NULL
 );
 ```
 
-**Sizing, corrected three times now — this is the current best estimate.**
-An earlier pass through this document claimed the rollup "measures in the
-tens of MB," undercounting by not extrapolating from data this same
-document already cites — claude-leaderboard's own directly-comparable rollup
-measured 209MB for 3.48M rows from 37.9M commits (see Context above and the
-research doc). A first correction applied that ratio to commitgraph's 76.6M
-commits and landed on "several hundred MB." That correction was itself too
-low: it carried over SQLite's per-row cost without adjusting for Postgres,
-which has no equivalent to SQLite's `WITHOUT ROWID` clustered storage (the
-mechanism that made claude-leaderboard's 209MB figure so compact —
-~32 bytes/row for the table, ~31 for its index, per the exact `dbstat`
-breakdown measured earlier). Every Postgres row instead carries its own
-~24-byte tuple header plus alignment padding on top of the real column
-data. Worked through per table, at current 76.6M-commit / 1,094,043-developer
-scale (commits-to-rollup-row ratio held constant from the claude-leaderboard
-baseline — **corrected 2026-08-04, gap-review round 5, see below for why**):
+**`repo_id` is a surrogate, allocated here** (adopted 2026-08-05, closing the
+gap where earlier drafts used `repo_id BIGINT` without ever saying where it
+came from — queue-api's schema has no integer repo id at all; `repo_queue` is
+keyed on `(provider, repo_full_name)`). Three reasons a surrogate beats the
+natural key:
 
-- `repo_user_daily` (tool-agnostic, ~11.63M rows extrapolated — **see the
-  ratio correction below, this row count itself changed**): ~75-85
-  bytes/row for the table (~872-989MB) + a comparable-magnitude
-  `(author_key, day)` index (~414-463MB) → **~1,285-1,450MB**, the dominant
-  cost by far.
-  **Corrected 2026-08-04, third pass (gap-review round 5): the row count
-  itself was wrong, not just the arithmetic on it.** Every prior pass here
-  extrapolated using `hot.db`'s ~10.9-commits/row ratio (37.9M commits /
-  3.48M rows) — but `hot.db` is a separate, frozen, pruned working-set
-  file, and this same document's round-3 correction above already
-  established `leaderboard.db` (the live file holding the raw commit log
-  and the rollup side by side) as the authoritative, self-consistent source
-  for exactly this class of cross-file measurement, specifically rejecting
-  hot.db/leaderboard.db mixing as the root cause of an earlier arithmetic
-  error. The sizing extrapolation kept using hot.db's ratio anyway.
-  Re-measured directly against `leaderboard.db` (2026-08-04, `sqlite3`):
-  52,456,758 commits / 7,965,582 `repo_user_daily` rows = **~6.6
-  commits/row** — about 40% lower than the 10.9 figure, which pushes the
-  extrapolated row count for commitgraph's own 76.6M commits from ~7.03M up
-  to ~11.63M, roughly 65% higher, and the `repo_user_daily` estimate from
-  ~775-880MB up to ~1,285-1,450MB accordingly. The two arithmetic-only
-  corrections below are kept for the record — they correctly fixed the
-  summing step against the *old* 7.03M baseline, but that baseline is now
-  superseded: (**second pass (gap-review round 4)**: 7.03M rows × 75-85
-  bytes/row is ~525-600MB, not the previously-stated ~560-600MB — the
-  round-3 correction fixed the summing step but missed that the table's own
-  sub-figure didn't follow from the stated bytes/row either; 525-600MB +
-  250-280MB correctly summed to ~775-880MB, not the round-3 figure of
-  ~810-880MB. Round-3 note, still accurate as far as it went: 560-600MB +
-  250-280MB sums to 810-880MB, not the previously-stated ~800MB-1.1GB,
-  whose upper bound didn't follow from its own cited sub-ranges — same
-  arithmetic-error pattern as the `users` correction just below.)
-- `repo_user_daily_tool` (sparse, AI-tagged only — ~34-36K rows from
-  234,263 AI-tagged commits at the corrected ~6.6-commits/row ratio, up
-  from the previous ~21-25K estimate): still negligible, well under 10MB
-  including both indexes.
-- `users` (one row per developer, 1,094,043 live count — unaffected by the
-  ratio correction, since developer count isn't derived from the
-  commits/row ratio): ~90-100 bytes/row including its primary-key index →
-  **~98-109MB** (**corrected 2026-08-04**: 1,094,043 rows × 90-100
-  bytes/row is ~98-109MB — the previously-stated ~150-170MB didn't follow
-  from its own per-row estimate; this was an arithmetic error, not a
-  re-estimate).
+1. **Repos get renamed on GitHub.** A surrogate survives a rename by updating
+   one row in `repos`; a natural key fragments that repo's history across the
+   old and new names permanently.
+2. `repo_full_name` averages ~20-25 bytes and would otherwise sit in the
+   primary key of the rollup *and* in every index on it.
+3. The name-lookup table is needed anyway — for exclusion (see "Threat
+   model"), admin tooling, and debugging.
 
-**Total at current scale: roughly 1.4-1.6GB** (recomputed from the
-corrected `repo_user_daily` and `users` figures: ~1,285-1,450MB + <10MB +
-~98-109MB) — up from the previous ~0.9-1.0GB estimate, entirely because of
-the ratio-baseline correction above, not new growth in the corpus itself.
-The provisioning conclusion still doesn't change, now stated explicitly
-rather than left implied: the `mh.vs1.large-ord` node's 30GB of RAM
-comfortably absorbs even a 10x-scale rollup (~14-16GB) with room to spare —
-under 55% of available RAM at 10x scale, and under 6% at current scale. The
-number keeps getting corrected because each pass checked the previous one
-against real data rather than trusting it — worth remembering next time a
-"trivial" sizing claim shows up in this document.
+Allocation is one upsert-returning-id **per repo**, not per commit — a single
+round trip per job, negligible against the clone itself. The same reasoning
+applies to `user_id` versus a variable-length `author_key`.
+
+**On query speed with surrogate keys** (raised 2026-08-05): integer keys are
+*faster* to look up than text, not slower — an 8-byte fixed-width integer
+comparison beats variable-length string collation at every level of the
+B-tree, and the index is smaller so more of it stays cached. Lookup by name
+stays available through `repos.UNIQUE (provider, repo_full_name)` and
+`users.login UNIQUE`: name → id is one index probe, and the rollup query then
+runs entirely on integers.
+
+**A UUID or hash key would be worse, and is rejected.** A random UUID is 16
+bytes rather than 8, and — the real cost — random insertion points destroy
+B-tree locality, causing page splits and poor cache behaviour on exactly the
+large index this schema depends on. A deterministic hash of the repo name
+would additionally reintroduce collision handling and lose the rename
+survival that motivates the surrogate in the first place. UUIDv7 fixes the
+locality problem but still costs 16 bytes and buys nothing here, since ids
+are allocated by one database, not distributed generators.
+
+**`users` is an identity/profile table, not a counter** (decided 2026-08-05).
+Earlier drafts carried `total_commits` / `total_ai_commits` as delta-updated
+columns, which created a genuine correctness hazard: rollup rows are
+idempotent via DELETE+INSERT, but a delta-updated counter is not, so a rescan
+double-counts unless the delta is computed against the pre-DELETE value —
+a step no draft ever specified. Both counters are dropped. They are
+derivable with a `SUM` over the rollup, and if that ever gets slow the answer
+is a materialized view refreshed on the aggregator's 15-minute cycle, not a
+hand-maintained counter. Removing them also removes the need for
+`SELECT ... FOR UPDATE` row locking on the write path — the concurrency
+hazard was entirely a property of the counter.
+
+Per the operator: `users` exists primarily to map a resolved email to a
+GitHub login that links to a real profile, so people reading the leaderboard
+can find the developers behind it.
+
+### `insert_time` — scan recency, not commit recency
+
+**Adopted 2026-08-05.** `repo_user_daily_tool` carries `insert_time
+TIMESTAMPTZ`, set to the transaction timestamp of the write that produced the
+row. Because every rescan replaces a repo's whole slice (DELETE + bulk
+INSERT), `insert_time` is uniformly "when this repo was last scanned" across
+that repo's rows — it costs nothing to maintain and cannot drift.
+
+`MAX(insert_time)` grouped by user answers **"how long ago were this
+developer's repos last scanned"**, at full timestamp resolution rather than
+the day granularity `day DATE` would allow.
+
+This is deliberately *scan* recency, not *commit* recency — the two diverge
+exactly when someone is actively committing but their repos haven't been
+rescanned yet, which is the case users complain about. `last_active` (latest
+commit day) remains available from `MAX(day)`. Surfacing both is what lets
+the presentation layer distinguish "this developer stopped committing" from
+"we haven't looked recently."
+
+**Sizing, rebaselined 2026-08-05 after the AI-only rollup decision.** The
+previous figure — ~1.4-1.6GB, itself corrected three times — was dominated by
+the tool-agnostic `repo_user_daily` table that no longer exists. The history
+of those corrections is preserved in git; what follows is computed fresh
+against the new schema rather than adjusted from the old number.
+
+Measured inputs, all from the frozen 2026-08-03 snapshot: 76,614,890 commits,
+**234,263 AI-tagged**, 98,747 repositories, 1,094,043 developers. Rollup ratio
+~6.6 commits/row, measured self-consistently against `leaderboard.db`
+(52,456,758 commits / 7,965,582 rollup rows). Postgres rows carry a ~24-byte
+tuple header plus alignment padding on top of column data.
+
+- **`repo_user_daily_tool`** — 234,263 AI commits at ~6.6 commits/row ≈
+  **~35.5K rows**. Per row: 24B header + 8 (`repo_id`) + 8 (`user_id`) + ~12
+  (`tool`) + 4 (`day`) + 4 (`commits`) + 8 (`insert_time`) + padding ≈ 80
+  bytes → **~2.8MB**. Three indexes at ~30-40 bytes/row ≈ ~4MB.
+  **Under 10MB total.** The table this redesign is fundamentally *about* is
+  now the smallest thing in the database.
+- **`repos`** — 98,747 rows × ~90 bytes ≈ 9MB, plus the
+  `(provider, repo_full_name)` unique index ≈ 5MB → **~14MB**.
+- **`users`** — bounded by distinct AI-active logins, itself bounded by
+  234,263 AI commits, so at absolute worst ~234K rows × ~80 bytes plus
+  indexes → **≤ ~30MB**, and realistically far less.
+- **`email_resolution`** — **now the dominant term, and the one open
+  variable.** If every resolved pair is ingested (up to 1,094,043 rows):
+  ~100 bytes/row ≈ 109MB, plus the email primary-key index (~44MB) and the
+  login index (~20MB) → **~175MB**. If ingest is restricted to emails
+  appearing in the AI rollup, this collapses to single-digit MB.
+- `corpus_stats` — three rows. Negligible.
+
+**Total at current scale: roughly 60MB (narrow ingest) to 230MB (ingest
+every resolved pair)** — against ~1.4-1.6GB before. At 10x corpus growth,
+roughly 0.6-2.3GB.
+
+**Two honest consequences of that collapse:**
+
+1. **The PVC is now hugely oversized for the data, and that is fine.**
+   `sata`'s 5-20GB range was chosen when the rollup was projected at
+   14-16GB at 10x scale. It isn't any more. Since Cinder volumes on Spot
+   cannot be expanded or reclassed in place, overshooting is the correct
+   direction to be wrong in — but the plan should not pretend the sizing
+   drove the choice.
+2. **The `mh.vs1.large-ord` node class no longer rests on storage.** Its
+   justification is now working memory for ranking queries, connection
+   headroom for the clone-worker fleet, and the confirmed absence of room on
+   the existing `compute1-4` fleet (largest schedulable pod: 1.20 CPU /
+   1.64 GiB) — not the size of the rollup. The conclusion holds; the reason
+   changed, and saying so is cheaper than someone re-deriving it later and
+   finding the stated reason no longer computes.
+
+**Excluded from every figure above: bloat and WAL.** The write pattern is
+DELETE-then-bulk-INSERT of a repo's whole slice on every rescan, which is a
+dead-tuple generator by construction. Live-tuple sizing understates real disk
+use by whatever autovacuum fails to reclaim. See "Durability and load" for
+the autovacuum settings this pattern requires; budget a 2x multiplier over
+the figures above until measured.
+
+**`top_repo` is excluded from the snapshot** (decided 2026-08-05).
+
+The field's provenance was checked before dropping it, because earlier
+drafts of this plan attributed the snapshot's row shape to the
+claude-leaderboard comparison. **That attribution was wrong.**
+claude-leaderboard's generated leaderboard has no `top_repo` at all — the
+only occurrence anywhere in `vibecodeleaderboard-backend` is
+`src/inspect_discovered_users.py:284`, a debug script doing a pandas
+`value_counts().head(3)`. The field is commitgraph's own, computed in
+`commitgraph-deprecated/containers/aggregator/aggregator.py:968-977`:
+
+```sql
+ROW_NUMBER() OVER (PARTITION BY j.login ORDER BY SUM(j.ai_commits) DESC, j.repo) = 1
+```
+
+That is argmax over **all-time** AI commits with the repo name as a
+deterministic tiebreak — *not* a 30-day ordering, as was assumed in
+discussion. View `j` (`aggregator.py:932`) spans `2005-01-01 .. current_date
++ 1` unwindowed; the 30-day filter is applied separately for `ai_30d` in
+`agg_base`. (Incidentally that same `WHERE` clause is the defensive date
+clamp added after the 2170-commit incident, and its bounds match compactor's
+exactly — independent corroboration of the quarantine requirement above.)
+
+Excluding it is cheap to reverse: it is a pure function of the rollup plus
+`repos`, so reinstating it later is one window query and no new data
+capture. Dropping it also removes the last consumer that forced repo *names*
+into the published snapshot.
 
 **Leaderboard snapshot sizing (ARMOR, Parquet, the full ranked list):**
-per-row shape matches the live JSON schema (rank, username,
+per-row shape is the live JSON schema minus `top_repo` (rank, username,
 ai_commits_30d, ai_commits_total, ship_streak, tools[], providers[],
-top_repo, last_active, verified) — roughly 110-115 bytes/row uncompressed,
-compressing to an estimated 35-50 bytes/row in Parquet given heavy
-repetition in low-cardinality columns (`providers` is almost always just
-`["github"]`) and small-range integers. At "hundreds of thousands of
-rows" (per the earlier full-list-not-top-N decision): **roughly 10-40MB**
-— never a real storage concern, unlike the rollup.
+last_active, verified) plus `last_scanned_at` from `MAX(insert_time)` —
+roughly 110-115 bytes/row uncompressed, compressing to an estimated 35-50
+bytes/row in Parquet given heavy repetition in low-cardinality columns
+(`providers` is almost always just `["github"]`) and small-range integers.
+At "hundreds of thousands of rows" (per the earlier full-list-not-top-N
+decision): **roughly 10-40MB** — never a real storage concern.
 
 **No re-evaluation trigger is defined for "Postgres computes ranking
 directly" past current scale.** The "trivial at this row count" claim is
@@ -596,15 +875,144 @@ ranking table this section already names as the fallback, not before. This
 deliberately doesn't build that materialization now — the SLO decides
 whether it's ever needed at all, rather than assuming it will be.
 
-Write pattern per repo, one transaction: `DELETE ... WHERE repo_id=$1` on
-both rollup tables, then a single set-based bulk `INSERT` via
+Write pattern per repo, one transaction: upsert `repos` and any new `users`
+rows to obtain surrogate ids, `DELETE ... WHERE repo_id=$1` on
+`repo_user_daily_tool`, then a single set-based bulk `INSERT` via
 `UNNEST($1::bigint[], ...)` (not row-by-row — matters once multiple
-clone-worker replicas write concurrently), then update `users` by delta with
-explicit row locking (`SELECT ... FOR UPDATE` per touched login) —
-claude-leaderboard never needed this because it was single-writer;
-concurrent clone-worker replicas touching the same user across different
-repos is exactly the race Postgres is being brought in to survive.
+clone-worker replicas write concurrently), with `insert_time` set to the
+transaction timestamp. **No counter update and no row locking** — dropping
+`users.total_commits` (see schema above) removed the only part of this
+transaction that needed `SELECT ... FOR UPDATE`, and with it the only
+non-idempotent step. The whole transaction is now replace-only, so running
+it twice against an unchanged repo is a no-op by construction rather than by
+careful bookkeeping.
 
+Concurrent clone-worker replicas writing different repos never contend on
+the same rows at all; two replicas touching the same *user* now only race on
+an idempotent `users` upsert, not on a shared mutable counter. That is a
+materially smaller concurrency surface than earlier drafts of this plan
+assumed Postgres would have to survive.
+
+## Write-path admission control
+
+**Raised 2026-08-05:** should a rate-limiting API sit in front of Postgres,
+so clone-workers receive `429` with an explicit retry timestamp and the API
+absorbs the thundering herd?
+
+The instinct is right — a worker fleet needs *backpressure*, and a plain
+connection pool cannot express it. But the mechanism should be layered,
+cheapest first, because two of the three layers already exist.
+
+**Layer 1 — lease concurrency (free, already built).** queue-api's
+claim/lease semantics already bound how many repos are being processed at
+once. Outstanding leases *are* an admission-control knob: a fleet that can
+only hold N leases can only have N transactions in flight. This is the
+correct first line because it throttles work at the point it is *claimed*,
+before a worker has spent a clone on it — rather than at the point it tries
+to write, after all the expensive work is already done. Rejecting a write
+after the clone wastes the clone.
+
+**Layer 2 — PgBouncer in transaction-pooling mode.** The specific way a
+single Postgres instance dies under a worker fleet is connection exhaustion:
+N replicas × pool size each, all held open, degrades badly past a few
+hundred. A pooler multiplexes them onto a small backend set. Transaction
+pooling breaks session state, which is irrelevant here — every write is one
+self-contained transaction. This is the standard answer to the actual
+failure mode and should be provisioned in Phase 0, not deferred.
+
+**Layer 3 — a purpose-built write API, only if 1 and 2 prove insufficient.**
+What it uniquely provides that a pooler cannot: explicit `429` plus
+`Retry-After`, so workers back off on a schedule instead of queueing
+silently. PgBouncer under load *queues* — from the client's perspective a
+slow connection is indistinguishable from a healthy one, so nothing backs
+off and the herd persists. An API converts that into a signal.
+
+What it costs, and why it isn't the default: an extra hop directly in the
+hot write path, a new single point of failure in front of the only write
+target, and a new codebase to maintain — largely duplicating a bound that
+Layer 1 already enforces more cheaply and earlier.
+
+**Decision: build layers 1 and 2 in Phase 0; treat layer 3 as gated on
+Phase 2's load test.** If the load test shows the fleet can saturate
+Postgres while staying within its lease budget, that is the evidence that
+justifies building the API — and the load test will also have produced the
+concrete numbers (`Retry-After` values, per-replica ceilings) the API would
+need in order to be configured sensibly. Building it first means guessing
+those numbers.
+
+## Durability and load
+
+Ordered by what actually kills a single Postgres instance under this
+workload, not by conceptual tidiness.
+
+1. **Connection management** — see Layer 2 above. The most common failure
+   mode, and the cheapest to prevent.
+2. **Autovacuum tuned for whole-slice replacement.** The write pattern
+   generates dead tuples at exactly the rescan rate. Postgres's default
+   `autovacuum_vacuum_scale_factor` of 0.2 means vacuum fires only after 20%
+   of the table is dead, so bloat accumulates between runs. Set it per-table
+   to ~0.02 with a raised `autovacuum_vacuum_cost_limit`, and alert on
+   `pg_stat_user_tables.n_dead_tup`. This is why the sizing section budgets
+   a 2x multiplier over live-tuple figures.
+3. **No long-running transactions.** A single long transaction pins the xmin
+   horizon and defeats vacuum *globally* — not just for its own table. One
+   pathological repo holding a transaction open can therefore bloat every
+   table in the database. Chunk or cap the largest repos, and set
+   `statement_timeout` and `lock_timeout` on the worker role so a stuck job
+   fails fast instead of wedging the instance.
+4. **Replica topology is the real exposure.** `instances: 1` on a single
+   preemptible Spot node, as the sole write target, with **no fallback
+   system to fail back to** (see "Status" above). A preemption is a hard
+   outage of the entire pipeline, not a graceful degrade. CNPG supports
+   `instances: 3` with synchronous replication; given that there is no
+   turning back, that cost is worth weighing seriously rather than
+   inheriting `queue-db`'s single-instance precedent by default. Flagged in
+   "Open decisions".
+5. **Give the aggregator its own read target** once a replica exists, so the
+   15-minute ranking query stops competing with the write path.
+6. **State the clone-worker replica count.** This plan has never specified
+   one for the new pipeline — which is precisely why Phase 2's load test has
+   no pass/fail numbers. Pick it in Phase 0, load-test at that number plus
+   headroom, and record the result as the ceiling.
+
+**Backup/restore is now the only recovery path.** It was already a Phase 0
+deliverable (`barmanObjectStore` + daily `ScheduledBackup` to ARMOR, plus a
+rehearsed manual promote-from-backup with a stated RTO). With the old
+pipeline gone, it is promoted from deliverable to **blocking gate**: no real
+traffic until a restore has actually been rehearsed end-to-end and timed. It
+remains the expansion path as well, since Cinder volumes cannot grow in
+place.
+
+## Retention tiering — gated on measurement
+
+**Raised 2026-08-05:** a supplemental pass in clone-worker could collapse
+commits older than 400 days into a coarser tier, bounding growth of the
+daily table.
+
+The mechanism is sound and the placement is right — clone-worker already
+walks each repo's full history, so a second aggregation pass over the
+older-than-400-days slice costs one extra grouping over data already in
+memory, not a second read.
+
+**But the AI-only rollup decision above may have obviated it entirely.** The
+daily table is now projected at ~35.5K rows / under 10MB, not the ~11.6M
+rows / ~1.3GB that motivated tiering. Collapsing 400-day-old rows out of a
+10MB table saves nothing worth the code.
+
+**So: do not build this yet.** Revisit when a measured `pg_total_relation_size`
+on `repo_user_daily_tool` crosses a threshold worth acting on. If it is ever
+needed, the design is a `(repo_id, user_id, tool, month)` tier written by the
+same clone-worker transaction, with the daily rows for that window deleted in
+the same pass — keeping the whole-slice-replace idempotency property intact.
+The leaderboard needs a 30-day window and all-time totals; all-time can be
+served from the monthly tier without loss.
+
+Related and independent of table size: **declarative range partitioning by
+`day`** would let the 30-day query touch one or two partitions and let old
+partitions detach to ARMOR. Worth knowing up front that it does *not* help
+the write path — `DELETE ... WHERE repo_id=$1` spans every partition for that
+repo, so partition pruning cannot apply to it. It is a read-side and
+retention-side tool only.
 ## Storage placement
 
 - **Raw per-repo commit-history artifact** (Parquet, sha/author/email/day/
@@ -696,6 +1104,39 @@ repos is exactly the race Postgres is being brought in to survive.
   the corpus's genuinely large repos is needed before assuming this stays
   cheap, not just for the Parquet artifact.
 
+### ARMOR storage sizing — an oversight, not an inability
+
+**Named plainly 2026-08-05.** This plan corrected its Postgres sizing three
+separate times and never once estimated ARMOR's footprint — not because the
+number is unknowable, but because attention went to one side of the storage
+question and never came back. The asymmetry is the finding.
+
+The figures are measurable, and cheaply:
+
+1. **Warm-start artifacts.** The research doc already ran the exact
+   pack-file-plus-loose-ref-plus-config procedure end-to-end for n=1 (NEEDLE,
+   796KB, a few hundred commits). Extend it to a **stratified sample by commit
+   count** — p50, p90, p99, and the genuinely largest repos in the corpus —
+   and fit artifact size against commit count.
+2. **Total footprint** then follows from the real distribution: per-repo
+   commit counts are already known from the corpus, so it is a sum over
+   measured data rather than an extrapolation from an assumed mean.
+3. **Parquet artifacts** are easier still — that corpus already exists and is
+   already written. Measure the current partitions and re-express per-repo.
+4. **Write volume** = footprint × rescan cadence, and cadence is a parameter
+   this plan chooses rather than discovers.
+
+**Sample the tail, not the mean.** Per the operator's framing — *ensure the
+system can support the extremes* — a random sample would actively mislead
+here. A handful of very large repos can dominate total bytes, per-object
+transfer time, and worst-case memory during materialization, and those are
+precisely the repos the warm-start research has not touched. The sample must
+include the corpus's actual largest repos by commit count, and the design
+must hold at that extreme, not at the median.
+
+This measurement is a **Phase 0 deliverable**, gating the ARMOR parts of the
+design the same way the load test gates the Postgres parts.
+
 ## Corpus migration (inherit, don't rediscover)
 
 GitHub's shared ~30 req/min search budget makes rediscovery from zero take a
@@ -729,10 +1170,14 @@ clone-worker). The migration:
 5. Tracks progress in a `migration_progress(partition_key, completed_at)`
    table so a killed job resumes at the next partition instead of restarting
    a multi-hour job from zero.
-6. Is idempotent and must be tested as such: run twice, assert
-   `users.total_commits` is unchanged on the second run (the delta-update
-   pattern is not naturally idempotent the way the DELETE+INSERT rollup
-   rows are — verify explicitly before trusting it).
+6. Is idempotent and must be tested as such: run twice, assert the rollup is
+   identical after the second run. **Restated 2026-08-05:** this step
+   previously asserted on `users.total_commits`, because the delta-updated
+   counter was the one part of the write path that wasn't naturally
+   idempotent. That counter is gone (see schema), so the whole transaction is
+   replace-only and the property holds by construction — but the test stays,
+   now asserting on the rollup itself, because "holds by construction" is a
+   claim about today's code and this is the check that keeps it true.
 
 **Consequence not yet stated (2026-08-04, gap-review round 3): every
 migrated repo hits clone-worker's full-clone fallback on its first
@@ -758,101 +1203,122 @@ account for it.
 
 ## Phased rollout
 
-1. **Phase 0 — capacity & provisioning.** Node class and pricing for the
-   ORD region are already confirmed (see "Node-class naming, corrected"
-   above): `ch.vs1.medium-ord` (current) and `mh.vs1.large-ord` (proposed,
-   4 CPU/30GB) both price at p50 $0.006/hr. What's still genuinely open:
-   pick a fallback node class before provisioning — none is specified yet
-   if `mh.vs1.large-ord` doesn't fulfill on the bid market, and that needs
-   to be decided ahead of time rather than discovered live. Provision the
-   dedicated Postgres node manually (Spot UI or `rackspace-spot-terraform`).
-   Install CNPG operator on ord-devimprint. Stand up the Postgres cluster
-   with the schema above.
-2. **Phase 1 — isolated build.** New Forgejo repo, new clone-worker
-   (Postgres rollup write + ARMOR per-repo artifact write, detection logic
-   inlined), new aggregator (Postgres read + ARMOR-published snapshot). Also
-   provisions a **new, second queue-api instance** — same unmodified
-   codebase as the live one, a separate deployment, not a fork (see
-   "Clarified" note in the queue-api Architecture paragraph above) — for the
-   new clone-worker/aggregator to claim/lease jobs against during Phase 1-3
-   development and validation. Built and tested against a handful of real
-   repos, zero production traffic — the live pipeline and the queue-api
-   instance it depends on are completely untouched at this stage; Phase 4 is
-   what repoints discovery workers at this new instance (see below).
-3. **Phase 2 — subset validation.** Drive a bounded repo set through the
-   new path in parallel with the untouched old pipeline. Cross-check rollup
-   counts against the existing corpus for the same repos. **Load-test
-   concurrent clone-worker replicas writing Postgres simultaneously** — this
-   is the entire reason Postgres was chosen over SQLite, so prove the
-   concurrent-write path actually holds up before trusting it. Test the
-   catalog-version-bump → redetect-job path end-to-end with a synthetic new
-   tool signature.
-4. **Phase 3 — bulk corpus migration (offline, read-only against old
-   pipeline).** Run the migration described above against the full existing
-   corpus. Old pipeline keeps running untouched throughout.
-5. **Phase 4 — shadow / dual-write burn-in.** Repoint discovery workers
-   (search-worker, user-worker — the repo-discovery/expansion worker that
-   turns a claimed user into more `repo_queue` entries; a distinct
-   component from user-enrichment-worker named in Context above, which
-   does email→login identity resolution) at the new queue-api using the
-   already-proven `QUEUE_API_URL`-swap pattern from this project's own
-   history. Run both pipelines in parallel for a defined burn-in window —
-   long enough to see at least one catalog-version bump and one full
-   aggregator publish cycle.
-   **Corrected diff mechanism (2026-08-04):** the acceptance gate as
-   originally written here — "diff `leaderboard.json` output between old
-   and new" — directly contradicted the Architecture/Storage-placement
-   sections, which say this pipeline produces **no public-serving artifact
-   at all** (the ranked-list snapshot is internal-only, in ARMOR, for a
-   separate downstream pipeline to consume — see above). There is nothing
-   of that shape to diff. The actual gate: a validation script queries the
-   new pipeline's Postgres ranking directly (same SQL the aggregator runs)
-   and compares its output against the old pipeline's public
-   `leaderboard.json`, row-for-row on rank/username/counts — comparing two
-   different representations of the same computed ranking, not two files
-   of identical shape.
-6. **Phase 5 — final delta + cutover.** The old pipeline keeps discovering
-   and cloning new repos through phases 1-4 — the corpus is not a static
-   migration target. Run one final delta migration pass immediately before
-   cutover to catch everything scanned during the migration window.
-   **Open decision, not yet resolved (flagged by adversarial review,
-   2026-08-04): what happens to public serving at the moment of cutover?**
-   The old pipeline's public `leaderboard.json`/dashboard is the only
-   public-facing artifact that exists today. Under the internal-only
-   snapshot decision, the new pipeline has no artifact to replace it with
-   at cutover — the downstream devimprint presentation layer that would
-   consume the internal snapshot is explicitly out of scope and not
-   started. So literally as designed, decommissioning the old pipeline's
-   public serving at cutover (Phase 6) leaves public serving **dark** until
-   that separate downstream effort ships. This may be an acceptable,
-   deliberate tradeoff — but it hasn't been decided, only exposed by
-   working through the mechanism in detail. The alternatives are: (a)
-   accept the gap, treat "public dashboard" as intentionally offline
-   between old-pipeline shutdown and the downstream pipeline shipping; (b)
-   keep the old pipeline's public serving alive past Phase 6 even after its
-   data pipeline is decommissioned, pointed at a bridge export from the new
-   corpus, until the downstream piece is ready; (c) have this pipeline
-   additionally publish a minimal public artifact (small top-N, not the
-   full list) purely to avoid a hard outage, despite the internal-only
-   decision. Needs an explicit choice before Phase 5 can actually execute.
-7. **Phase 6 — shutdown & decommission.** Per user's explicit instruction:
-   shut down the live pipeline once parity is confirmed. **The repo rename
-   already happened (2026-08-04, ahead of the rest of this phase)** —
-   `jedarden/commitgraph` → `commitgraph-deprecated`, this repo took over
-   the canonical `commitgraph` name, on both Forgejo and GitHub, with
-   push-mirrors, local remotes, and most found references to the old name
-   updated in the same pass. **This was not fully complete — a live CI gap
-   from it is still open as of this writing; see
-   `docs/notes/repo-rename-2026-08-04.md` for the full account, including
-   what the reference sweep did and didn't cover.** ArgoCD's `repoURL`
-   needed no change (it syncs from `declarative-config`, never referenced
-   `jedarden/commitgraph` directly) — that part held up under scrutiny.
-   What's left for this phase is unchanged: shut down the live pipeline once
-   parity is confirmed, then decommission old k8s manifests via the existing
-   "disable in git (`.disabled` suffix) → push → prune, direct-kubectl-delete
-   only for objects git no longer declares" playbook already used once
-   before for a structurally identical teardown in this project's own
-   history.
+**Rewritten 2026-08-05 after teardown.** The original seven phases were
+built around a live predecessor: shadow it, dual-write against it, diff its
+output, then switch over. There is no predecessor to shadow any more. The
+sequence below replaces "migrate off a running system" with "rebuild and
+restart a stopped one," which is a materially different shape — fewer
+coordination hazards, but no safety net and a running clock.
+
+**The clock: the pipeline is dark as of 2026-08-05.** `commitgraph.jedarden.com`
+serves a frozen `leaderboard.json` generated 2026-08-03T22:05:42Z, and nothing
+is discovering, cloning, or aggregating. Every day of this build is a day the
+public data ages. That is an accepted cost of the operator's decision to tear
+down rather than run both, but it should drive sequencing: prefer the shortest
+path to *something publishing again* over completeness in early phases.
+
+1. **Phase 0 — capacity, provisioning, and the two gates.** Pick the fallback
+   node class before provisioning (still open — do not discover this live on
+   the bid market) and the `mh.vs1.large-ord` bid price. Decide the replica
+   topology (`instances: 1` vs `3`, see "Durability and load"). Provision the
+   dedicated Postgres node manually (Spot UI or `rackspace-spot-terraform` —
+   not a declarative-config PR). Install the CNPG operator on ord-devimprint
+   (a 5th install org-wide, not a reuse). Stand up the cluster with the schema
+   above, PgBouncer in front, and the autovacuum settings from "Durability and
+   load". **Two blocking gates before Phase 1:** (a) a rehearsed, timed
+   restore from `barmanObjectStore` backup — with no fallback system this is
+   the only recovery path that exists; (b) the stratified ARMOR sizing
+   measurement, including the corpus's largest repos.
+2. **Phase 1 — isolated build, reusing the preserved queue-api.** New
+   clone-worker (Postgres rollup write + ARMOR artifact writes, detection
+   inlined) and new aggregator (Postgres read + ARMOR snapshot publish).
+   **Earlier drafts specified standing up a second queue-api instance so the
+   new pipeline wouldn't disturb the live one. That rationale is gone** — the
+   old workers are torn down, so the preserved instance is idle and
+   uncontended. Reuse it directly. This is strictly better than a fresh
+   instance: it already holds `repo_queue` with the 98,747 discovered repos,
+   `repo_head_cursors`, and `catalog_version` — all of which a fresh instance
+   would have to have migrated into it anyway.
+   **First real task of this phase: extract `email_resolution` and ingest it
+   into Postgres** through the ingest path above (`source='live'`). This is
+   blocked on refreshing `ord-devimprint-admin.kubeconfig` and is the single
+   highest-value inheritance in the whole migration — 365K+ pairs of already
+   spent, rate-limited API budget.
+3. **Phase 2 — subset validation and the load test that has numbers.** Drive
+   a bounded repo set end-to-end. Cross-check rollup counts against the
+   existing corpus for the same repos. **Load-test concurrent clone-worker
+   replicas writing Postgres**, at the replica count chosen in Phase 0 plus
+   headroom, recording: sustained transactions/sec, p99 write latency,
+   connection count at saturation, and `n_dead_tup` growth against autovacuum
+   throughput. Those numbers are the pass/fail criteria — and they are also
+   the inputs a rate-limiting write API would need if Layer 3 turns out to be
+   justified (see "Write-path admission control"). Test the
+   catalog-version-bump → redetect-job path with a synthetic tool signature.
+4. **Phase 3 — bulk corpus migration against a now-static target.** Run the
+   migration described above over the full existing corpus. **This got easier
+   with teardown:** the corpus in B2 is frozen, so migration no longer chases
+   a moving target and the "final delta pass" the old Phase 5 needed is
+   unnecessary. The idempotency test still gates progress.
+5. **Phase 4 — validation burn-in with no predecessor to shadow.** Run the
+   new pipeline over the migrated corpus and hold it against the two
+   replacement gates in "Verification" below — the frozen golden snapshot and
+   independent recompute. Long enough to see at least one catalog-version
+   bump and several aggregator publish cycles.
+6. **Phase 5 — restart discovery.** Point search-worker and user-worker at
+   the pipeline and re-enable them. This, not a switchover, is the actual
+   cutover: the system goes from dark to live. Expect the one-time full-clone
+   wave — migrated repos have Parquet artifacts but no warm-start artifacts,
+   so each hits clone-worker's full-clone fallback on its first scan
+   (~98,747 repos against a measured ~1,000 repos/hour/replica; see the
+   consequence note in "Corpus migration"). Budget for it rather than being
+   surprised by it.
+   **Public serving:** the frozen `leaderboard.json` keeps serving until the
+   downstream devimprint presentation layer ships. How long that is acceptable
+   is an open decision — the file only gets staler, and at some point serving
+   two-month-old rankings is worse than serving nothing.
+7. **Phase 6 — finish the decommission.** Extract the remaining queue-api
+   tables if not already done, then `.disabled` the queue-api manifests and
+   its PVC, per the checklist in
+   `declarative-config/k8s/ord-devimprint/commitgraph/TEARDOWN.md`. **Do not
+   remove `queue-api-pvc.yml` before extraction is verified** — `sata` has
+   `reclaimPolicy: Delete`, so pruning that PVC destroys the Cinder volume
+   and every row on it. Also still open from the 2026-08-04 rename: a working
+   CI trigger for `commitgraph-deprecated`, and the general
+   `commitgraph-build-workflowtemplate.yml` firing against this docs-only
+   repo — see `docs/notes/repo-rename-2026-08-04.md`.
+
+## Relationship to claude-leaderboard
+
+**Decided 2026-08-05: claude-leaderboard is the canonical source for
+Claude Code leaders.** commitgraph is not trying to be authoritative for
+Claude Code specifically, and should not be positioned as competing with or
+superseding claude-leaderboard on that tool.
+
+This resolves a tension that ran through earlier drafts, where
+claude-leaderboard appeared only as an architectural predecessor to learn
+from and a resolution cache to harvest — as though it were being absorbed.
+It isn't. The two systems have different remits:
+
+- **claude-leaderboard** — canonical for Claude Code. Single tool, deep
+  history, proven at 37.9M commits on one box.
+- **commitgraph** — the multi-tool system. Its distinguishing capability is
+  the 21-tool detection catalog (`ALL_TOOLS`, verified by importing the
+  module and counting) and retroactive re-detection when a new tool
+  signature is added — neither of which claude-leaderboard has or needs.
+
+Consequences worth carrying forward:
+
+1. **The seed is an inheritance, not an acquisition.** Harvesting
+   claude-leaderboard's frozen `author_login_cache` (349,425 pairs) into
+   `email_resolution` remains correct and valuable — resolved emails are
+   tool-agnostic facts about people, not Claude-Code-specific data. But it
+   is borrowing a cache, not taking over a domain.
+2. **Where the two disagree about a Claude Code number, claude-leaderboard
+   wins.** Useful during validation: a divergence on Claude Code counts is
+   a signal to investigate commitgraph, not evidence that
+   claude-leaderboard drifted.
+3. **The presentation layer should not imply otherwise.** Out of scope here,
+   but the downstream devimprint layer inherits this positioning.
 
 ## Explicitly out of scope
 
@@ -966,25 +1432,173 @@ account for it.
 
 ## Verification
 
-- Migration idempotency test (Phase 3, step 6 above) must pass before any
-  dual-write phase begins.
-- **Adopted (2026-08-04, plan-idea-gen run 1): the idempotency check becomes
-  a permanent CI gate, not a one-time pre-flight.** The one-time migration
-  check above stays as written — but rollup-writing code isn't only the
-  migration, it's clone-worker's every-job write path, which keeps changing
-  after launch as the codebase evolves. Add an automated test (run the same
-  repo through clone-worker's rollup write twice, assert `users.total_commits`
-  is unchanged the second time) to CI, so this stays enforced on an ongoing
-  basis rather than verified once and assumed to hold forever.
-- Phase 4's continuous comparison of the new pipeline's Postgres-computed
-  ranking against the old pipeline's public `leaderboard.json` is the
-  primary correctness gate for cutover — not "pods are Running" (the same
-  false-positive pattern that cost real time earlier in this project's
-  history).
-- Phase 2's concurrent-write load test is the primary validation that
-  Postgres actually solves the problem this redesign exists to fix — if it
-  doesn't hold up under concurrent clone-worker replicas, the core premise
-  needs revisiting before going further.
+**Rewritten 2026-08-05.** The original primary gate — continuously diff the
+new pipeline's ranking against the old pipeline's live `leaderboard.json` —
+is void, because there is no old pipeline to diff against. Its aggregator had
+already been failing readiness for ~5 days before teardown, so its output was
+stale even while it existed. The replacement is two gates, neither of which
+needs a running predecessor.
+
+**Gate 1 — the frozen golden snapshot.** The last published
+`leaderboard.json` (generated 2026-08-03T22:05:42Z, 100 rows, sha256
+`cf2ef378…77cc8`) is archived at `~/backups/commitgraph-cutover/` on ex44. A
+validation script runs the aggregator's own ranking SQL against Postgres
+restricted to commits on or before that generation timestamp, and compares
+row-for-row on rank / username / `ai_commits_30d` / `ai_commits_total`. This
+is an as-of comparison, not a live one: it answers "does the new pipeline
+reproduce the old pipeline's last known-good answer from the same inputs?"
+
+Known caveat, worth stating rather than discovering during the comparison:
+**the golden snapshot's own rank 1 is `noreply@anthropic.com`** — a raw
+unresolved email occupying the top of the public board. That is the identity
+fragmentation problem in its purest form, and it means the golden file is a
+record of what the old pipeline *did*, not of what is *correct*. Expect and
+require divergence where the new pipeline resolves an identity the old one
+did not; the gate is that every divergence is explainable by a resolution or
+alias, not that the two agree everywhere.
+
+**Gate 2 — independent recompute.** For a sample of repos, recompute the
+rollup directly from the corpus Parquet with a separate implementation path
+and assert it matches what Postgres holds. This checks the pipeline against
+ground truth rather than against another pipeline, needs no predecessor, and
+keeps working indefinitely as a production audit — unlike Gate 1, which
+decays as the golden snapshot ages.
+
+**Idempotency, as a permanent CI gate.** Run the same repo through
+clone-worker's rollup write twice and assert the rollup is byte-identical the
+second time. **Restated 2026-08-05:** earlier drafts asserted on
+`users.total_commits`, which no longer exists — and which, as written, the
+test would have *failed* on the first real rescan, since a delta-updated
+counter double-counts unless the delta is taken against the pre-DELETE value.
+Dropping the counter (see schema) made the whole write transaction
+replace-only, so the property now holds by construction and the test verifies
+that it stays that way as the code evolves.
+
+**The Phase 2 load test is the premise check.** Postgres was chosen over
+SQLite specifically to survive concurrent clone-worker writes. If it doesn't
+hold up at the chosen replica count, the core premise needs revisiting before
+anything else proceeds — not after.
+
+**Not a gate: "pods are Running."** This project has already lost real time
+to that false positive; it is named here so it doesn't get treated as
+evidence again. The old aggregator sat `Running` for five days while
+`Available: False` and publishing nothing.
+
+## Invariants
+
+Named, testable properties, each one a SQL assertion runnable both in CI
+against a fixture database and periodically against production as an audit.
+These exist because a data pipeline fails silently — wrong numbers look
+exactly like right numbers until someone checks.
+
+1. **Rollup matches artifact.** For any repo, the sum of `commits` in
+   `repo_user_daily_tool` equals the count of AI-tagged, non-quarantined rows
+   in that repo's Parquet artifact.
+2. **No out-of-range days.** No row in `repo_user_daily_tool` has a `day`
+   outside `[2005-01-01, current_date + 1]`. This is the 2170-incident guard;
+   it has fired for real once already.
+3. **Rescan idempotency.** Running the same repo through the write path twice
+   leaves the rollup identical.
+4. **Referential integrity of identity.** Every `user_id` in the rollup
+   resolves to a `users` row; every `user_aliases.target_login` exists in
+   `users`; the alias graph is acyclic and one level deep (no alias whose
+   target is itself an alias source).
+5. **Uniform scan time.** All rows for a given `repo_id` share one
+   `insert_time` — a violation means a partial write escaped the
+   whole-slice-replace transaction.
+6. **Exclusion is honoured.** No repo with `repos.excluded_at IS NOT NULL`
+   contributes to any published ranking.
+
+## Edge cases
+
+Enumerated rather than discovered. Each needs a stated behaviour and a test.
+
+1. **Empty repo** — no commits. Must produce zero rollup rows, not a failed
+   job.
+2. **Force-pushed / rewritten history** — SHAs the previous scan saw no longer
+   exist. Handled by construction: whole-slice DELETE+INSERT re-derives from
+   current state rather than accumulating. **This is the main reason the
+   replace pattern was chosen**, and it belongs in the plan as a stated
+   property rather than an incidental benefit.
+3. **Repo deleted or made private** between discovery and clone. Must be
+   distinguishable from a transient clone failure so it isn't retried
+   forever.
+4. **Repo renamed on GitHub** — the surrogate `repo_id` survives it; the
+   `repos.repo_full_name` row is updated. Without the surrogate this
+   fragments the repo's history permanently (see schema).
+5. **Commit with no author email**, or a malformed one. Cannot be resolved to
+   a login; must not crash extraction.
+6. **Login renamed after resolution** — `email_resolution` now points at a
+   dead login. Needs revalidation, which the predecessor tracked in a
+   `username_revalidation` table; carry the concept forward.
+7. **Same commit SHA in multiple repos** (forks). Rollup is keyed per repo,
+   so this is counted once per repo by design — which is correct for
+   "activity in a repo" and wrong for "distinct commits authored." State
+   which one the leaderboard means.
+8. **Malformed or out-of-range `committed_at`** — excluded from the rollup,
+   preserved verbatim in the Parquet artifact (see the quarantine section).
+9. **A repo whose warm-start artifact is impractically large** — the extreme
+    the ARMOR stratified sample exists to find.
+10. **A commit message large enough to blow a Parquet row group.**
+
+## Failure modes
+
+One entry per dependency, with the recovery this design actually implements.
+
+| Dependency | Failure | Recovery |
+|---|---|---|
+| GitHub API | rate limit / 5xx | Job fails, lease expires, re-claimed. Throughput is a stated hard ceiling, not a bug. |
+| ARMOR | unavailable on write | Whole job fails and is re-claimed — no partial state, since all writes are in one job. Ranking is unaffected: ARMOR is not in the read path. |
+| Postgres | unavailable | **Total pipeline outage.** No fallback system exists. Recovery is restore-from-backup; see "Durability and load". |
+| Postgres | connection exhaustion | PgBouncer (Layer 2); lease concurrency bounds it upstream (Layer 1). |
+| Corpus decrypt | retired key epoch | Migration enumerates all `key_id` values up front and confirms decryptability before starting (migration step 2). |
+| queue-api | unavailable | Workers cannot claim; pipeline idles without data loss. |
+
+## Threat model
+
+**The core exposure: commit metadata is entirely attacker-controlled.**
+`git config user.email` accepts any string, and `Co-Authored-By:` trailers
+are free text in a commit message. Anyone can author commits attributed to
+someone else's email, or add an AI-tool trailer to commits no tool touched,
+and push them to a repository they own. Detection is pure pattern matching
+against that text — there is no verification anywhere in the pipeline.
+
+Two distinct harms follow, and they are not symmetric:
+
+1. **Rank inflation** — a person manufactures AI-tagged commits to climb the
+   board. Annoying, self-limited, and the traditional cost of any public
+   leaderboard.
+2. **Attribution to a non-consenting third party** — commits are authored
+   under someone else's email and appear on the board under their resolved
+   identity, linked to their real GitHub profile. This is the serious one:
+   it publishes claims about a real person who never opted in, and the more
+   successfully the identity-resolution layer works, the more convincingly
+   the false attribution lands.
+
+**This is not a regression** — the predecessor had the identical exposure —
+but a redesign is the right moment to name it rather than inherit it
+silently.
+
+**Mitigation: repo-level exclusion** (operator's decision, 2026-08-05). The
+practical lever is excluding the offending repository, not adjudicating
+individual commits. The schema supports this directly: `repos.excluded_at` /
+`repos.excluded_reason`, enforced by invariant 6 above, applied at ranking
+time so exclusion takes effect on the next publish without re-scanning
+anything. The predecessor's queue-api carries a `blocklist` table serving a
+related purpose — carry the concept forward rather than reinventing it.
+
+Exclusion is deliberately reversible: clearing `excluded_at` restores the
+repo's contribution on the next aggregation cycle, since the rollup rows were
+never deleted, only filtered.
+
+**Residual risk, stated honestly:** exclusion is reactive. It requires
+someone to notice, which for third-party attribution most likely means the
+affected person noticing themselves. Options that would make it proactive —
+requiring the author email to be a *verified* GitHub account email, capping
+any single repo's contribution to a user's total, or requiring a minimum
+repo signal before it counts — are not adopted here, but are the shape of
+what a proactive control would look like if the reactive one proves
+insufficient.
 
 ## Critical files referenced
 
@@ -1017,5 +1631,17 @@ from there, not from this repo, until Phase 1 copies/ports it in.
   deliberately placed on a dedicated `ord-devimprint` node instead;
   "cluster placement" here means which physical cluster/node, a separate
   question from the replica/HA topology this file is precedent for
-- `/home/coding/declarative-config/k8s/ord-devimprint/commitgraph/` — old
-  manifests to decommission in Phase 6
+- `/home/coding/commitgraph-deprecated/containers/aggregator/aggregator.py` —
+  lines 932-977 hold the `top_repo` argmax and the `j` view's date clamp; the
+  reference for what the old ranking actually computed (see the `top_repo`
+  exclusion note above)
+- `/home/coding/declarative-config/k8s/ord-devimprint/commitgraph/` — the old
+  namespace. Workloads were `.disabled` and pruned 2026-08-05; `queue-api` +
+  Service + PVC are deliberately still live pending data extraction
+- `/home/coding/declarative-config/k8s/ord-devimprint/commitgraph/TEARDOWN.md`
+  — teardown state and the completion checklist that gates Phase 6
+- `/home/coding/declarative-config/k8s/ord-devimprint/commitgraph/admin-alias-configmap.yml`
+  — the hand-curated `source_login → target_login` map, in git rather than
+  only in the database; the seed for `user_aliases` with `reason='admin'`
+- `~/backups/commitgraph-cutover/leaderboard-golden-2026-08-03T22-05-42Z.json`
+  — the frozen golden snapshot, Verification gate 1

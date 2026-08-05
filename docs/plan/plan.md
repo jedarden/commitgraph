@@ -22,9 +22,13 @@ maintained by idempotent whole-repo-slice replace on every rescan, read-time
 identity aliasing, no distributed coordination. That system reached 37.9M
 commits / 695K users on one box with no equivalent contention. Live-measured
 this session: `hot.db` — a separate, frozen, pruned working-set file with no
-raw `commits` table at all — has a rollup table of 209MB for 3.48M rows,
-the ~10.9-commits/row ratio the Postgres sizing section below extrapolates
-from. **Corrected 2026-08-04 (gap-review round 3): the full-database
+raw `commits` table at all — has a rollup table of 209MB for 3.48M rows, a
+~10.9-commits/row ratio. **Corrected 2026-08-04 (gap-review round 5): the
+Postgres sizing section below no longer extrapolates from this hot.db
+ratio** — it now uses `leaderboard.db`'s own self-consistent ratio instead,
+for the same reason the round-3 correction just below rejects hot.db/
+leaderboard.db mixing for this exact class of measurement (see the sizing
+section for the corrected figure). **Corrected 2026-08-04 (gap-review round 3): the full-database
 breakdown below was previously computed by dividing that 209MB figure into
 a *different* file's total, and the resulting percentage didn't even follow
 from that division.** Measured self-consistently instead, against
@@ -61,9 +65,18 @@ immediate (rollup written in the same pass as extraction), the aggregator's
 five-incident OOM history goes away (it becomes a thin SQL query instead of a
 DuckDB engine decrypting/materializing large partitions), and queue-api's
 write contention drops to its original, much lower-volume job-coordination
-role — which plausibly also fixes a live bug where that same contention
-silently broke identity resolution's feed (`fed 0 new emails`). What this
-redesign does **not** fix: discovery and clone throughput, both hard
+role. **Corrected 2026-08-04 (gap-review round 5): the `fed 0 new emails`
+bug cited in earlier drafts here already has its own independent fix,
+predating this plan.** `commitgraph-deprecated` commit `e37bb5b`
+("queue-api: split reader/writer DB pools, add export cursor (2.8.0)",
+2026-07-31 — four days before this plan's 2026-08-04 origin) diagnosed the
+exact symptom (`/email-resolution/export` pulled the full 365K+ row table,
+unfiltered, on every aggregator cycle) and shipped a fix — a separate
+reader pool plus a `since=` cursor; queue-api runs at 2.8.0 with this fix
+live today. This redesign's write-contention relief is broader and still
+real (see the `context canceled`/`Read timed out` evidence above), just no
+longer evidenced by this one already-patched instance. What this redesign
+does **not** fix: discovery and clone throughput, both hard
 ceilings on the shared GitHub API budget and clone-worker's own measured
 per-replica rate; and identity resolution *throughput*, capped by that same
 shared API budget regardless of storage architecture (commitgraph already
@@ -317,7 +330,9 @@ Rackspace Spot Cinder storage is always `sata`/`sata-large`, never
 `ssd`/`ssd-large`, with the class always set explicitly rather than left to
 a cluster default; this section discussed the PVC at length without ever
 stating one. `sata`'s 5-20GB range comfortably covers the corrected sizing
-below (~0.9-1.0GB now, ~9-10GB projected at 10x scale); `sata-large` (75GB
+below (**corrected 2026-08-04, gap-review round 5**: ~1.4-1.6GB now,
+~14-16GB projected at 10x scale — see the sizing section for why this grew
+from the previous ~0.9-1.0GB / ~9-10GB figures); `sata-large` (75GB
 minimum) would be the wrong tier to provision up front at this size. Mirrors
 `queue-db`'s CNPG cluster (`storageClass: sata`, see "Critical files
 referenced" below). If growth ever exceeds `sata`'s 20GB ceiling, the
@@ -475,10 +490,10 @@ CREATE TABLE users (
 );
 ```
 
-**Sizing, corrected twice now — this is the current best estimate.** An
-earlier pass through this document claimed the rollup "measures in the tens
-of MB," undercounting by not extrapolating from data this same document
-already cites — claude-leaderboard's own directly-comparable rollup
+**Sizing, corrected three times now — this is the current best estimate.**
+An earlier pass through this document claimed the rollup "measures in the
+tens of MB," undercounting by not extrapolating from data this same
+document already cites — claude-leaderboard's own directly-comparable rollup
 measured 209MB for 3.48M rows from 37.9M commits (see Context above and the
 research doc). A first correction applied that ratio to commitgraph's 76.6M
 commits and landed on "several hundred MB." That correction was itself too
@@ -490,40 +505,63 @@ breakdown measured earlier). Every Postgres row instead carries its own
 ~24-byte tuple header plus alignment padding on top of the real column
 data. Worked through per table, at current 76.6M-commit / 1,094,043-developer
 scale (commits-to-rollup-row ratio held constant from the claude-leaderboard
-baseline, ~10.9 commits/row):
+baseline — **corrected 2026-08-04, gap-review round 5, see below for why**):
 
-- `repo_user_daily` (tool-agnostic, ~7.03M rows extrapolated): ~75-85
-  bytes/row for the table (~525-600MB) + a comparable-magnitude
-  `(author_key, day)` index (~250-280MB) → **~775-880MB**, the dominant
-  cost by far. (**Corrected 2026-08-04, second pass (gap-review round
-  4)**: 7.03M rows × 75-85 bytes/row is ~525-600MB, not the
-  previously-stated ~560-600MB — the round-3 correction (kept below for
-  the record) fixed the summing step but missed that the table's own
-  sub-figure didn't follow from the stated bytes/row either. 525-600MB +
-  250-280MB correctly sums
-  to ~775-880MB, not the round-3 figure of ~810-880MB. Round-3 note,
-  still accurate as far as it went: 560-600MB + 250-280MB sums to
-  810-880MB, not the previously-stated ~800MB-1.1GB, whose upper bound
-  didn't follow from its own cited sub-ranges — same arithmetic-error
-  pattern as the `users` correction just below.)
-- `repo_user_daily_tool` (sparse, AI-tagged only — ~21-25K rows from
-  234,263 AI-tagged commits at the same ratio): negligible, well under
-  10MB including both indexes.
-- `users` (one row per developer, 1,094,043 live count): ~90-100
-  bytes/row including its primary-key index → **~98-109MB**
-  (**corrected 2026-08-04**: 1,094,043 rows × 90-100 bytes/row is
-  ~98-109MB — the previously-stated ~150-170MB didn't follow from its own
-  per-row estimate; this was an arithmetic error, not a re-estimate).
+- `repo_user_daily` (tool-agnostic, ~11.63M rows extrapolated — **see the
+  ratio correction below, this row count itself changed**): ~75-85
+  bytes/row for the table (~872-989MB) + a comparable-magnitude
+  `(author_key, day)` index (~414-463MB) → **~1,285-1,450MB**, the dominant
+  cost by far.
+  **Corrected 2026-08-04, third pass (gap-review round 5): the row count
+  itself was wrong, not just the arithmetic on it.** Every prior pass here
+  extrapolated using `hot.db`'s ~10.9-commits/row ratio (37.9M commits /
+  3.48M rows) — but `hot.db` is a separate, frozen, pruned working-set
+  file, and this same document's round-3 correction above already
+  established `leaderboard.db` (the live file holding the raw commit log
+  and the rollup side by side) as the authoritative, self-consistent source
+  for exactly this class of cross-file measurement, specifically rejecting
+  hot.db/leaderboard.db mixing as the root cause of an earlier arithmetic
+  error. The sizing extrapolation kept using hot.db's ratio anyway.
+  Re-measured directly against `leaderboard.db` (2026-08-04, `sqlite3`):
+  52,456,758 commits / 7,965,582 `repo_user_daily` rows = **~6.6
+  commits/row** — about 40% lower than the 10.9 figure, which pushes the
+  extrapolated row count for commitgraph's own 76.6M commits from ~7.03M up
+  to ~11.63M, roughly 65% higher, and the `repo_user_daily` estimate from
+  ~775-880MB up to ~1,285-1,450MB accordingly. The two arithmetic-only
+  corrections below are kept for the record — they correctly fixed the
+  summing step against the *old* 7.03M baseline, but that baseline is now
+  superseded: (**second pass (gap-review round 4)**: 7.03M rows × 75-85
+  bytes/row is ~525-600MB, not the previously-stated ~560-600MB — the
+  round-3 correction fixed the summing step but missed that the table's own
+  sub-figure didn't follow from the stated bytes/row either; 525-600MB +
+  250-280MB correctly summed to ~775-880MB, not the round-3 figure of
+  ~810-880MB. Round-3 note, still accurate as far as it went: 560-600MB +
+  250-280MB sums to 810-880MB, not the previously-stated ~800MB-1.1GB,
+  whose upper bound didn't follow from its own cited sub-ranges — same
+  arithmetic-error pattern as the `users` correction just below.)
+- `repo_user_daily_tool` (sparse, AI-tagged only — ~34-36K rows from
+  234,263 AI-tagged commits at the corrected ~6.6-commits/row ratio, up
+  from the previous ~21-25K estimate): still negligible, well under 10MB
+  including both indexes.
+- `users` (one row per developer, 1,094,043 live count — unaffected by the
+  ratio correction, since developer count isn't derived from the
+  commits/row ratio): ~90-100 bytes/row including its primary-key index →
+  **~98-109MB** (**corrected 2026-08-04**: 1,094,043 rows × 90-100
+  bytes/row is ~98-109MB — the previously-stated ~150-170MB didn't follow
+  from its own per-row estimate; this was an arithmetic error, not a
+  re-estimate).
 
-**Total at current scale: roughly 0.9-1.0GB** (recomputed from the
-corrected `repo_user_daily` and `users` figures: ~775-880MB + <10MB +
-~98-109MB) — a materially different number from "several hundred MB,"
-though the provisioning conclusion still doesn't change: the
-`mh.vs1.large-ord` node's 30GB of RAM absorbs even a 10x-scale rollup
-(~9-10GB) with room to spare. The number keeps getting corrected because
-each pass checked the previous one against real data rather than trusting
-it — worth remembering next time a "trivial" sizing claim shows up in this
-document.
+**Total at current scale: roughly 1.4-1.6GB** (recomputed from the
+corrected `repo_user_daily` and `users` figures: ~1,285-1,450MB + <10MB +
+~98-109MB) — up from the previous ~0.9-1.0GB estimate, entirely because of
+the ratio-baseline correction above, not new growth in the corpus itself.
+The provisioning conclusion still doesn't change, now stated explicitly
+rather than left implied: the `mh.vs1.large-ord` node's 30GB of RAM
+comfortably absorbs even a 10x-scale rollup (~14-16GB) with room to spare —
+under 55% of available RAM at 10x scale, and under 6% at current scale. The
+number keeps getting corrected because each pass checked the previous one
+against real data rather than trusting it — worth remembering next time a
+"trivial" sizing claim shows up in this document.
 
 **Leaderboard snapshot sizing (ARMOR, Parquet, the full ranked list):**
 per-row shape matches the live JSON schema (rank, username,
@@ -839,11 +877,21 @@ account for it.
   **same shared ~30 req/min GitHub API budget as discovery search** — this
   redesign adds no resolution capacity, and the backlog (363k pending emails
   at last measurement) is structurally bounded by that shared resource, the
-  same way discovery is. What plausibly *does* improve: a live bug where the
-  resolution feed silently failed (`fed 0 new emails`) traced directly to
-  queue-api write contention — the exact thing this redesign eliminates — so
-  already-rate-limited resolution progress should land reliably post-cutover
-  instead of intermittently dropping.
+  same way discovery is.
+  **Corrected 2026-08-04 (gap-review round 5): the `fed 0 new emails` bug
+  cited in earlier drafts here was independently point-fixed upstream
+  before this plan even started.** `commitgraph-deprecated` commit
+  `e37bb5b` (2026-07-31, four days before this plan's 2026-08-04 origin)
+  diagnosed the exact symptom — `/email-resolution/export` pulling the full
+  365K+ row table, unfiltered, on every aggregator cycle — and shipped a
+  fix: a separate reader DB pool plus a `since=` cursor. queue-api is live
+  at 2.8.0 with this change. This redesign doesn't get credit for fixing
+  that specific instance; it was already fixed independently. What this
+  redesign still contributes is broader, systemic write-contention relief
+  (queue-api's write volume drops back to its original job-coordination
+  role once compactor/filter-worker/aggregator's dirty-partition-bump
+  traffic goes away, per the Architecture section above), not the
+  resolution of one already-resolved bug.
   **Concrete, low-risk follow-up identified but not yet built:**
   claude-leaderboard's frozen `author_login_cache` (349,425 already-resolved
   email→login pairs, `~/backups/claude-leaderboard/hot.db`, spanning

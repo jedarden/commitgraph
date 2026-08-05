@@ -136,7 +136,12 @@ should be pursued, but as a **raw-pack-tarball artifact** (objects/pack/*
 + ref + the three promisor config values), stored in ARMOR alongside (not
 replacing) the existing Parquet extraction, **not** as a `git bundle`. This
 corrects the mechanism sketched in prior conversation before this research
-was done; the plan document has not yet been updated to reflect it.
+was done. **Reflected 2026-08-04 (gap-review round 5): plan.md's
+Architecture section ("The warm-start artifact is a raw pack-file
+transport, not a `git bundle`") now fully incorporates this research's
+findings almost verbatim** — the 127x bundle-bloat rejection, the three
+required promisor config values, and the loose-ref-vs-packed-refs gotcha
+are all carried over. This note is no longer a live gap.
 
 ## Not tested — open questions for a future pass
 

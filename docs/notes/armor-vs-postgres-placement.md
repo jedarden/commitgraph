@@ -83,8 +83,13 @@ today).
 **Pre-checks before depending on this, not yet done**: `ARMOR_PREFIX` is
 currently unset on the live `devimprint`-namespace ARMOR instance
 (dedicated-bucket mode) — needs explicit scoping decided before writing.
-Confirm which of the (at least two) org-wide ARMOR instances is actually in
-scope. Object sizes here (per-repo Parquet, typically KBs to low tens of
+Confirm which ARMOR instance is in scope (**corrected 2026-08-04,
+gap-review round 5** — previously stated as "at least two"; there are four
+org-wide instances: `devimprint` namespace on ord-devimprint, plus separate
+`armor`-namespace deployments on iad-ci, iad-kalshi, and rs-manager;
+verified against every `armor-deployment.y*ml` under
+`declarative-config/k8s/`, matching `docs/plan/plan.md`'s Storage placement
+section). Object sizes here (per-repo Parquet, typically KBs to low tens of
 MB) are small relative to ARMOR's historical multipart-corruption bug's
 trigger conditions — low risk, but worth a smoke test against a handful of
 genuinely large repos before trusting it at full scale.

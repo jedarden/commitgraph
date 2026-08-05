@@ -1464,16 +1464,35 @@ path to *something publishing again* over completeness in early phases.
    downstream devimprint presentation layer ships. How long that is acceptable
    is an open decision — the file only gets staler, and at some point serving
    two-month-old rankings is worse than serving nothing.
-7. **Phase 6 — finish the decommission.** Extract the remaining queue-api
-   tables if not already done, then `.disabled` the queue-api manifests and
-   its PVC, per the checklist in
-   `declarative-config/k8s/ord-devimprint/commitgraph/TEARDOWN.md`. **Do not
-   remove `queue-api-pvc.yml` before extraction is verified** — `sata` has
-   `reclaimPolicy: Delete`, so pruning that PVC destroys the Cinder volume
-   and every row on it. Also still open from the 2026-08-04 rename: a working
-   CI trigger for `commitgraph-deprecated`, and the general
-   `commitgraph-build-workflowtemplate.yml` firing against this docs-only
-   repo — see `docs/notes/repo-rename-2026-08-04.md`.
+7. **Phase 6 — finish the decommission.**
+   **Corrected 2026-08-05: queue-api is NOT decommissioned.** An earlier
+   draft of this phase said to extract the remaining tables and then
+   `.disabled` the queue-api manifests and PVC — which directly contradicted
+   Phase 1, where the preserved instance is *reused* as the new pipeline's
+   job coordinator. Both statements were written the same day and the
+   conflict survived until bead decomposition surfaced it. Phase 1 is the
+   correct one: **queue-api is permanent infrastructure in this design**,
+   owning `search_queue` / `repo_queue` / `user_queue` claim-lease semantics,
+   `repo_head_cursors`, `catalog_version`, and the email-resolution *work
+   queue*. Only the resolution *results* move out to Postgres.
+
+   Consequently `TEARDOWN.md`'s checklist item "Only then: `.disabled` the
+   queue-api manifests and the PVC" is **wrong and has been corrected there**.
+   The PVC must be retained permanently, not merely until extraction — and
+   the `sata` `reclaimPolicy: Delete` hazard therefore applies indefinitely,
+   not just during a migration window.
+
+   What actually remains for this phase:
+   - Retire `dirty_partitions` from queue-api (nothing coordinates on it once
+     compactor and filter-worker are gone).
+   - Close the two CI gaps still open from the 2026-08-04 rename: a working
+     trigger for `commitgraph-deprecated`, which currently has none, and the
+     general `commitgraph-build-workflowtemplate.yml` firing against this
+     docs-only repo and hard-failing on `pip install -e .[test]` — see
+     `docs/notes/repo-rename-2026-08-04.md`.
+   - Archive `commitgraph-deprecated`'s remaining unused manifests
+     (`*.disabled` files) once the new pipeline has run clean for a defined
+     period — deletion, not disablement, and only then.
 
 ## Relationship to claude-leaderboard
 

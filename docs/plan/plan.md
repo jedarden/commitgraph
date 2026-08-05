@@ -170,10 +170,8 @@ elsewhere in this document.
   precedent) versus `instances: 3` with synchronous replication. With no
   fallback system, a preemption on a single Spot node is a hard outage of
   the only write target (Durability section; Phase 0).
-- **Identity ingest breadth**: does Postgres carry *every* resolved
-  email→login pair (~365K-1.09M rows), or only those appearing in the
-  AI-tagged rollup (a small fraction)? This is now the dominant term in
-  Postgres sizing — larger than the rollup itself (Sizing section).
+- ~~**Identity ingest breadth**~~ — **resolved 2026-08-05: AI-relevant only.**
+  See "The rollup holds AI-relevant commits only".
 - **Write-path admission control**: lease-concurrency only, PgBouncer, or a
   purpose-built rate-limiting write API in front of Postgres (Write-path
   admission control section).
@@ -604,7 +602,7 @@ ord-devimprint yet and needs installing fresh (it already runs on
 ardenone-cluster, apexalgo-iad, iad-ci, **and rs-manager** — this would be a
 5th install, not a reuse).
 
-### The rollup holds AI commits only
+### The rollup holds AI-relevant commits only
 
 **Decided 2026-08-05.** Earlier drafts specified two rollup tables — a
 tool-agnostic `repo_user_daily` alongside the sparse tool-tagged one. The
@@ -628,6 +626,43 @@ table alive to compute three numbers.
 
 This is by far the largest sizing lever available: the dropped table was
 ~1.29-1.45GB of the previous ~1.4-1.6GB estimate.
+
+**"AI-relevant" is the scope boundary for the whole database, not just the
+rollup** (operator, 2026-08-05). Identity follows the rollup: Postgres
+carries `email_resolution` rows for authors of AI-tagged commits, not for
+all ~1.09M discovered developers. Emails that only ever appear on non-AI
+commits are never resolved and never stored — they cannot affect any
+ranking, so resolving them spends rate-limited API budget on data with no
+consumer.
+
+**The predecessor had already reached this conclusion, which is strong
+corroboration.** `commitgraph-deprecated/containers/aggregator/aggregator.py:1414-1428`
+feeds the resolution queue from:
+
+```sql
+WHERE r.email IS NULL AND c.n > 0      -- c.n = SUM(ai_commits) per email
+```
+
+with the comment *"only emails carrying AI commits are worth resolving —
+priority is the AI-commit count, so zero-AI emails queued at priority 0
+behind ~945k siblings were never going to be serviced anyway."* The old
+pipeline discovered this the hard way, at ~945K distinct emails. This design
+adopts it deliberately and pushes it one layer further: not just
+*prioritized*, but never stored.
+
+**This materially changes the identity-throughput story** and corrects a
+claim made elsewhere in this plan. "Explicitly out of scope" states that
+resolution throughput is capped by the shared ~30 req/min GitHub budget with
+a 363K-email backlog — the cap is real and unchanged, but the *demand under
+it* is far smaller than that figure suggests. 234,263 AI-tagged commits
+resolve to a distinct-author set orders of magnitude below 1.09M developers.
+Measure the exact count during the `email_resolution` extraction in Phase 1;
+it is the number that determines both Postgres sizing and how long the
+resolution backlog actually takes to clear.
+
+**Consequence for the claude-leaderboard seed:** it needs no filtering. Every
+pair in that frozen cache came from a `Co-Authored-By: Claude` commit, so all
+349,425 are AI-relevant by construction.
 
 ### Postgres schema
 
@@ -780,16 +815,19 @@ tuple header plus alignment padding on top of column data.
 - **`users`** — bounded by distinct AI-active logins, itself bounded by
   234,263 AI commits, so at absolute worst ~234K rows × ~80 bytes plus
   indexes → **≤ ~30MB**, and realistically far less.
-- **`email_resolution`** — **now the dominant term, and the one open
-  variable.** If every resolved pair is ingested (up to 1,094,043 rows):
-  ~100 bytes/row ≈ 109MB, plus the email primary-key index (~44MB) and the
-  login index (~20MB) → **~175MB**. If ingest is restricted to emails
-  appearing in the AI rollup, this collapses to single-digit MB.
+- **`email_resolution`** — scoped to AI-relevant authors (decided
+  2026-08-05, see above), so this is bounded by the distinct-author set
+  behind 234,263 AI-tagged commits rather than by 1,094,043 discovered
+  developers. At ~100 bytes/row plus the email primary-key and login
+  indexes, that is **single-digit to low tens of MB**. The exact row count
+  is unknown until extraction and is the one figure here worth measuring
+  rather than estimating — it is also the input to the claude-leaderboard
+  seed's coverage question (349,425 pairs, all AI-relevant by construction).
 - `corpus_stats` — three rows. Negligible.
 
-**Total at current scale: roughly 60MB (narrow ingest) to 230MB (ingest
-every resolved pair)** — against ~1.4-1.6GB before. At 10x corpus growth,
-roughly 0.6-2.3GB.
+**Total at current scale: roughly 60-90MB** — against ~1.4-1.6GB before, and
+against the ~230MB an unscoped identity ingest would have cost. At 10x corpus
+growth, under 1GB.
 
 **Two honest consequences of that collapse:**
 
@@ -830,12 +868,37 @@ ROW_NUMBER() OVER (PARTITION BY j.login ORDER BY SUM(j.ai_commits) DESC, j.repo)
 ```
 
 That is argmax over **all-time** AI commits with the repo name as a
-deterministic tiebreak — *not* a 30-day ordering, as was assumed in
-discussion. View `j` (`aggregator.py:932`) spans `2005-01-01 .. current_date
-+ 1` unwindowed; the 30-day filter is applied separately for `ai_30d` in
-`agg_base`. (Incidentally that same `WHERE` clause is the defensive date
-clamp added after the 2170-commit incident, and its bounds match compactor's
-exactly — independent corroboration of the quarantine requirement above.)
+deterministic tiebreak — **not** a 30-day ordering. This was queried twice
+in discussion on the reasonable assumption that it must be windowed, so the
+verification chain is recorded here in full rather than asserted:
+
+- `agg_top_repo` groups `j` by `(login, repo)` and orders by
+  `SUM(j.ai_commits)` with no date predicate of its own.
+- Its `JOIN agg_base b ON b.login = j.login` filters *which logins* are
+  admitted; it does not restrict the date range of the rows summed.
+- View `j` (`aggregator.py:932`) spans `2005-01-01 .. current_date + 1` —
+  a validity clamp, not a window.
+- `summaries`, the table behind `j`, is loaded whole from every partition
+  in the store (`ingest_streaming`, `aggregator.py:1394`) with no date
+  filter anywhere on the load path.
+- The 30-day cutoff exists, but only in `agg_base`, applied to a *different*
+  column: `COALESCE(SUM(ai_commits) FILTER (WHERE date > ?), 0) AS ai_30d`
+  (`aggregator.py:952`).
+
+So `ai_commits_30d` is windowed and `top_repo` is not — they were computed
+over different spans in the same query, which is exactly the kind of
+asymmetry that survives unnoticed in a published artifact.
+
+**If `top_repo` is ever reinstated, choose the window deliberately.** The
+all-time argmax means a developer's displayed "top repo" can be one they
+haven't touched in years, which is probably not what a leaderboard reader
+would infer from it. A 30-day argmax — matching the `ai_commits_30d` the row
+is ranked by — is the more defensible default, but it is a product decision,
+not a restoration.
+
+(Incidentally, `j`'s date clamp is the defensive guard added after the
+2170-commit incident, and its bounds match compactor's exactly — independent
+corroboration of the quarantine requirement above.)
 
 Excluding it is cheap to reverse: it is a pure function of the rollup plus
 `repos`, so reinstating it later is one window query and no new data
@@ -1126,16 +1189,44 @@ The figures are measurable, and cheaply:
 4. **Write volume** = footprint × rescan cadence, and cadence is a parameter
    this plan chooses rather than discovers.
 
-**Sample the tail, not the mean.** Per the operator's framing — *ensure the
-system can support the extremes* — a random sample would actively mislead
+**Sample the tail, not the mean.** A random sample would actively mislead
 here. A handful of very large repos can dominate total bytes, per-object
 transfer time, and worst-case memory during materialization, and those are
 precisely the repos the warm-start research has not touched. The sample must
-include the corpus's actual largest repos by commit count, and the design
-must hold at that extreme, not at the median.
+include the corpus's actual largest repos by commit count.
 
 This measurement is a **Phase 0 deliverable**, gating the ARMOR parts of the
 design the same way the load test gates the Postgres parts.
+
+### Supporting the extremes is a design requirement, not just a measurement
+
+**Stated as a requirement 2026-08-05** (operator: *"not much to do but ensure
+the system can support the extremes"*). Measuring the tail is only useful if
+something is committed to happen when the tail turns out to be ugly. The
+requirement: **no single repository, at any size in the corpus, may fail a
+job, exhaust a pod's memory, or block the fleet.** Concretely, that means the
+following must hold or be built:
+
+1. **Streaming, never materialize-whole.** Extraction already walks history
+   commit-by-commit; the Parquet write must be batched rather than
+   accumulating all rows in memory first. The predecessor OOM'd a 2Gi pod
+   materializing 400K commits' message bodies at once — that incident is the
+   proof this requirement is not theoretical.
+2. **A warm-start size ceiling with a defined fallback.** If a repo's
+   warm-start artifact exceeds a threshold set from the measurement, skip
+   storing it and let that repo always take the full-clone path. Degrading to
+   the slow-but-correct path is strictly better than failing, and warm-start
+   is an optimization — its absence is already a supported state.
+3. **Bounded transaction size.** A very large repo must not hold one Postgres
+   transaction open long enough to pin the xmin horizon (see "Durability and
+   load"); chunk the rollup write if the row count warrants it.
+4. **The largest repo is a fixture.** Whatever the measurement finds as the
+   corpus maximum becomes a named test case, exercised end-to-end before
+   Phase 5, not discovered in production.
+
+If the measurement shows the extremes are comfortably handled, items 2 and 3
+cost nothing to skip — but that is a conclusion the measurement licenses,
+not an assumption to start from.
 
 ## Corpus migration (inherit, don't rediscover)
 
@@ -1336,14 +1427,24 @@ Consequences worth carrying forward:
   commitgraph's `email_resolution` (cached per-email API resolution) and
   `user_aliases` (hand-curated read-time merge) are already the same
   two-layer design claude-leaderboard's `author_login_cache` +
-  `_load_username_aliases()` used — this redesign explicitly keeps both
-  verbatim and applies the alias join at read time in the aggregator,
-  matching `generate_leaderboard_v3.py`'s `_apply_aliases` pattern exactly.
+  `_load_username_aliases()` used — this redesign keeps both concepts, with
+  the **results** moved into Postgres so the alias merge can be a real join
+  evaluated before ranking (see "Identity lives in Postgres"; earlier drafts
+  said "kept in queue-api verbatim, joined at read time," which was not
+  implementable across that boundary).
   What genuinely doesn't change: resolution *throughput* is capped by the
   **same shared ~30 req/min GitHub API budget as discovery search** — this
-  redesign adds no resolution capacity, and the backlog (363k pending emails
-  at last measurement) is structurally bounded by that shared resource, the
-  same way discovery is.
+  redesign adds no resolution capacity.
+  **Corrected 2026-08-05: the demand under that cap is much smaller than the
+  "363k pending emails" figure this section previously cited.** That number
+  counts pending rows across all discovered emails; the predecessor's own
+  aggregator only ever *fed* the queue with emails carrying AI commits
+  (`aggregator.py:1414-1428`, `WHERE ... c.n > 0`), and this design goes
+  further by not storing the rest at all (see "The rollup holds AI-relevant
+  commits only"). The ceiling is unchanged and still real; the queue behind
+  it is bounded by the distinct-author set behind 234,263 AI-tagged commits,
+  not by 1.09M developers. Measure the true figure during Phase 1 extraction
+  rather than carrying 363k forward as if it were the work remaining.
   **Corrected 2026-08-04 (gap-review round 5): the `fed 0 new emails` bug
   cited in earlier drafts here was independently point-fixed upstream
   before this plan even started.** `commitgraph-deprecated` commit

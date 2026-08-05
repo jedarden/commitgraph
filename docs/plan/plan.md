@@ -1490,9 +1490,41 @@ path to *something publishing again* over completeness in early phases.
      general `commitgraph-build-workflowtemplate.yml` firing against this
      docs-only repo and hard-failing on `pip install -e .[test]` — see
      `docs/notes/repo-rename-2026-08-04.md`.
-   - Archive `commitgraph-deprecated`'s remaining unused manifests
-     (`*.disabled` files) once the new pipeline has run clean for a defined
-     period — deletion, not disablement, and only then.
+   - Delete the manifests for components this design **permanently retires**
+     — but only those, and only after the new pipeline has run clean for a
+     defined period. See the classification below before deleting anything.
+
+### What the 2026-08-05 teardown disabled, and what comes back
+
+**Corrected 2026-08-05.** An earlier version of this phase said to archive
+"`commitgraph-deprecated`'s remaining unused manifests (`*.disabled` files)"
+as a blanket deletion. That was wrong twice over: those files are not in the
+`commitgraph-deprecated` repo at all — they live in
+`declarative-config/k8s/ord-devimprint/commitgraph/`, the namespace directory
+— and **three of the twelve are needed again by this very plan.** Deleting
+them wholesale would remove manifests Phase 5 depends on.
+
+All twelve are confirmed predecessor components (every one references a
+`ronaldraygun/commitgraph-*` image, except `oauth2-proxy`, which is the
+generic upstream proxy fronting the admin UI):
+
+| Disabled manifest | Fate under this design |
+|---|---|
+| `search-worker` | **Returns in Phase 5** — reused as-is; discovery is explicitly out of scope for the rewrite |
+| `user-worker` | **Returns in Phase 5** — reused as-is |
+| `user-enrichment-worker` | **Returns, modified** — it is the "live enrichment worker" named as a writer to the identity ingest path; must be repointed from queue-api to Postgres |
+| `admin-alias-sync` | **Returns, modified** — syncs `admin-alias-configmap.yml` into `user_aliases`, which now lives in Postgres |
+| `admin-ui` + `oauth2-proxy` | **Deferred decision** — the alias-curation surface. Not needed to run the pipeline; needed to curate identity |
+| `clone-worker`, `clone-worker-large`, `clone-worker-parallel` | **Replaced** by the rewritten clone-worker — delete once the replacement is live |
+| `aggregator` | **Replaced** by the rewritten aggregator — delete once live |
+| `filter-worker` | **Permanently retired** — detection is inlined into clone-worker step 3 |
+| `compactor` | **Permanently retired** — quarantine moves into clone-worker step 4 |
+| `onboard-worker` | Already disabled before the teardown (commit `ed179035`), pointing at the retired `devimprint` bucket. Independent of this plan |
+
+So Phase 6's deletion set is: `filter-worker`, `compactor`, the three
+clone-worker variants, and `aggregator` — six of twelve, and the last three
+only after their replacements are confirmed live. Everything else either
+returns or is a separate decision.
 
 ## Relationship to claude-leaderboard
 

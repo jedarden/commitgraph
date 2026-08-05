@@ -905,15 +905,105 @@ Excluding it is cheap to reverse: it is a pure function of the rollup plus
 capture. Dropping it also removes the last consumer that forced repo *names*
 into the published snapshot.
 
+### Per-user 30-day activity histogram
+
+**Adopted 2026-08-05, modelled on claude-leaderboard** (operator: *"similar to
+how claude-leaderboard does it"*). Each leaderboard row carries a
+commits-per-day series over the trailing 30 days.
+
+**What claude-leaderboard actually does**, read from
+`vibecodeleaderboard-backend/src/generate_leaderboard_v3.py` rather than
+inferred:
+
+- **Dense fixed-length array**, `[0] * 30`, filled by
+  `day_index = (commit_date - start_date).days` with a `0 <= day_index < 30`
+  bound check (lines 387-398). Index 0 is the oldest day, 29 the most recent.
+- **Straight off the rollup**, no raw-commit access:
+  `SELECT username, day, SUM(commits) FROM repo_user_daily WHERE username IN
+  (...) AND day >= ? GROUP BY username, day` (lines 389-392).
+- **One board-wide window, not per-user**: `end_date =
+  datetime.now(timezone.utc).date()`, `start_date = end_date - 29`
+  (lines 235-240). Every row's histogram covers the same 30 calendar days,
+  which is what makes them comparable across rows.
+- **Computed only for the rows that get displayed** — `top_usernames` /
+  `top_candidates`, not the whole user table.
+- **Emitted as** `[{"date": iso, "count": n}, ...]`, 30 entries (lines 441-444).
+- **It also feeds ranking.** Cumulative sums over the reversed series are used
+  as a progressive-recency tiebreaker (lines 429-436), so two users with equal
+  30-day totals are separated by who was active more recently.
+
+**Mapping onto this design — it costs nothing to add.**
+`repo_user_daily_tool` is already keyed `(repo_id, user_id, tool, day)` with a
+`commits` measure, so the query is the same shape:
+
+```sql
+SELECT user_id, day, SUM(commits) AS cnt
+FROM repo_user_daily_tool
+WHERE day >= $1
+GROUP BY user_id, day
+```
+
+No new data capture, no schema change, no extra write cost. The `tool`
+dimension is also available for free if a per-tool stacked histogram is ever
+wanted — the rollup already carries it.
+
+**This is AI commits per day, matching every other field on the row.** The
+distinction doesn't arise in claude-leaderboard, where a single tool means
+every rollup row is already a Claude commit. It does arise here: the
+tool-agnostic rollup was deliberately dropped (see "The rollup holds
+AI-relevant commits only"), so an *all-commits* histogram would mean
+resurrecting a ~1.3GB table. Not proposed — `ai_commits_30d` is what the row
+is ranked by, and a histogram measuring something else would be actively
+confusing next to it.
+
+**Three consequences worth recording:**
+
+1. **Daily granularity is now load-bearing.** Earlier discussion floated
+   collapsing the rollup to a coarser per-user total as a sizing
+   simplification. That option is foreclosed — this histogram is its
+   concrete consumer. Retention tiering must therefore preserve the trailing
+   30 days at daily grain; the >400-day design already does, but it is now a
+   constraint rather than an incidental property.
+2. **Scope the computation to published rows**, as claude-leaderboard does.
+   This plan currently specifies a full ranked list of "hundreds of thousands
+   of rows"; attaching 30 values to every one of them is the difference
+   between a few MB and a few tens of MB (see sizing below). Cheap either
+   way, but it should be a decision rather than an accident.
+3. **Anchor on `current_date`, not per-user `MAX(day)`.** Per-user anchoring
+   would make each row's window start on a different date and the histograms
+   incomparable. Note this differs from the old commitgraph aggregator, which
+   anchored at `LEAST(MAX(date), current_date)` as a defence against
+   future-dated commits — that guard is now redundant, since the quarantine
+   bound already rejects any `day` outside `[2005-01-01, current_date + 1]`
+   before it reaches Postgres.
+
+**Adopt the progressive-recency tiebreaker too.** It is free once the series
+exists, and it resolves ties toward recent activity rather than arbitrarily.
+
+**Storage shape:** store the bare 30-element integer array plus a single
+`window_start` date in the snapshot's metadata, rather than claude-leaderboard's
+30 `{date, count}` objects per row. The consumer reconstructs dates from the
+offset; repeating 30 ISO-8601 strings on every row would cost more than the
+counts themselves.
+
 **Leaderboard snapshot sizing (ARMOR, Parquet, the full ranked list):**
 per-row shape is the live JSON schema minus `top_repo` (rank, username,
 ai_commits_30d, ai_commits_total, ship_streak, tools[], providers[],
-last_active, verified) plus `last_scanned_at` from `MAX(insert_time)` —
-roughly 110-115 bytes/row uncompressed, compressing to an estimated 35-50
+last_active, verified), plus `last_scanned_at` from `MAX(insert_time)` and
+the 30-element `daily_ai_commits` array — roughly 110-115 bytes/row
+uncompressed for the scalar fields, compressing to an estimated 35-50
 bytes/row in Parquet given heavy repetition in low-cardinality columns
 (`providers` is almost always just `["github"]`) and small-range integers.
 At "hundreds of thousands of rows" (per the earlier full-list-not-top-N
-decision): **roughly 10-40MB** — never a real storage concern.
+decision): **roughly 10-40MB** for the scalars.
+
+**The histogram adds an estimated 10-30 bytes/row compressed** — 30 small
+integers, overwhelmingly zeros for the long tail of users with sparse
+activity, which Parquet's RLE/dictionary encoding handles well. At 300K rows
+that is **+3-9MB**, taking the snapshot to roughly 15-50MB. Still not a
+storage concern, but it roughly doubles the per-row payload, which is the
+reason consequence 2 above (scope the histogram to published rows, as
+claude-leaderboard does) is worth deciding rather than defaulting into.
 
 **No re-evaluation trigger is defined for "Postgres computes ranking
 directly" past current scale.** The "trivial at this row count" claim is
@@ -1069,6 +1159,13 @@ same clone-worker transaction, with the daily rows for that window deleted in
 the same pass — keeping the whole-slice-replace idempotency property intact.
 The leaderboard needs a 30-day window and all-time totals; all-time can be
 served from the monthly tier without loss.
+
+**Hard constraint on any future tiering: the trailing 30 days must stay at
+daily granularity.** The per-user activity histogram reads exactly that
+window day-by-day (see "Per-user 30-day activity histogram"), so collapsing
+it would break a shipped feature. The >400-day boundary proposed above
+already satisfies this by a wide margin — recorded here so a later,
+more aggressive tiering pass doesn't quietly cross the line.
 
 Related and independent of table size: **declarative range partitioning by
 `day`** would let the 30-day query touch one or two partitions and let old
@@ -1609,6 +1706,11 @@ exactly like right numbers until someone checks.
    whole-slice-replace transaction.
 6. **Exclusion is honoured.** No repo with `repos.excluded_at IS NOT NULL`
    contributes to any published ranking.
+7. **Histogram reconciles with its own row.** For every published row, the
+   30 values in `daily_ai_commits` sum exactly to `ai_commits_30d`. Both are
+   derived from the same rollup over the same window, so any divergence means
+   the two queries disagree about the window boundary or the alias merge —
+   the two places this is most likely to break silently.
 
 ## Edge cases
 

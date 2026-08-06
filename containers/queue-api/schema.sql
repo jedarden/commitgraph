@@ -6,13 +6,14 @@ CREATE TABLE IF NOT EXISTS repo_queue (
   id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   provider        TEXT NOT NULL,
   repo_full_name  TEXT NOT NULL,       -- e.g. owner/name
-  kind            TEXT NOT NULL DEFAULT 'normal-clone', -- 'normal-clone' | 'fork-clone' | 'mirror-clone' | etc.
+  kind            TEXT NOT NULL DEFAULT 'normal-clone', -- 'normal-clone' | 'fork-clone' | 'mirror-clone' | 'redetect' | etc.
   status          TEXT NOT NULL DEFAULT 'pending',     -- 'pending' | 'processing' | 'completed' | 'failed'
   claimed_at      TIMESTAMPTZ,
   completed_at    TIMESTAMPTZ,
   error_message   TEXT,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT transaction_timestamp(),
-  updated_at      TIMESTAMPTZ NOT NULL DEFAULT transaction_timestamp()
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT transaction_timestamp(),
+  CONSTRAINT repo_queue_provider_repo_kind UNIQUE (provider, repo_full_name, kind)
 );
 
 CREATE INDEX IF NOT EXISTS repo_queue_status_idx ON repo_queue (status);

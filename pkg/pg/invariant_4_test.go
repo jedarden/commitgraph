@@ -201,7 +201,7 @@ func (r *mockResult) LastInsertId() (int64, error) {
 
 // TestInvariant4_QueryStructure validates that the query structure is correct.
 func TestInvariant4_QueryStructure(t *testing.T) {
-	executor := &mockInvariantExecutor{}
+	executor := &mockExecutor{}
 	ctx := context.Background()
 
 	// Test that we can execute queries without syntax errors

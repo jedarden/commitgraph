@@ -23,27 +23,6 @@ func TestExclusionOperations(t *testing.T) {
 	t.Skip("requires test database setup")
 }
 
-// mockExec is a mock implementation of Executor for testing.
-type mockExec struct{}
-
-func (m *mockExec) ExecContext(ctx context.Context, query string, args ...interface{}) (Result, error) {
-	return &mockResult{}, nil
-}
-
-func (m *mockExec) QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row {
-	return nil
-}
-
-func (m *mockExec) QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
-	return nil, nil
-}
-
-type mockResult struct{}
-
-func (m *mockResult) RowsAffected() (int64, error) {
-	return 1, nil
-}
-
 // TestNewRepoExcluder tests the constructor.
 func TestNewRepoExcluder(t *testing.T) {
 	m := &mockExec{}

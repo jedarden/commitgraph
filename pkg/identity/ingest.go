@@ -160,3 +160,18 @@ func (i *Ingester) IngestResolution(ctx context.Context, rows []ResolutionRow) e
 func (i *Ingester) GetProcessed() int64 {
 	return i.Processed
 }
+
+// GetIngested returns the total number of records successfully ingested.
+func (i *Ingester) GetIngested() int64 {
+	return i.Ingested
+}
+
+// GetSkipped returns the total number of records skipped.
+func (i *Ingester) GetSkipped() int64 {
+	return i.Skipped
+}
+
+// GetSkipDetails returns the breakdown of skip reasons.
+func (i *Ingester) GetSkipDetails() map[SkipReason]int64 {
+	return i.SkipDetails
+}

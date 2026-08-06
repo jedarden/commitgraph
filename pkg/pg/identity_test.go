@@ -10,39 +10,6 @@ import (
 	"github.com/jedarden/commitgraph/pkg/identity"
 )
 
-// mockExecutor is a test double that captures SQL execution without a real database.
-type mockExecutor struct {
-	lastQuery    string
-	lastArgs     []interface{}
-	rowsAffected int64
-	shouldError  bool
-}
-
-func (m *mockExecutor) ExecContext(ctx context.Context, query string, args ...interface{}) (Result, error) {
-	m.lastQuery = query
-	m.lastArgs = args
-	if m.shouldError {
-		return nil, &mockError{err: "test error"}
-	}
-	return &mockResult{rowsAffected: m.rowsAffected}, nil
-}
-
-type mockResult struct {
-	rowsAffected int64
-}
-
-func (m *mockResult) RowsAffected() (int64, error) {
-	return m.rowsAffected, nil
-}
-
-type mockError struct {
-	err string
-}
-
-func (m *mockError) Error() string {
-	return m.err
-}
-
 // Test that the SQL query contains the exact ON CONFLICT rule from plan.md
 func TestIngestEmailResolution_SQLExact(t *testing.T) {
 	db := &mockExecutor{}

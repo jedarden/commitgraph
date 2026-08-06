@@ -1,25 +1,15 @@
 ---
-# Kubernetes CronJob for periodic Invariant 2 audits
+# Periodic Invariant 2 audit — runs every 6 hours against production.
 #
-# This CronJob runs the invariant audit script every 6 hours against production.
-# If violations are detected, it sends a Slack alert and fails (which triggers
-# Kubernetes alerting).
+# NOTE: this was originally written as a `kind: CronJob`. CronJob and Job are
+# BANNED org-wide: ArgoCD cannot manage them idempotently, and CronJob-spawned
+# Job pods are not owned by ArgoCD, so they are never pruned and hold CPU/memory
+# reservations indefinitely. The sanctioned pattern is a long-running Deployment
+# with an internal scheduling loop, which is what this is.
 #
-# To deploy:
-#   kubectl apply -f k8s/invariant-2-audit-cronjob.yaml
-#
-# To run manually:
-#   kubectl create job --from=cronjob/invariant-2-audit manual-audit-$(date +%s)
-#
-# Environment variables (set via Secret or ConfigMap):
-#   POSTGRES_HOST - Postgres host
-#   POSTGRES_PORT - Postgres port (default: 5432)
-#   POSTGRES_DB - Database name
-#   POSTGRES_USER - Postgres user
-#   POSTGRES_PASSWORD_FILE - Path to password file in Secret
-#   SLACK_WEBHOOK_URL - Optional: Slack webhook for alerts
-apiVersion: batch/v1
-kind: CronJob
+# Deploy via declarative-config + ArgoCD — never `kubectl apply`.
+apiVersion: apps/v1
+kind: Deployment
 metadata:
   name: invariant-2-audit
   namespace: commitgraph
@@ -27,82 +17,92 @@ metadata:
     app: invariant-audit
     invariant: "2"
 spec:
-  # Run every 6 hours (at minute 0 past hours 0, 6, 12, 18)
-  schedule: "0 */6 * * *"
-  # Keep successful jobs for 24h, failed jobs for 7 days
-  successfulJobsHistoryLimit: 4
-  failedJobsHistoryLimit: 28
-  concurrencyPolicy: Forbid  # Don't run if previous job hasn't finished
-  jobTemplate:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: invariant-audit
+      invariant: "2"
+  template:
     metadata:
       labels:
         app: invariant-audit
         invariant: "2"
     spec:
-      # Deadline for job completion (10 minutes)
-      activeDeadlineSeconds: 600
-      # Retry on failure (up to 2 times)
-      backoffLimit: 2
-      template:
-        metadata:
-          labels:
-            app: invariant-audit
-            invariant: "2"
-        spec:
-          restartPolicy: OnFailure
-          containers:
-          - name: audit
-            image: postgres:16-alpine
-            command:
-            - /bin/bash
-            - /scripts/audit-invariant-2.sh
-            - production
-            env:
-            - name: POSTGRES_HOST
-              value: "postgres-commitgraph"  # Update with actual Postgres service name
-            - name: POSTGRES_PORT
-              value: "5432"
-            - name: POSTGRES_DB
-              value: "commitgraph"
-            - name: POSTGRES_USER
-              valueFrom:
-                secretKeyRef:
-                  name: postgres-credentials
-                  key: username
-            - name: POSTGRES_PASSWORD_FILE
-              value: "/etc/postgres-password/password"
-            - name: SLACK_WEBHOOK_URL
-              valueFrom:
-                secretKeyRef:
-                  name: alert-webhooks
-                  key: slack-invariant-violation
-                  optional: true  # Don't fail if webhook not configured
-            volumeMounts:
-            - name: scripts
-              mountPath: /scripts
-              readOnly: true
-            - name: postgres-password
-              mountPath: /etc/postgres-password
-              readOnly: true
-            resources:
-              requests:
-                cpu: 100m
-                memory: 64Mi
-              limits:
-                cpu: 500m
-                memory: 128Mi
-          volumes:
-          - name: scripts
-            configMap:
-              name: invariant-audit-scripts
-              defaultMode: 0755
-          - name: postgres-password
-            secret:
-              secretName: postgres-credentials
-              items:
-              - key: password
-                path: password
-                mode: 0400
+      containers:
+      - name: audit
+        image: postgres:16-alpine
+        command:
+        - /bin/bash
+        - -c
+        - |
+          # Internal scheduler: replaces `schedule: "0 */6 * * *"`.
+          # A single looping process is inherently `concurrencyPolicy: Forbid`.
+          # The audit is wrapped in `timeout` to preserve the old
+          # activeDeadlineSeconds: 600. A failed audit must NOT exit the
+          # container — that would crash-loop the Deployment and lose the
+          # schedule; it logs, alerts, and waits for the next cycle.
+          set -uo pipefail
+          INTERVAL="${AUDIT_INTERVAL_SECONDS:-21600}"
+          while true; do
+            echo "[invariant-2-audit] starting audit at $(date -Is)"
+            if timeout 600 /bin/bash /scripts/audit-invariant-2.sh production; then
+              echo "[invariant-2-audit] audit passed at $(date -Is)"
+            else
+              echo "[invariant-2-audit] AUDIT FAILED (exit $?) at $(date -Is)" >&2
+            fi
+            echo "[invariant-2-audit] sleeping ${INTERVAL}s"
+            sleep "${INTERVAL}"
+          done
+        env:
+        - name: AUDIT_INTERVAL_SECONDS
+          value: "21600"   # 6 hours
+        - name: POSTGRES_HOST
+          value: "postgres-commitgraph"  # Update with actual Postgres service name
+        - name: POSTGRES_PORT
+          value: "5432"
+        - name: POSTGRES_DB
+          value: "commitgraph"
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: postgres-credentials
+              key: username
+        - name: POSTGRES_PASSWORD_FILE
+          value: "/etc/postgres-password/password"
+        - name: SLACK_WEBHOOK_URL
+          valueFrom:
+            secretKeyRef:
+              name: alert-webhooks
+              key: slack-invariant-violation
+              optional: true
+        volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+          readOnly: true
+        - name: postgres-password
+          mountPath: /etc/postgres-password
+          readOnly: true
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 500m
+            memory: 128Mi
+      volumes:
+      - name: scripts
+        configMap:
+          name: invariant-audit-scripts
+          defaultMode: 0755
+      - name: postgres-password
+        secret:
+          secretName: postgres-credentials
+          items:
+          - key: password
+            path: password
+            mode: 0400
 ---
 # ConfigMap containing the audit scripts
 apiVersion: v1

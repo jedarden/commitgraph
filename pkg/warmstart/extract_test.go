@@ -38,6 +38,54 @@ func createTestTarball(t *testing.T, members []TarballMember) []byte {
 	return buf.Bytes()
 }
 
+// makeMockTarballWithPack creates a minimal valid warm-start tarball with custom pack file content.
+// This helper is designed for testing undersized or corrupted pack files.
+//
+// Parameters:
+//   - packContent: Custom pack file bytes (e.g., undersized data for testing)
+//   - packName: Optional custom pack filename (defaults to "objects/pack/pack-test.pack")
+//
+// Returns:
+//   - []byte: Valid tarball bytes containing config.json, ref, and the custom pack file
+//
+// The generated tarball includes:
+//   - config.json: Valid promisor configuration for partial clone
+//   - ref: A reference pointing to refs/heads/main with SHA abc123
+//   - objects/pack/pack-test.pack: The custom pack content provided
+//
+// Example usage for testing undersized pack files:
+//
+//	tarball := makeMockTarballWithPack(t, []byte("PACK"), "")  // 4 bytes (too small)
+//	_, err := warmstart.ParseTarball(tarball)
+//	// err should be a Truncated error indicating pack file is too small
+func makeMockTarballWithPack(t *testing.T, packContent []byte, packName string) []byte {
+	t.Helper()
+
+	// Default pack name if not provided
+	if packName == "" {
+		packName = "objects/pack/pack-test.pack"
+	}
+
+	// Create minimal valid config for promisor partial clone
+	configData := []byte(`{
+			"core.repositoryformatversion": "1",
+			"remote.origin.promisor": "true",
+			"remote.origin.partialclonefilter": "blob:none"
+		}`)
+
+	// Create minimal valid ref data (legacy format: "refpath SHA")
+	refData := []byte("refs/heads/main abc123")
+
+	// Build tarball members with the custom pack content
+	members := []TarballMember{
+		{Name: packName, Data: packContent},
+		{Name: "config.json", Data: configData},
+		{Name: "ref", Data: refData},
+	}
+
+	return createTestTarball(t, members)
+}
+
 func TestParseTarball_Valid(t *testing.T) {
 	packData := []byte("test pack data")
 	idxData := []byte("test idx data")
@@ -1320,4 +1368,129 @@ func TestParseTarball_TruncatedErrorHasMemberName(t *testing.T) {
 	} else {
 		t.Logf("Got error type %T: %v", err, err)
 	}
+}
+
+func TestMakeMockTarballWithPack_UndersizedPack(t *testing.T) {
+	// Test that makeMockTarballWithPack correctly creates tarballs with custom pack content
+	// and that undersized pack files are properly detected
+
+	tests := []struct {
+		name         string
+		packContent  []byte
+		expectError  bool
+		errorKind    ErrorKind
+		description  string
+	}{
+		{
+			name:        "valid-minimum-pack",
+			packContent: []byte("PACK123456789"), // 12 bytes - minimum valid header
+			expectError: false,
+			description: "Pack file with exactly 12 bytes (minimum valid header)",
+		},
+		{
+			name:        "undersized-11-bytes",
+			packContent: []byte("PACK1234567"), // 11 bytes - too small
+			expectError: true,
+			errorKind:   Truncated,
+			description: "Pack file with 11 bytes - below minimum header size",
+		},
+		{
+			name:        "undersized-4-bytes",
+			packContent: []byte("PACK"), // 4 bytes - way too small
+			expectError: true,
+			errorKind:   Truncated,
+			description: "Pack file with only 4 bytes - just the magic number",
+		},
+		{
+			name:        "undersized-0-bytes",
+			packContent: []byte{}, // 0 bytes - empty
+			expectError: true,
+			errorKind:   Truncated,
+			description: "Empty pack file",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Use the helper to create a tarball with custom pack content
+			tarball := makeMockTarballWithPack(t, tt.packContent, "")
+
+			// Parse the tarball
+			snapshot, err := ParseTarball(tarball)
+
+			// Check error expectations
+			if tt.expectError {
+				if err == nil {
+					t.Errorf("%s: expected error, got nil", tt.description)
+					return
+				}
+
+				// Verify it's a Truncated error
+				var truncErr *Error
+				if !errors.As(err, &truncErr) {
+					t.Errorf("%s: expected *Error type, got %T: %v", tt.description, err, err)
+					return
+				}
+
+				if truncErr.Kind != tt.errorKind {
+					t.Errorf("%s: expected error kind %v, got %v", tt.description, tt.errorKind, truncErr.Kind)
+				}
+
+				// Verify member name is set
+				if truncErr.MemberName == "" {
+					t.Errorf("%s: Truncated error should have MemberName set", tt.description)
+				}
+
+				t.Logf("%s: correctly detected as %s error: %v", tt.description, truncErr.Kind, truncErr)
+			} else {
+				if err != nil {
+					t.Errorf("%s: unexpected error: %v", tt.description, err)
+					return
+				}
+
+				// Verify snapshot was created
+				if snapshot == nil {
+					t.Errorf("%s: expected non-nil snapshot", tt.description)
+					return
+				}
+
+				// Verify pack file content matches
+				if len(snapshot.PackFiles) != 1 {
+					t.Errorf("%s: expected 1 pack file, got %d", tt.description, len(snapshot.PackFiles))
+				} else {
+					if !bytes.Equal(snapshot.PackFiles[0].Data, tt.packContent) {
+						t.Errorf("%s: pack content mismatch", tt.description)
+					}
+				}
+
+				t.Logf("%s: successfully parsed with pack size %d bytes", tt.description, len(tt.packContent))
+			}
+		})
+	}
+}
+
+func TestMakeMockTarballWithPack_CustomPackName(t *testing.T) {
+	// Test that makeMockTarballWithPack correctly handles custom pack names
+	customPackName := "objects/pack/pack-custom-123.pack"
+	packContent := []byte("PACK123456789")
+
+	// Create tarball with custom pack name
+	tarball := makeMockTarballWithPack(t, packContent, customPackName)
+
+	// Parse the tarball
+	snapshot, err := ParseTarball(tarball)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify pack file has the custom name
+	if len(snapshot.PackFiles) != 1 {
+		t.Fatalf("expected 1 pack file, got %d", len(snapshot.PackFiles))
+	}
+
+	if snapshot.PackFiles[0].Name != customPackName {
+		t.Errorf("expected pack name %s, got %s", customPackName, snapshot.PackFiles[0].Name)
+	}
+
+	t.Logf("Custom pack name correctly set: %s", snapshot.PackFiles[0].Name)
 }

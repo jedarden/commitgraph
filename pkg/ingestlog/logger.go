@@ -13,12 +13,14 @@ import (
 // Logger writes structured logs for ingest endpoint operations and errors.
 type Logger struct {
 	output *log.Logger
+	stats  *AggregateStats
 }
 
 // NewLogger creates a new ingest logger that writes to stderr (or a configured output).
 func NewLogger() *Logger {
 	return &Logger{
 		output: log.New(os.Stderr, "[INGEST-LOG] ", log.LstdFlags|log.Lmicroseconds|log.LUTC),
+		stats:  NewAggregateStats(),
 	}
 }
 
@@ -26,6 +28,26 @@ func NewLogger() *Logger {
 func NewLoggerWithOutput(output *log.Logger) *Logger {
 	return &Logger{
 		output: output,
+		stats:  NewAggregateStats(),
+	}
+}
+
+// AggregateStats tracks aggregate statistics for ingest operations.
+type AggregateStats struct {
+	TotalProcessed int // Total records attempted
+	TotalSkipped   int // Total records skipped (e.g., empty login, validation failures)
+	TotalIngested  int // Total records successfully ingested
+	TotalRetries   int // Total retry attempts
+	TotalFailures  int // Total final failures (after all retries)
+	StartTime      time.Time
+	LastUpdateTime time.Time
+}
+
+// NewAggregateStats creates a new AggregateStats instance.
+func NewAggregateStats() *AggregateStats {
+	return &AggregateStats{
+		StartTime:      time.Now().UTC(),
+		LastUpdateTime: time.Now().UTC(),
 	}
 }
 
@@ -47,6 +69,9 @@ type UserContext struct {
 
 // EndpointContext contains HTTP endpoint interaction details.
 type EndpointContext struct {
+	Endpoint      string `json:"endpoint"`                       // Endpoint identifier (e.g., "github-username-resolution")
+	Method        string `json:"method"`                         // HTTP method (GET, POST, etc.)
+	Path          string `json:"path"`                           // Request path
 	URL           string `json:"url"`                            // Full HTTP endpoint URL being called
 	AttemptNumber int    `json:"attempt_number"`                 // Current retry attempt (1-based)
 	StatusCode    int    `json:"status_code,omitempty"`          // HTTP status code received
@@ -116,7 +141,83 @@ func (l *Logger) LogFailureWithEntry(entry *LogEntry) error {
 // LogSuccessWithEntry logs a successful resolution using the new structured LogEntry format.
 func (l *Logger) LogSuccessWithEntry(entry *LogEntry) error {
 	entry.EventType = "success"
+	l.stats.TotalIngested++
+	l.stats.TotalProcessed++
+	l.stats.LastUpdateTime = time.Now().UTC()
 	return l.logEntry(entry)
+}
+
+// RecordSkipped records a skipped record (e.g., empty login, validation failure).
+func (l *Logger) RecordSkipped(reason string) {
+	l.stats.TotalSkipped++
+	l.stats.LastUpdateTime = time.Now().UTC()
+	l.output.Printf("SKIP: %s | Total skipped: %d\n", reason, l.stats.TotalSkipped)
+}
+
+// RecordRetry records a retry attempt.
+func (l *Logger) RecordRetry(entry *LogEntry) error {
+	l.stats.TotalRetries++
+	l.stats.LastUpdateTime = time.Now().UTC()
+	return l.LogRetryWithEntry(entry)
+}
+
+// RecordFailure records a final failure after all retries exhausted.
+func (l *Logger) RecordFailure(entry *LogEntry) error {
+	l.stats.TotalFailures++
+	l.stats.LastUpdateTime = time.Now().UTC()
+	return l.LogFailureWithEntry(entry)
+}
+
+// GetStats returns the current aggregate statistics.
+func (l *Logger) GetStats() *AggregateStats {
+	return l.stats
+}
+
+// LogStats logs the current aggregate statistics in a formatted summary.
+func (l *Logger) LogStats(title string) {
+	elapsed := l.stats.LastUpdateTime.Sub(l.stats.StartTime)
+	rate := float64(l.stats.TotalProcessed) / elapsed.Seconds()
+
+	l.output.Println("\n=== " + title + " ===")
+	l.output.Printf("Records processed:    %d\n", l.stats.TotalProcessed)
+	l.output.Printf("Records skipped:      %d (%.1f%%)\n", l.stats.TotalSkipped,
+		float64(l.stats.TotalSkipped)/float64(l.stats.TotalProcessed)*100)
+	l.output.Printf("Records ingested:     %d (%.1f%%)\n", l.stats.TotalIngested,
+		float64(l.stats.TotalIngested)/float64(l.stats.TotalProcessed)*100)
+	l.output.Printf("Retry attempts:       %d\n", l.stats.TotalRetries)
+	l.output.Printf("Final failures:       %d\n", l.stats.TotalFailures)
+	l.output.Printf("Elapsed time:         %v\n", elapsed.Round(time.Millisecond))
+	l.output.Printf("Average rate:         %.2f records/sec\n", rate)
+}
+
+// BatchProgress represents progress information for batch processing.
+type BatchProgress struct {
+	BatchNum        int           // Current batch number (1-based)
+	TotalBatches    int           // Total number of batches
+	ProcessedRows   int           // Total rows processed so far
+	TotalRows       int           // Total rows to process
+	BatchElapsed    time.Duration // Time taken for this batch
+	TotalElapsed    time.Duration // Total elapsed time
+}
+
+// LogBatchProgress logs batch processing progress with rate and ETA calculations.
+// This is suitable for monitoring large production runs (e.g., 349,425 records).
+func (l *Logger) LogBatchProgress(progress BatchProgress) {
+	percentComplete := float64(progress.ProcessedRows) / float64(progress.TotalRows) * 100
+
+	// Calculate average rate
+	avgRate := float64(progress.ProcessedRows) / progress.TotalElapsed.Seconds()
+
+	// Estimate time remaining
+	rowsRemaining := progress.TotalRows - progress.ProcessedRows
+	etaSeconds := float64(rowsRemaining) / avgRate
+	eta := time.Duration(etaSeconds) * time.Second
+
+	l.output.Printf("  Progress: %d/%d batches (%d rows, %.1f%%) | Rate: %.0f rows/sec | ETA: %v (batch took: %v)\n",
+		progress.BatchNum, progress.TotalBatches, progress.ProcessedRows, percentComplete,
+		avgRate, eta.Round(time.Second), progress.BatchElapsed.Round(time.Millisecond))
+
+	l.stats.LastUpdateTime = time.Now().UTC()
 }
 
 // logEvent writes a structured log event.
@@ -227,6 +328,200 @@ func LogFailureInline(email, githubUsername, endpointURL string, attemptNumber, 
 		log.Printf("ERROR: failed to write ingest failure log: %v\n", err)
 		log.Printf("ERROR: event was: failure for email=%s github_username=%s\n", email, githubUsername)
 	}
+}
+
+// ErrorRecovery provides recovery suggestions for different error types.
+type ErrorRecovery struct {
+	Suggestion string // Actionable recovery suggestion
+	Severity   string // "low", "medium", "high"
+}
+
+// GetErrorRecovery returns actionable recovery suggestions based on error type.
+func GetErrorRecovery(errorType string, statusCode int) ErrorRecovery {
+	switch errorType {
+	case "timeout":
+		return ErrorRecovery{
+			Suggestion: "Network timeout - increase client timeout, check network connectivity, or retry with exponential backoff",
+			Severity:   "medium",
+		}
+	case "network":
+		return ErrorRecovery{
+			Suggestion: "Network error - verify endpoint availability, check DNS resolution, inspect firewall rules",
+			Severity:   "high",
+		}
+	case "client_error":
+		return ErrorRecovery{
+			Suggestion: fmt.Sprintf("Client error %d - validate request format, check authentication, verify payload structure", statusCode),
+			Severity:   "high",
+		}
+	case "server_error":
+		return ErrorRecovery{
+			Suggestion: fmt.Sprintf("Server error %d - service unavailable or overloaded, implement retry with exponential backoff", statusCode),
+			Severity:   "medium",
+		}
+	case "parse_error":
+		return ErrorRecovery{
+			Suggestion: "Parse error - response format changed or invalid JSON, check API schema changes",
+			Severity:   "high",
+		}
+	default:
+		return ErrorRecovery{
+			Suggestion: "Unknown error - check service logs, verify request payload, inspect stack trace for details",
+			Severity:   "low",
+		}
+	}
+}
+
+// LogErrorWithRecovery logs an error with actionable recovery suggestions.
+func (l *Logger) LogErrorWithRecovery(entry *LogEntry) error {
+	// Get recovery suggestion based on error type
+	recovery := GetErrorRecovery(entry.Error.Type, entry.Endpoint.StatusCode)
+
+	// Log the original error
+	var err error
+	switch entry.EventType {
+	case "retry":
+		err = l.LogRetryWithEntry(entry)
+	case "failure":
+		err = l.LogFailureWithEntry(entry)
+	default:
+		err = l.logEntry(entry)
+	}
+
+	if err != nil {
+		return err
+	}
+
+	// Log recovery suggestion
+	l.output.Printf("RECOVERY [%s severity]: %s\n", recovery.Severity, recovery.Suggestion)
+
+	return nil
+}
+
+// StatusReport contains comprehensive status information for periodic reporting.
+type StatusReport struct {
+	Title           string       // Report title
+	Logger          *Logger      // Logger instance with stats
+	ProcessedRows   int          // Total rows processed
+	TotalRows       int          // Total rows to process
+	CurrentBatch    int          // Current batch number
+	TotalBatches    int          // Total number of batches
+	LastError       string       // Last error message
+	LastErrorTime   time.Time    // Time of last error
+	ErrorCount      int          // Number of errors since last report
+	IncludeProgress bool         // Whether to include progress percentage
+}
+
+// LogStatusReport logs a comprehensive status report suitable for periodic monitoring.
+// This provides production-ready visibility into long-running operations.
+func (l *Logger) LogStatusReport(report StatusReport) {
+	l.output.Println("\n=== " + report.Title + " ===")
+	l.output.Printf("Timestamp: %s\n", time.Now().UTC().Format(time.RFC3339))
+
+	// Aggregate statistics
+	l.output.Printf("Records processed:   %d", l.stats.TotalProcessed)
+	if report.IncludeProgress && report.TotalRows > 0 {
+		percentComplete := float64(report.ProcessedRows) / float64(report.TotalRows) * 100
+		l.output.Printf(" (%.1f%% of %d total)", percentComplete, report.TotalRows)
+	}
+	l.output.Println()
+
+	l.output.Printf("Records skipped:     %d\n", l.stats.TotalSkipped)
+	l.output.Printf("Records ingested:    %d\n", l.stats.TotalIngested)
+	l.output.Printf("Retry attempts:      %d\n", l.stats.TotalRetries)
+	l.output.Printf("Final failures:      %d\n", l.stats.TotalFailures)
+
+	// Progress information
+	if report.CurrentBatch > 0 && report.TotalBatches > 0 {
+		l.output.Printf("Batch progress:     %d/%d batches completed\n", report.CurrentBatch, report.TotalBatches)
+	}
+
+	// Error summary
+	if report.ErrorCount > 0 {
+		l.output.Printf("Recent errors:      %d since last report\n", report.ErrorCount)
+		if report.LastError != "" {
+			l.output.Printf("Last error:         %s (at %s)\n", report.LastError, report.LastErrorTime.Format(time.RFC3339))
+		}
+	}
+
+	// Performance metrics
+	elapsed := time.Since(l.stats.StartTime)
+	l.output.Printf("Elapsed time:       %v\n", elapsed.Round(time.Millisecond))
+	if l.stats.TotalProcessed > 0 {
+		rate := float64(l.stats.TotalProcessed) / elapsed.Seconds()
+		l.output.Printf("Average rate:       %.2f records/sec\n", rate)
+	}
+
+	// ETA calculation
+	if report.TotalRows > 0 && report.ProcessedRows > 0 {
+		rowsRemaining := report.TotalRows - report.ProcessedRows
+		avgRate := float64(report.ProcessedRows) / elapsed.Seconds()
+		etaSeconds := float64(rowsRemaining) / avgRate
+		eta := time.Duration(etaSeconds) * time.Second
+		l.output.Printf("Estimated complete: %v\n", time.Now().UTC().Add(eta).Format(time.RFC3339))
+		l.output.Printf("ETA remaining:      %v\n", eta.Round(time.Second))
+	}
+
+	l.output.Println("===")
+}
+
+// PeriodicReporter provides automatic periodic status reporting.
+type PeriodicReporter struct {
+	logger       *Logger
+	report       StatusReport
+	interval     time.Duration
+	stopChan     chan struct{}
+	lastReport   time.Time
+	errorBuffer  []string
+	maxErrors    int
+}
+
+// NewPeriodicReporter creates a new periodic reporter.
+func NewPeriodicReporter(logger *Logger, report StatusReport, interval time.Duration) *PeriodicReporter {
+	return &PeriodicReporter{
+		logger:      logger,
+		report:      report,
+		interval:    interval,
+		stopChan:    make(chan struct{}),
+		lastReport:  time.Now(),
+		errorBuffer: make([]string, 0, 10),
+		maxErrors:   10,
+	}
+}
+
+// Start begins periodic status reporting in a background goroutine.
+func (pr *PeriodicReporter) Start() {
+	ticker := time.NewTicker(pr.interval)
+	go func() {
+		for {
+			select {
+			case <-ticker.C:
+				pr.logger.LogStatusReport(pr.report)
+				pr.lastReport = time.Now()
+			case <-pr.stopChan:
+				ticker.Stop()
+				return
+			}
+		}
+	}()
+}
+
+// Stop stops the periodic reporter and logs a final status report.
+func (pr *PeriodicReporter) Stop() {
+	close(pr.stopChan)
+	pr.logger.LogStatusReport(pr.report)
+}
+
+// AddError records an error for inclusion in the next status report.
+func (pr *PeriodicReporter) AddError(errorMsg string) {
+	if len(pr.errorBuffer) >= pr.maxErrors {
+		// Remove oldest error
+		pr.errorBuffer = pr.errorBuffer[1:]
+	}
+	pr.errorBuffer = append(pr.errorBuffer, errorMsg)
+	pr.report.ErrorCount++
+	pr.report.LastError = errorMsg
+	pr.report.LastErrorTime = time.Now()
 }
 
 // ToLogEntry converts a legacy Event to the new structured LogEntry format.
@@ -543,11 +838,65 @@ func CaptureRequestID(requestID string) string {
 	return requestID
 }
 
+// CaptureEndpointName creates an endpoint string with validation.
+// This helper function accepts an endpoint parameter and returns it with validation.
+//
+// Parameters:
+//   - endpoint: Endpoint identifier (e.g., "github-username-resolution", required)
+//
+// Returns:
+//   - The endpoint string
+//   - An error if validation fails (empty endpoint)
+func CaptureEndpointName(endpoint string) (string, error) {
+	// endpoint is required - return error if not provided
+	if endpoint == "" {
+		return "", fmt.Errorf("endpoint is required for EndpointContext")
+	}
+	return endpoint, nil
+}
+
+// CaptureMethod creates a method string with validation.
+// This helper function accepts an HTTP method parameter and returns it with validation.
+//
+// Parameters:
+//   - method: HTTP method (GET, POST, etc., required)
+//
+// Returns:
+//   - The method string
+//   - An error if validation fails (empty method)
+func CaptureMethod(method string) (string, error) {
+	// method is required - return error if not provided
+	if method == "" {
+		return "", fmt.Errorf("method is required for EndpointContext")
+	}
+	return method, nil
+}
+
+// CapturePath creates a path string with validation.
+// This helper function accepts a path parameter and returns it with validation.
+//
+// Parameters:
+//   - path: Request path (required)
+//
+// Returns:
+//   - The path string
+//   - An error if validation fails (empty path)
+func CapturePath(path string) (string, error) {
+	// path is required - return error if not provided
+	if path == "" {
+		return "", fmt.Errorf("path is required for EndpointContext")
+	}
+	return path, nil
+}
+
 // CaptureEndpointContext creates an EndpointContext struct with validation.
 // This helper function accepts endpoint interaction parameters and returns
 // a populated EndpointContext struct for use in log entries.
 //
 // Parameters:
+//   - endpoint: Endpoint identifier (e.g., "github-username-resolution", required)
+//   - method: HTTP method (GET, POST, etc., required)
+//   - path: Request path (required)
 //   - url: Full HTTP endpoint URL being called (required)
 //   - attemptNumber: Current retry attempt (1-based, required)
 //   - statusCode: HTTP status code received (0 if not applicable, defaults to 0)
@@ -555,9 +904,18 @@ func CaptureRequestID(requestID string) string {
 //
 // Returns:
 //   - A populated EndpointContext struct
-//   - An error if validation fails (empty URL or zero/negative attempt number)
-func CaptureEndpointContext(url string, attemptNumber int, statusCode int, responseBody string) (EndpointContext, error) {
+//   - An error if validation fails (empty endpoint, method, path, url or zero/negative attempt number)
+func CaptureEndpointContext(endpoint, method, path, url string, attemptNumber int, statusCode int, responseBody string) (EndpointContext, error) {
 	// Validate required fields
+	if endpoint == "" {
+		return EndpointContext{}, fmt.Errorf("endpoint is required for EndpointContext")
+	}
+	if method == "" {
+		return EndpointContext{}, fmt.Errorf("method is required for EndpointContext")
+	}
+	if path == "" {
+		return EndpointContext{}, fmt.Errorf("path is required for EndpointContext")
+	}
 	if url == "" {
 		return EndpointContext{}, fmt.Errorf("url is required for EndpointContext")
 	}
@@ -577,6 +935,9 @@ func CaptureEndpointContext(url string, attemptNumber int, statusCode int, respo
 	}
 
 	return EndpointContext{
+		Endpoint:      endpoint,
+		Method:        method,
+		Path:          path,
 		URL:           url,
 		AttemptNumber: attemptNumber,
 		StatusCode:    statusCode,
@@ -598,6 +959,9 @@ func CaptureEndpointContext(url string, attemptNumber int, statusCode int, respo
 //   - userID: User's unique identifier (optional, can be empty string)
 //   - sessionID: User's current session identifier (optional, can be empty string)
 //   - requestID: Current request identifier (optional, can be empty string)
+//   - endpoint: Endpoint identifier (e.g., "github-username-resolution", required)
+//   - method: HTTP method (GET, POST, etc., required)
+//   - path: Request path (required)
 //   - endpointURL: Full HTTP endpoint URL being called (required)
 //   - err: The error that occurred (can be nil for success cases)
 //   - statusCode: HTTP status code received (0 if not applicable)
@@ -613,7 +977,7 @@ func CaptureEndpointContext(url string, attemptNumber int, statusCode int, respo
 //
 // The function handles logging failures gracefully by returning the error
 // to the caller while ensuring the log entry is properly formatted and written.
-func LogIngestError(logger *Logger, email, githubUsername, userID, sessionID, requestID, endpointURL string, err error, statusCode int, responseBody string, attemptNumber, maxRetries, retryDelayMs int, totalDurationMs int64, eventType string) error {
+func LogIngestError(logger *Logger, email, githubUsername, userID, sessionID, requestID, endpoint, method, path, endpointURL string, err error, statusCode int, responseBody string, attemptNumber, maxRetries, retryDelayMs int, totalDurationMs int64, eventType string) error {
 	// Use default logger if none provided
 	if logger == nil {
 		logger = NewLogger()
@@ -643,8 +1007,26 @@ func LogIngestError(logger *Logger, email, githubUsername, userID, sessionID, re
 	// Store the captured requestID in the user context
 	userCtx.RequestID = capturedRequestID
 
+	// Capture endpoint name using the endpoint capture helper
+	capturedEndpoint, endpointErr := CaptureEndpointName(endpoint)
+	if endpointErr != nil {
+		return fmt.Errorf("failed to capture endpoint name: %w", endpointErr)
+	}
+
+	// Capture method using the method capture helper
+	capturedMethod, methodErr := CaptureMethod(method)
+	if methodErr != nil {
+		return fmt.Errorf("failed to capture method: %w", methodErr)
+	}
+
+	// Capture path using the path capture helper
+	capturedPath, pathErr := CapturePath(path)
+	if pathErr != nil {
+		return fmt.Errorf("failed to capture path: %w", pathErr)
+	}
+
 	// Capture endpoint context using the context capture helper (from cg-4zz54)
-	endpointCtx, endpointErr := CaptureEndpointContext(endpointURL, attemptNumber, statusCode, responseBody)
+	endpointCtx, endpointErr := CaptureEndpointContext(capturedEndpoint, capturedMethod, capturedPath, endpointURL, attemptNumber, statusCode, responseBody)
 	if endpointErr != nil {
 		return fmt.Errorf("failed to capture endpoint context: %w", endpointErr)
 	}

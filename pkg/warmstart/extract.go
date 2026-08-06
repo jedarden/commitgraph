@@ -304,6 +304,23 @@ func Materialize(gitDir string, snapshot *WarmStartSnapshot) error {
 		}
 	}
 
+	// Validate .ref files on disk after writing pack files
+	// This ensures all required .ref files were successfully materialized
+	var packFileNames []string
+	for _, pf := range snapshot.PackFiles {
+		if strings.HasSuffix(pf.Name, ".pack") {
+			// Extract the pack file name for filesystem validation
+			targetName := strings.TrimPrefix(pf.Name, "objects/pack/")
+			packFileNames = append(packFileNames, filepath.Join(packDir, targetName))
+		}
+	}
+	if len(packFileNames) > 0 {
+		missingRefFiles := ValidateRefFiles(packFileNames)
+		if len(missingRefFiles) > 0 {
+			return fmt.Errorf("ref validation failed after materialization: missing .ref files on disk: %s", strings.Join(missingRefFiles, ", "))
+		}
+	}
+
 	// Write loose ref file (NOT packed-refs)
 	refDir := filepath.Dir(snapshot.RefPath)
 	if refDir != "." {

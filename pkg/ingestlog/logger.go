@@ -38,7 +38,8 @@ type ErrorContext struct {
 
 // UserContext contains user identification information.
 type UserContext struct {
-	Email          string `json:"email"`           // User's email address being resolved
+	UserID        string `json:"user_id"`        // User's unique identifier
+	Email         string `json:"email"`           // User's email address being resolved
 	GithubUsername string `json:"github_username"` // Target GitHub username for resolution
 }
 
@@ -491,6 +492,23 @@ func CaptureUserContext(email, githubUsername string) (UserContext, error) {
 	}, nil
 }
 
+// CaptureUserID creates a userID string with validation.
+// This helper function accepts a userID parameter and returns it with validation.
+//
+// Parameters:
+//   - userID: User's unique identifier (optional, can be empty string)
+//
+// Returns:
+//   - The userID string (empty string if not provided)
+//   - nil (always succeeds - userID is optional)
+func CaptureUserID(userID string) string {
+	// userID is optional - return empty string if not provided
+	if userID == "" {
+		return ""
+	}
+	return userID
+}
+
 // CaptureEndpointContext creates an EndpointContext struct with validation.
 // This helper function accepts endpoint interaction parameters and returns
 // a populated EndpointContext struct for use in log entries.
@@ -543,6 +561,7 @@ func CaptureEndpointContext(url string, attemptNumber int, statusCode int, respo
 //   - logger: The Logger instance to write the log entry (can be nil, will use default)
 //   - email: User's email address being resolved (required)
 //   - githubUsername: Target GitHub username for resolution (required)
+//   - userID: User's unique identifier (optional, can be empty string)
 //   - endpointURL: Full HTTP endpoint URL being called (required)
 //   - err: The error that occurred (can be nil for success cases)
 //   - statusCode: HTTP status code received (0 if not applicable)
@@ -558,17 +577,23 @@ func CaptureEndpointContext(url string, attemptNumber int, statusCode int, respo
 //
 // The function handles logging failures gracefully by returning the error
 // to the caller while ensuring the log entry is properly formatted and written.
-func LogIngestError(logger *Logger, email, githubUsername, endpointURL string, err error, statusCode int, responseBody string, attemptNumber, maxRetries, retryDelayMs int, totalDurationMs int64, eventType string) error {
+func LogIngestError(logger *Logger, email, githubUsername, userID, endpointURL string, err error, statusCode int, responseBody string, attemptNumber, maxRetries, retryDelayMs int, totalDurationMs int64, eventType string) error {
 	// Use default logger if none provided
 	if logger == nil {
 		logger = NewLogger()
 	}
+
+	// Capture userID using the userID capture helper
+	capturedUserID := CaptureUserID(userID)
 
 	// Capture user context using the context capture helper (from cg-4zz54)
 	userCtx, userErr := CaptureUserContext(email, githubUsername)
 	if userErr != nil {
 		return fmt.Errorf("failed to capture user context: %w", userErr)
 	}
+
+	// Store the captured userID in the user context
+	userCtx.UserID = capturedUserID
 
 	// Capture endpoint context using the context capture helper (from cg-4zz54)
 	endpointCtx, endpointErr := CaptureEndpointContext(endpointURL, attemptNumber, statusCode, responseBody)

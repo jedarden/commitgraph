@@ -172,6 +172,16 @@ func NewMissingMemberError(memberName string) *Error {
 	}
 }
 
+// NewMissingMemberErrorWithContext creates an Error with Kind=MissingMember and additional context.
+// The context should provide human-readable details about what went wrong, such as a list of missing files.
+func NewMissingMemberErrorWithContext(memberName string, context string) *Error {
+	return &Error{
+		Kind:       MissingMember,
+		MemberName: memberName,
+		Context:    context,
+	}
+}
+
 // NewCorruptPackError creates an Error with Kind=CorruptPack.
 func NewCorruptPackError(memberName string, context string) *Error {
 	return &Error{

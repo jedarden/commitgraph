@@ -230,6 +230,26 @@ func TestNewMissingMemberError(t *testing.T) {
 	}
 }
 
+func TestNewMissingMemberErrorWithContext(t *testing.T) {
+	err := NewMissingMemberErrorWithContext(".ref", "missing .ref files: objects/pack/pack-abc.ref, objects/pack/pack-def.ref")
+
+	if err.Kind != MissingMember {
+		t.Errorf("NewMissingMemberErrorWithContext() Kind = %v, want %v", err.Kind, MissingMember)
+	}
+	if err.MemberName != ".ref" {
+		t.Errorf("NewMissingMemberErrorWithContext() MemberName = %q, want %q", err.MemberName, ".ref")
+	}
+	if err.Context != "missing .ref files: objects/pack/pack-abc.ref, objects/pack/pack-def.ref" {
+		t.Errorf("NewMissingMemberErrorWithContext() Context = %q, want %q", err.Context, "missing .ref files: objects/pack/pack-abc.ref, objects/pack/pack-def.ref")
+	}
+
+	// Verify error message formatting
+	expectedMsg := "warmstart: missing required member (member=.ref) - missing .ref files: objects/pack/pack-abc.ref, objects/pack/pack-def.ref"
+	if err.Error() != expectedMsg {
+		t.Errorf("NewMissingMemberErrorWithContext() Error() = %q, want %q", err.Error(), expectedMsg)
+	}
+}
+
 func TestNewCorruptPackError(t *testing.T) {
 	err := NewCorruptPackError("objects/pack/pack-123.pack", "checksum failed")
 

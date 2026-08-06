@@ -233,11 +233,7 @@ func ParseTarball(data []byte) (*WarmStartSnapshot, error) {
 	// Validate that corresponding .ref files exist for each .pack file
 	missingRefFiles := CollectMissingRefFiles(snapshot.PackFiles)
 	if len(missingRefFiles) > 0 {
-		return nil, &Error{
-			Kind:       MissingMember,
-			MemberName: ".ref",
-			Context:    fmt.Sprintf("missing .ref files: %s", strings.Join(missingRefFiles, ", ")),
-		}
+		return nil, NewMissingMemberErrorWithContext(".ref", fmt.Sprintf("missing .ref files: %s", strings.Join(missingRefFiles, ", ")))
 	}
 
 	// Parse config

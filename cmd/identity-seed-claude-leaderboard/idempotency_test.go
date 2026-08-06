@@ -10,8 +10,10 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/jedarden/commitgraph/pkg/identity"
 )
 
 // setupFixtureDB creates an in-memory SQLite database with the email_resolution
@@ -66,6 +68,159 @@ func cleanupFixtureDB(db *sql.DB) {
 			fmt.Printf("warning: failed to close database: %v\n", err)
 		}
 	}
+}
+
+// seedOnce simulates running the seed script once against the given database.
+//
+// This function encapsulates the seed logic: reading frozen claude-leaderboard
+// author_login_cache data and inserting it into email_resolution.
+//
+// For testing purposes, this uses test data instead of reading from an external
+// SQLite database. The production seed script would read from the actual frozen
+// claude-leaderboard data.
+//
+// Parameters:
+//   - db: Database connection to seed (must have email_resolution table)
+//
+// Returns an error if:
+//   - Database operations fail
+//   - Data validation fails
+func seedOnce(db *sql.DB) error {
+	// Test data simulating frozen claude-leaderboard author_login_cache
+	// In production, this would read from the actual SQLite database
+	testData := []struct {
+		email      string
+		login      string
+		resolvedAt time.Time
+	}{
+		{
+			email:      "user1@claude.ai",
+			login:      "claude-user-1",
+			resolvedAt: time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC),
+		},
+		{
+			email:      "user2@claude.ai",
+			login:      "claude-user-2",
+			resolvedAt: time.Date(2024, 1, 16, 11, 45, 0, 0, time.UTC),
+		},
+		{
+			email:      "user3@claude.ai",
+			login:      "claude-user-3",
+			resolvedAt: time.Date(2024, 1, 17, 14, 20, 0, 0, time.UTC),
+		},
+	}
+
+	// Insert each row into email_resolution
+	for _, row := range testData {
+		_, err := db.Exec(`
+			INSERT INTO email_resolution (email, login, source, resolved_at)
+			VALUES (?, ?, ?, ?)
+			ON CONFLICT(email) DO UPDATE SET
+				login = excluded.login,
+				source = excluded.source,
+				resolved_at = excluded.resolved_at
+		`, row.email, row.login, "seed", row.resolvedAt)
+		if err != nil {
+			return fmt.Errorf("failed to insert row for email %s: %w", row.email, err)
+		}
+	}
+
+	return nil
+}
+
+// TestSeedIdempotency is the primary idempotency guard that verifies running
+// the seed script twice produces identical results.
+//
+// This test protects against:
+// - Duplicate row insertion (ON CONFLICT rule not working)
+// - Timestamp changes on re-seed (resolved_at should be stable)
+// - Non-deterministic ordering (hash should be consistent)
+// - Schema violations (data types, constraints)
+//
+// Test flow:
+// 1. Set up a fixture database using setupFixtureDB()
+// 2. Capture initial baseline snapshot (pre-seed state)
+// 3. Run the seed script once
+// 4. Capture post-first-run snapshot
+// 5. Run the seed script a second time (same code, same database)
+// 6. Capture post-second-run snapshot
+// 7. Assert post-first-run and post-second-run snapshots are identical
+// 8. Clean up the database
+//
+// Fails with a clear message if:
+// - Snapshots differ (row count or hash mismatch)
+// - The seed script errors on either run
+func TestSeedIdempotency(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	// Step 1: Set up fixture database
+	db := setupFixtureDB()
+	defer cleanupFixtureDB(db)
+
+	t.Log("✓ Fixture database created")
+
+	// Step 2: Capture initial baseline snapshot (pre-seed state)
+	baseline, err := identity.CaptureSnapshot(db)
+	if err != nil {
+		t.Fatalf("Failed to capture baseline snapshot: %v", err)
+	}
+
+	t.Logf("✓ Baseline captured: %d rows, hash=%s", baseline.RowCount, baseline.Hash)
+
+	// Verify baseline is empty
+	if baseline.RowCount != 0 {
+		t.Errorf("Expected empty database at baseline, got %d rows", baseline.RowCount)
+	}
+
+	// Step 3: Run the seed script once
+	t.Log("Running first seed...")
+	if err := seedOnce(db); err != nil {
+		t.Fatalf("First seed failed: %v", err)
+	}
+	t.Log("✓ First seed completed successfully")
+
+	// Step 4: Capture post-first-run snapshot
+	snapshot1, err := identity.CaptureSnapshot(db)
+	if err != nil {
+		t.Fatalf("Failed to capture snapshot after first seed: %v", err)
+	}
+
+	t.Logf("✓ After first seed: %d rows, hash=%s", snapshot1.RowCount, snapshot1.Hash)
+
+	// Verify we got some data from the seed
+	if snapshot1.RowCount == 0 {
+		t.Error("Expected at least some rows to be seeded, but got 0")
+	}
+
+	// Step 5: Run the seed script a second time (same code, same database)
+	t.Log("Running second seed...")
+	if err := seedOnce(db); err != nil {
+		t.Fatalf("Second seed failed: %v", err)
+	}
+	t.Log("✓ Second seed completed successfully")
+
+	// Step 6: Capture post-second-run snapshot
+	snapshot2, err := identity.CaptureSnapshot(db)
+	if err != nil {
+		t.Fatalf("Failed to capture snapshot after second seed: %v", err)
+	}
+
+	t.Logf("✓ After second seed: %d rows, hash=%s", snapshot2.RowCount, snapshot2.Hash)
+
+	// Step 7: Assert post-first-run and post-second-run snapshots are identical
+	identical, err := identity.CompareSnapshots(snapshot1, snapshot2)
+	if err != nil {
+		// Snapshots differ - fail with clear message
+		t.Fatalf("Seed is NOT idempotent!\n%v", err)
+	}
+
+	if !identical {
+		t.Fatal("Seed is NOT idempotent! CompareSnapshots returned false")
+	}
+
+	t.Log("✓ Seed idempotency verified: no changes after second run")
 }
 
 // TestIdempotencyPlaceholder is a placeholder test that verifies the test

@@ -1290,13 +1290,27 @@ func TestParseTarball_TruncatedPackFileExactly11Bytes(t *testing.T) {
 		t.Errorf("expected context to mention minimum 12 bytes, got: %s", truncErr.Context)
 	}
 
-	// Verify the full error message is comprehensive
+	// Verify the full error message is comprehensive and actionable
 	errMsg := truncErr.Error()
+
+	// Must contain the pack file member name for debugging
 	if !strings.Contains(errMsg, "member=objects/pack/pack-undersized.pack") {
-		t.Errorf("error message should include member name: %s", errMsg)
+		t.Errorf("error message should include pack file member name: %s", errMsg)
 	}
+
+	// Must mention "truncated tarball" to indicate the error kind
 	if !strings.Contains(errMsg, "truncated tarball") {
-		t.Errorf("error message should mention truncated tarball: %s", errMsg)
+		t.Errorf("error message should mention 'truncated tarball': %s", errMsg)
+	}
+
+	// Must mention "12" to indicate the minimum byte requirement
+	if !strings.Contains(errMsg, "12") {
+		t.Errorf("error message should mention '12' (minimum byte size): %s", errMsg)
+	}
+
+	// Optionally also check for "minimum" or "bytes" for clarity
+	if !strings.Contains(errMsg, "minimum") && !strings.Contains(errMsg, "bytes") {
+		t.Errorf("error message should mention 'minimum' or 'bytes' for clarity: %s", errMsg)
 	}
 
 	t.Logf("Comprehensive error message: %s", errMsg)

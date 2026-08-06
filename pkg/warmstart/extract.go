@@ -231,20 +231,7 @@ func ParseTarball(data []byte) (*WarmStartSnapshot, error) {
 	}
 
 	// Validate that corresponding .ref files exist for each .pack file
-	var missingRefFiles []string
-	for _, baseName := range packBaseNames {
-		refName := baseName + ".ref"
-		foundRef := false
-		for _, pf := range snapshot.PackFiles {
-			if pf.Name == refName {
-				foundRef = true
-				break
-			}
-		}
-		if !foundRef {
-			missingRefFiles = append(missingRefFiles, refName)
-		}
-	}
+	missingRefFiles := CollectMissingRefFiles(snapshot.PackFiles)
 	if len(missingRefFiles) > 0 {
 		return nil, &Error{
 			Kind:       MissingMember,

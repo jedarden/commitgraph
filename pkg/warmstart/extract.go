@@ -480,3 +480,39 @@ func RefFileExistsInTarball(packFilename string, members []TarballMember) bool {
 	}
 	return false
 }
+
+// CollectMissingRefFiles collects all missing .ref files across all pack files.
+// It iterates over each pack file in the members list, checks if the corresponding
+// .ref file exists, and collects the names of missing .ref files.
+//
+// Parameters:
+//   - members: Slice of TarballMember representing files in the tarball
+//
+// Returns:
+//   - []string: List of missing .ref file names (empty if all present)
+//
+// Example:
+//   members := []TarballMember{
+//       {Name: "objects/pack/pack-abc.pack", Data: ...},
+//       {Name: "objects/pack/pack-def.pack", Data: ...},
+//       {Name: "objects/pack/pack-abc.ref", Data: ...},
+//   }
+//   missing := CollectMissingRefFiles(members) // returns ["objects/pack/pack-def.ref"]
+func CollectMissingRefFiles(members []TarballMember) []string {
+	var missingRefFiles []string
+
+	for _, member := range members {
+		// Only check .pack files
+		if !strings.HasSuffix(member.Name, ".pack") {
+			continue
+		}
+
+		// Check if the corresponding .ref file exists
+		if !RefFileExistsInTarball(member.Name, members) {
+			expectedRefName := RefFilenameFromPackFilename(member.Name)
+			missingRefFiles = append(missingRefFiles, expectedRefName)
+		}
+	}
+
+	return missingRefFiles
+}

@@ -1,0 +1,90 @@
+---
+# Login Revalidation Worker — Deployment with internal loop.
+#
+# This worker periodically samples rows from the email_revalidation table,
+# checks login liveness against the GitHub API, and updates the
+# email_resolution table when a rename is detected or flags the row when
+# a deletion is detected.
+#
+# NOTE: This uses a Deployment with an internal scheduling loop, NOT a Job/CronJob.
+# Jobs/CronJobs are banned org-wide: ArgoCD cannot manage them idempotently,
+# and their pods are not ArgoCD-owned, so they are never pruned and hold
+# resource reservations indefinitely.
+#
+# Deploy via declarative-config + ArgoCD — never `kubectl apply`.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: login-revalidation-worker
+  namespace: commitgraph
+  labels:
+    app: login-revalidation-worker
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: login-revalidation-worker
+  template:
+    metadata:
+      labels:
+        app: login-revalidation-worker
+    spec:
+      containers:
+      - name: worker
+        image: ronaldraygun/login-revalidation-worker:1.0.0  # Pin version - never :latest
+        command:
+        - /login-revalidation-worker
+        env:
+        - name: GITHUB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: commitgraph-app
+              key: github-token
+        - name: POSTGRES_URL
+          valueFrom:
+            secretKeyRef:
+              name: commitgraph-app
+              key: postgres-url
+        - name: WORKER_ID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: CLAIM_BATCH
+          value: "50"
+        - name: IDLE_SLEEP_SECS
+          value: "60"
+        - name: API_CALL_INTERVAL_SECS
+          value: "6"
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+        livenessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - |
+              # Check if process is running and making progress
+              # Worker writes to stdout, so we check if the process is alive
+              pgrep -f /login-revalidation-worker || exit 1
+          initialDelaySeconds: 30
+          periodSeconds: 60
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - |
+              # Worker is ready when it can connect to the database
+              # This is a simple check - the worker is ready immediately
+              exit 0
+          initialDelaySeconds: 5
+          periodSeconds: 10

@@ -1,52 +1,76 @@
-# cg-s07xx: .idx File Member Validation Implementation
+# .idx File Member Validation Implementation - cg-s07xx
 
-## Status: COMPLETE ✅
+## Task Verification
 
-## Summary
+The task requested implementation of .idx file member validation logic with the following requirements:
 
-The .idx file member validation logic is already fully implemented in `pkg/warmstart/extract.go` (lines 208-231). The implementation was added in commit 1e6d8fc (cg-t3lmx).
-
-## Acceptance Criteria Verification
-
-All acceptance criteria are met:
-
-1. ✅ **Collect base names from all .pack files in tarball**
-   - Implementation: Lines 208-216 in extract.go
-   - Code: `var packBaseNames []string` + loop to extract base names
-
-2. ✅ **For each .pack file base name, check if corresponding .idx file exists**
-   - Implementation: Lines 218-231 in extract.go
-   - Code: Loop over `packBaseNames`, check for `baseName + ".idx"`
-
-3. ✅ **Return MissingMember error with ".idx" member name when missing**
-   - Implementation: Line 229 in extract.go
-   - Code: `return nil, NewMissingMemberError(".idx")`
-
-4. ✅ **Validation runs after .pack file presence check**
-   - Implementation: .pack check (lines 196-206) runs before .idx check (lines 218-231)
-   - Order is correct
-
-## Test Coverage
-
-The implementation is verified by the following tests:
-- `TestParseTarball_MissingIdxFileMember` - PASS ✅
-- `TestParseTarball_MultiplePackFilesMissingIdxForOne` - PASS ✅
-- `TestParseTarball_CompletePackFileSet` - PASS ✅
-- `TestParseTarball_MultiplePackFilesWithCompleteSets` - PASS ✅
-
-## Example Error Message
-
-When a .pack file is missing its corresponding .idx file, the validation returns:
-```
-warmstart: missing required member (member=.idx)
-```
+### Requirements Status
+- ✅ **Extract base pack names from .pack files found in tarball** - Implemented in `extract.go` lines 208-216
+- ✅ **Check for presence of corresponding .idx files for each .pack file** - Implemented in `extract.go` lines 218-231  
+- ✅ **Return MissingMember error with ".idx" member name if absent** - Implemented at line 229
+- ✅ **Validation runs after .pack file presence check** - Correctly ordered after .pack validation (lines 196-206)
 
 ## Implementation Details
 
-The validation logic:
-1. Collects all `.pack` file base names (e.g., "objects/pack/pack-123" from "objects/pack/pack-123.pack")
-2. For each base name, checks if a corresponding `.idx` file exists
-3. Returns `MissingMember` error if any `.idx` file is missing
-4. Runs after the `.pack` file presence check to ensure proper error ordering
+**File**: `pkg/warmstart/extract.go`
 
-This ensures that all `.pack` files in the tarball have their required index files, maintaining the integrity of the Git pack file structure.
+**Lines 208-216**: Collect base names from all .pack files
+```go
+// Collect base names of all .pack files for corresponding file validation
+var packBaseNames []string
+for _, pf := range snapshot.PackFiles {
+    if strings.HasSuffix(pf.Name, ".pack") {
+        // Extract base name without extension for corresponding file checks
+        baseName := strings.TrimSuffix(pf.Name, ".pack")
+        packBaseNames = append(packBaseNames, baseName)
+    }
+}
+```
+
+**Lines 218-231**: Validate .idx files exist for each .pack file
+```go
+// Validate that corresponding .idx files exist for each .pack file
+for _, baseName := range packBaseNames {
+    idxName := baseName + ".idx"
+    foundIdx := false
+    for _, pf := range snapshot.PackFiles {
+        if pf.Name == idxName {
+            foundIdx = true
+            break
+        }
+    }
+    if !foundIdx {
+        return nil, NewMissingMemberError(".idx")
+    }
+}
+```
+
+## Test Coverage
+
+**Test: `TestParseTarball_MissingIdxFileMember`** (extract_test.go:1614-1653)
+- Tests tarball with .pack and .promisor files but NO .idx file
+- Verifies MissingMember error is returned with MemberName = ".idx"
+- ✅ PASS
+
+**Test: `TestParseTarball_MultiplePackFilesMissingIdxForOne`** (extract_test.go:1797-1837)
+- Tests multiple .pack files where one is missing its corresponding .idx file
+- Verifies MissingMember error is returned with MemberName = ".idx"  
+- ✅ PASS
+
+## Execution Results
+
+```bash
+$ go test -v ./pkg/warmstart/... -run "TestParseTarball_MissingIdxFileMember|TestParseTarball_MultiplePackFilesMissingIdx"
+=== RUN   TestParseTarball_MissingIdxFileMember
+    extract_test.go:1652: Successfully detected missing .idx file: warmstart: missing required member (member=.idx)
+--- PASS: TestParseTarball_MissingIdxFileMember (0.00s)
+=== RUN   TestParseTarball_MultiplePackFilesMissingIdxForOne
+    extract_test.go:1836: Successfully detected missing .idx file for one of multiple pack files: warmstart: missing required member (member=.idx)
+--- PASS: TestParseTarball_MultiplePackFilesMissingIdxForOne (0.00s)
+PASS
+ok  	github.com/jedarden/commitgraph/pkg/warmstart	0.004s
+```
+
+## Conclusion
+
+The .idx file member validation logic was already fully implemented and tested in the codebase. All acceptance criteria from the task are met, and all relevant tests pass successfully. No code changes were required.

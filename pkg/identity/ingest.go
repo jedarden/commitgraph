@@ -50,7 +50,8 @@ func (r *ResolutionRow) Validate() error {
 
 // Ingester handles bulk upsert of email resolution rows.
 type Ingester struct {
-	db DB
+	db        DB
+	Processed int64 // Total number of records processed (seen)
 }
 
 // DB is the database interface required by Ingester.
@@ -66,7 +67,10 @@ type DB interface {
 
 // NewIngester creates a new Ingester.
 func NewIngester(db DB) *Ingester {
-	return &Ingester{db: db}
+	return &Ingester{
+		db:        db,
+		Processed: 0, // Initialize counter to zero
+	}
 }
 
 // IngestResolution performs a bulk upsert of email resolution rows.
@@ -96,6 +100,9 @@ func (i *Ingester) IngestResolution(ctx context.Context, rows []ResolutionRow) e
 		return nil
 	}
 
+	// Track total records processed
+	i.Processed += int64(len(rows))
+
 	// Validate all rows first
 	for idx := range rows {
 		if err := rows[idx].Validate(); err != nil {
@@ -105,4 +112,9 @@ func (i *Ingester) IngestResolution(ctx context.Context, rows []ResolutionRow) e
 
 	// Delegate to database implementation
 	return i.db.IngestEmailResolution(ctx, rows)
+}
+
+// GetProcessed returns the total number of records processed.
+func (i *Ingester) GetProcessed() int64 {
+	return i.Processed
 }

@@ -200,6 +200,87 @@ func TestIngestResolution_PropagatesDBError(t *testing.T) {
 	}
 }
 
+// TestIngester_ProcessedCounter verifies the processed counter tracks total records.
+func TestIngester_ProcessedCounter(t *testing.T) {
+	db := &mockDB{}
+	ingester := NewIngester(db)
+
+	// Initially, counter should be zero
+	if ingester.GetProcessed() != 0 {
+		t.Errorf("expected initial processed count to be 0, got %d", ingester.GetProcessed())
+	}
+
+	now := time.Now().UTC()
+
+	// First batch of 2 rows
+	rows1 := []ResolutionRow{
+		{
+			Email:      "user1@example.com",
+			Login:      "user1",
+			Source:     SourceLive,
+			ResolvedAt: now,
+		},
+		{
+			Email:      "user2@example.com",
+			Login:      "user2",
+			Source:     SourceLive,
+			ResolvedAt: now,
+		},
+	}
+
+	err := ingester.IngestResolution(context.Background(), rows1)
+	if err != nil {
+		t.Fatalf("first batch failed: %v", err)
+	}
+
+	// Counter should be 2 after first batch
+	if ingester.GetProcessed() != 2 {
+		t.Errorf("expected processed count to be 2 after first batch, got %d", ingester.GetProcessed())
+	}
+
+	// Second batch of 3 rows
+	rows2 := []ResolutionRow{
+		{
+			Email:      "user3@example.com",
+			Login:      "user3",
+			Source:     SourceSeed,
+			ResolvedAt: now,
+		},
+		{
+			Email:      "user4@example.com",
+			Login:      "user4",
+			Source:     SourceSeed,
+			ResolvedAt: now,
+		},
+		{
+			Email:      "user5@example.com",
+			Login:      "user5",
+			Source:     SourceSeed,
+			ResolvedAt: now,
+		},
+	}
+
+	err = ingester.IngestResolution(context.Background(), rows2)
+	if err != nil {
+		t.Fatalf("second batch failed: %v", err)
+	}
+
+	// Counter should be 5 after second batch (2 + 3)
+	if ingester.GetProcessed() != 5 {
+		t.Errorf("expected processed count to be 5 after second batch, got %d", ingester.GetProcessed())
+	}
+
+	// Empty batch should not change counter
+	err = ingester.IngestResolution(context.Background(), []ResolutionRow{})
+	if err != nil {
+		t.Fatalf("empty batch failed: %v", err)
+	}
+
+	if ingester.GetProcessed() != 5 {
+		t.Errorf("expected processed count to remain 5 after empty batch, got %d", ingester.GetProcessed())
+	}
+}
+
 // TestResolutionRow_Validate tests the Validate method directly.
 func TestResolutionRow_Validate(t *testing.T) {
 	now := time.Now().UTC()

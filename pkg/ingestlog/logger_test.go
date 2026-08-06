@@ -1772,6 +1772,7 @@ func TestLogIngestError_EndpointContextIntegration(t *testing.T) {
 				100, // retryDelayMs
 				250, // totalDurationMs
 				tt.eventType,
+				nil, // metadata
 			)
 
 			if err != nil {

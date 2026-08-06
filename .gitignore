@@ -1,3 +1,21 @@
+# Data dumps — NEVER commit these.
+#
+# On 2026-08-06 six near-duplicate email_resolution dumps (~817 MB) were
+# committed here, which broke the Forgejo -> GitHub push mirror: GitHub
+# rejects the 88.9 MB CSV outright, so every mirror sync has failed since
+# 11:32Z that day. The repo is public on both hosts and these dumps are a
+# ~946K-row author_email -> github_login dataset.
+#
+# Dumps are large binary-ish artifacts that belong in durable object storage
+# (B2/ARMOR), not in git. Hand the *location* between beads, never the file.
+# Canonical copies live at ~/backups/commitgraph-email-resolution-20260806/
+# on ex44 (SHA256SUMS alongside).
+email_resolution*.sql
+email_resolution*.csv
+dumps/
+exports/
+*.dump
+
 # Compiled binaries
 bin/
 main
@@ -5,6 +23,8 @@ repo-admin
 seed-author-login-cache
 seed-email-resolution
 validate-email-resolution
+extract-sample-cache-data
+containers/login-revalidation-worker/login-revalidation-worker
 
 # Test coverage
 coverage.out

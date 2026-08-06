@@ -11,7 +11,7 @@ import (
 
 // TestAuditLogsHelp verifies that the help message is displayed correctly
 func TestAuditLogsHelp(t *testing.T) {
-	cmd := exec.Command("./bin/audit-logs", "--help")
+	cmd := exec.Command("../../bin/audit-logs", "--help")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("help command failed: %v", err)
@@ -111,7 +111,7 @@ func TestAuditLogsValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cmd := exec.Command("./bin/audit-logs", tt.args...)
+			cmd := exec.Command("../../bin/audit-logs", tt.args...)
 			output, err := cmd.CombinedOutput()
 			if err == nil {
 				t.Fatalf("expected validation error, got none")
@@ -196,7 +196,7 @@ func TestAuditLogsDateParsing(t *testing.T) {
 				args = append(args, "-start-date", tt.date)
 			}
 
-			cmd := exec.Command("./bin/audit-logs", args...)
+			cmd := exec.Command("../../bin/audit-logs", args...)
 			output, err := cmd.CombinedOutput()
 			outputStr := string(output)
 
@@ -306,7 +306,7 @@ func TestAuditLogsFlagCombinations(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cmd := exec.Command("./bin/audit-logs", tt.args...)
+			cmd := exec.Command("../../bin/audit-logs", tt.args...)
 			output, err := cmd.CombinedOutput()
 			outputStr := string(output)
 
@@ -363,7 +363,7 @@ func TestAuditLogsRealIntegration(t *testing.T) {
 	}
 
 	// Run the CLI
-	cmd := exec.Command("./bin/audit-logs", args...)
+	cmd := exec.Command("../../bin/audit-logs", args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("CLI execution failed: %v, output: %s", err, string(output))
@@ -395,10 +395,10 @@ func TestAuditLogsRealIntegration(t *testing.T) {
 
 // TestAuditLogsBinaryExists verifies the binary was built
 func TestAuditLogsBinaryExists(t *testing.T) {
-	info, err := os.Stat("./bin/audit-logs")
+	info, err := os.Stat("../../bin/audit-logs")
 	if err != nil {
 		if os.IsNotExist(err) {
-			t.Fatalf("binary not found - run 'go build -o bin/audit-logs ./cmd/audit-logs' first")
+			t.Fatalf("binary not found - run 'go build -o ../../bin/audit-logs ./cmd/audit-logs' first")
 		}
 		t.Fatalf("failed to stat binary: %v", err)
 	}
@@ -423,7 +423,7 @@ func TestAuditLogsAcceptanceCriteria(t *testing.T) {
 			"-offset",
 		}
 
-		cmd := exec.Command("./bin/audit-logs", "--help")
+		cmd := exec.Command("../../bin/audit-logs", "--help")
 		output, _ := cmd.CombinedOutput()
 		outputStr := string(output)
 
@@ -437,7 +437,7 @@ func TestAuditLogsAcceptanceCriteria(t *testing.T) {
 	t.Run("AC2_calls_service_layer", func(t *testing.T) {
 		// Verify the CLI calls the service layer by checking imports
 		// This is a code inspection test
-		source, err := os.ReadFile("./cmd/audit-logs/main.go")
+		source, err := os.ReadFile("./main.go")
 		if err != nil {
 			t.Fatalf("failed to read source: %v", err)
 		}
@@ -458,7 +458,7 @@ func TestAuditLogsAcceptanceCriteria(t *testing.T) {
 
 	t.Run("AC3_outputs_formatted_results", func(t *testing.T) {
 		// Verify both table and JSON output options exist
-		cmd := exec.Command("./bin/audit-logs", "--help")
+		cmd := exec.Command("../../bin/audit-logs", "--help")
 		output, _ := cmd.CombinedOutput()
 		outputStr := string(output)
 
@@ -498,7 +498,7 @@ func TestAuditLogsAcceptanceCriteria(t *testing.T) {
 		}
 
 		for _, tt := range errorTests {
-			cmd := exec.Command("./bin/audit-logs", tt.args...)
+			cmd := exec.Command("../../bin/audit-logs", tt.args...)
 			output, err := cmd.CombinedOutput()
 			outputStr := string(output)
 

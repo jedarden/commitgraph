@@ -166,10 +166,15 @@ elsewhere in this document.
   `ch.vs1.medium-ord` nodepool's $0.001/hr) rather than the $0.006/hr p50 is
   the reasonable default, but hasn't been explicitly decided (Postgres
   provisioning section; Phase 0).
-- **Postgres replica topology**: `instances: 1` (matching the `queue-db`
-  precedent) versus `instances: 3` with synchronous replication. With no
-  fallback system, a preemption on a single Spot node is a hard outage of
-  the only write target (Durability section; Phase 0).
+- ~~**Postgres replica topology**~~ — **resolved 2026-08-06: `instances: 3` with synchronous replication.**
+  See `docs/notes/cg-25cp-replica-topology-decision.md` for full rationale.
+  With no fallback system (old pipeline torn down 2026-08-05), a single-node
+  preemption is a hard outage with hours-long RTO and up-to-24h RPO.
+  `instances: 3` provides zero-data-loss automatic failover for ~$13/month
+  (3× `mh.vs1.large-ord` at p50 $0.006/hr), which is trivial insurance
+  for critical infrastructure with no rollback target. Does not protect
+  against node preemption (all 3 pods share one dedicated node) — backup/restore
+  rehearsal remains a Phase 0 blocking gate.
 - ~~**Identity ingest breadth**~~ — **resolved 2026-08-05: AI-relevant only.**
   See "The rollup holds AI-relevant commits only".
 - **Write-path admission control**: lease-concurrency only, PgBouncer, or a
@@ -1121,14 +1126,14 @@ workload, not by conceptual tidiness.
    table in the database. Chunk or cap the largest repos, and set
    `statement_timeout` and `lock_timeout` on the worker role so a stuck job
    fails fast instead of wedging the instance.
-4. **Replica topology is the real exposure.** `instances: 1` on a single
-   preemptible Spot node, as the sole write target, with **no fallback
-   system to fail back to** (see "Status" above). A preemption is a hard
-   outage of the entire pipeline, not a graceful degrade. CNPG supports
-   `instances: 3` with synchronous replication; given that there is no
-   turning back, that cost is worth weighing seriously rather than
-   inheriting `queue-db`'s single-instance precedent by default. Flagged in
-   "Open decisions".
+4. **Replica topology — resolved 2026-08-06.** `instances: 3` with synchronous
+   replication was chosen over `instances: 1` (the `queue-db` precedent). See
+   `docs/notes/cg-25cp-replica-topology-decision.md` for full rationale.
+   With no fallback system, a single-node preemption is a hard outage with
+   hours-long RTO and up-to-24h RPO; `instances: 3` provides zero-data-loss
+   automatic failover for ~$13/month. Does not protect against node preemption
+   (all 3 pods share one dedicated node) — backup/restore rehearsal remains
+   a Phase 0 blocking gate.
 5. **Give the aggregator its own read target** once a replica exists, so the
    15-minute ranking query stops competing with the write path.
 6. **State the clone-worker replica count.** This plan has never specified

@@ -1415,8 +1415,9 @@ path to *something publishing again* over completeness in early phases.
 
 1. **Phase 0 — capacity, provisioning, and the two gates.** Pick the fallback
    node class before provisioning (still open — do not discover this live on
-   the bid market) and the `mh.vs1.large-ord` bid price. Decide the replica
-   topology (`instances: 1` vs `3`, see "Durability and load"). Provision the
+   the bid market) and the `mh.vs1.large-ord` bid price. **Replica topology
+   decided:** `instances: 3` with synchronous replication (see
+   `docs/notes/cg-25cp-replica-topology-decision.md`). Provision the
    dedicated Postgres node manually (Spot UI or `rackspace-spot-terraform` —
    not a declarative-config PR). Install the CNPG operator on ord-devimprint
    (a 5th install org-wide, not a reuse). Stand up the cluster with the schema

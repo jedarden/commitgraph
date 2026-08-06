@@ -84,9 +84,12 @@ Longest streak of consecutive days with at least one AI commit. Derived from the
 ```
 Array of 30 integers representing AI commits per day, anchored on a board-wide window (same `window_start` for all rows). Zeros for days with no activity.
 
+**Scope:** Computed for **every row** in the full ranked list, not just a top-N subset. See `docs/notes/cg-1gx-histogram-scope-decision.md` for the explicit decision and rationale.
+
 ## Cross-References
 
 - **`top_repo` exclusion rationale:** `docs/plan/plan.md#L855-906` (decided 2026-08-05)
+- **`daily_ai_commits` scope decision:** `docs/notes/cg-1gx-histogram-scope-decision.md` (decided 2026-08-06) — histogram computed for full list, not top-N subset
 - **agg-top-repo-exclusion-guard:** Implementation that prevents `top_repo` from being added without deliberate reconsideration
 - **agg-snapshot-export-parquet:** Consumer of this schema definition
 - **Live JSON schema reference:** `docs/plan/plan.md#L616-617` (verified against `~/backups/commitgraph-cutover/leaderboard.json`)

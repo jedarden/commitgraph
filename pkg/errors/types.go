@@ -121,6 +121,13 @@ type StructuredError struct {
 	Operation string         // Operation being performed
 	Context   ErrorContext   // Additional contextual information
 
+	// Domain-specific context fields
+	CommitSHA  string // Commit SHA associated with the error
+	Position   int64  // Position/offset in data stream
+	Email      string // Email address involved in the error
+	TraceID    string // Trace ID for distributed tracing
+	RecordKey  string // Record key for database/storage operations
+
 	// Technical details
 	Cause      error         // Underlying error (for wrapping)
 	StackTrace string        // Stack trace at error site
@@ -142,6 +149,29 @@ func (e *StructuredError) Error() string {
 	}
 
 	base := fmt.Sprintf("[%s] %s", e.Code, e.Message)
+
+	// Append domain-specific context if present
+	contexts := []string{}
+	if e.CommitSHA != "" {
+		contexts = append(contexts, fmt.Sprintf("commit=%s", e.CommitSHA))
+	}
+	if e.Position > 0 {
+		contexts = append(contexts, fmt.Sprintf("position=%d", e.Position))
+	}
+	if e.Email != "" {
+		contexts = append(contexts, fmt.Sprintf("email=%s", e.Email))
+	}
+	if e.TraceID != "" {
+		contexts = append(contexts, fmt.Sprintf("trace=%s", e.TraceID))
+	}
+	if e.RecordKey != "" {
+		contexts = append(contexts, fmt.Sprintf("record=%s", e.RecordKey))
+	}
+
+	if len(contexts) > 0 {
+		base = fmt.Sprintf("%s [%s]", base, strings.Join(contexts, ", "))
+	}
+
 	if e.Cause != nil {
 		return fmt.Sprintf("%s: caused by %v", base, e.Cause)
 	}
@@ -156,8 +186,8 @@ func (e *StructuredError) Unwrap() error {
 	return e.Cause
 }
 
-// Type returns the error category.
-func (e *StructuredError) Type() ErrorCategory {
+// GetType returns the error category.
+func (e *StructuredError) GetType() ErrorCategory {
 	if e == nil {
 		return UnknownError
 	}
@@ -188,9 +218,47 @@ func (e *StructuredError) IsRetryable() bool {
 	return e.Retryable
 }
 
-// NewError creates a new structured error with the given parameters.
-func NewError(typ ErrorCategory, severity SeverityLevel, message, code, component, operation string) *StructuredError {
-	return &StructuredError{
+// ErrorContextOption is a functional option for NewError that allows setting context fields.
+type ErrorContextOption func(*StructuredError)
+
+// WithCommitSHAOption creates an ErrorContextOption that sets the commit SHA.
+func WithCommitSHAOption(commitSHA string) ErrorContextOption {
+	return func(e *StructuredError) {
+		e.CommitSHA = commitSHA
+	}
+}
+
+// WithPositionOption creates an ErrorContextOption that sets the position.
+func WithPositionOption(position int64) ErrorContextOption {
+	return func(e *StructuredError) {
+		e.Position = position
+	}
+}
+
+// WithEmailOption creates an ErrorContextOption that sets the email.
+func WithEmailOption(email string) ErrorContextOption {
+	return func(e *StructuredError) {
+		e.Email = email
+	}
+}
+
+// WithTraceIDOption creates an ErrorContextOption that sets the trace ID.
+func WithTraceIDOption(traceID string) ErrorContextOption {
+	return func(e *StructuredError) {
+		e.TraceID = traceID
+	}
+}
+
+// WithRecordKeyOption creates an ErrorContextOption that sets the record key.
+func WithRecordKeyOption(recordKey string) ErrorContextOption {
+	return func(e *StructuredError) {
+		e.RecordKey = recordKey
+	}
+}
+
+// NewError creates a new structured error with the given parameters and optional context.
+func NewError(typ ErrorCategory, severity SeverityLevel, message, code, component, operation string, opts ...ErrorContextOption) *StructuredError {
+	err := &StructuredError{
 		Type:      typ,
 		Severity:  severity,
 		Message:   message,
@@ -205,6 +273,13 @@ func NewError(typ ErrorCategory, severity SeverityLevel, message, code, componen
 		Retryable: isRetryableByDefault(typ),
 		RetryPolicy: DefaultRetryPolicy(),
 	}
+
+	// Apply optional context
+	for _, opt := range opts {
+		opt(err)
+	}
+
+	return err
 }
 
 // WrapError wraps an existing error with additional context and structured information.
@@ -307,6 +382,56 @@ func (e *StructuredError) WithRecovery(recovery RecoverySuggestion) *StructuredE
 	}
 
 	e.Recovery = recovery
+	return e
+}
+
+// WithCommitSHA sets the commit SHA context on the error.
+func (e *StructuredError) WithCommitSHA(commitSHA string) *StructuredError {
+	if e == nil {
+		return nil
+	}
+
+	e.CommitSHA = commitSHA
+	return e
+}
+
+// WithPosition sets the position context on the error.
+func (e *StructuredError) WithPosition(position int64) *StructuredError {
+	if e == nil {
+		return nil
+	}
+
+	e.Position = position
+	return e
+}
+
+// WithEmail sets the email context on the error.
+func (e *StructuredError) WithEmail(email string) *StructuredError {
+	if e == nil {
+		return nil
+	}
+
+	e.Email = email
+	return e
+}
+
+// WithTraceID sets the trace ID context on the error.
+func (e *StructuredError) WithTraceID(traceID string) *StructuredError {
+	if e == nil {
+		return nil
+	}
+
+	e.TraceID = traceID
+	return e
+}
+
+// WithRecordKey sets the record key context on the error.
+func (e *StructuredError) WithRecordKey(recordKey string) *StructuredError {
+	if e == nil {
+		return nil
+	}
+
+	e.RecordKey = recordKey
 	return e
 }
 

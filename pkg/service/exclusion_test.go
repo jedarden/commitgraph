@@ -377,3 +377,217 @@ func TestSetRepoExclusion_NoRowsAffected(t *testing.T) {
 		t.Errorf("SetRepoExclusion() wrong error for no rows affected: %v", err)
 	}
 }
+
+// TestClearRepoExclusion_RepoNotFound tests that ClearRepoExclusion returns error when repo doesn't exist.
+func TestClearRepoExclusion_RepoNotFound(t *testing.T) {
+	ctx := context.Background()
+
+	// Create a mock database that returns a non-existent repo for the RepoExists check
+	mockDB := &mockTransactioner{
+		row: &mockRow{scanErr: sql.ErrNoRows},
+		beginTxFn: func(ctx context.Context, opts *sql.TxOptions) (Transactor, error) {
+			// This shouldn't be called since RepoExists returns false
+			return nil, errors.New("should not reach BeginTx when repo doesn't exist")
+		},
+	}
+
+	err := ClearRepoExclusion(ctx, mockDB, "github", "nonexistent/repo")
+	if err == nil {
+		t.Errorf("ClearRepoExclusion() with nonexistent repo should return error, got nil")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("ClearRepoExclusion() wrong error for nonexistent repo: %v", err)
+	}
+}
+
+// TestClearRepoExclusion_Success tests that ClearRepoExclusion successfully clears exclusion from a repo.
+func TestClearRepoExclusion_Success(t *testing.T) {
+	ctx := context.Background()
+
+	// Create a successful transaction
+	mockTx := &mockTransactor{
+		execContextFn: func(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+			// Return successful result with 1 row affected
+			return &mockResult{rowsAffected: 1, lastInsertId: 0}, nil
+		},
+		commitFn: func() error {
+			return nil
+		},
+		rollbackFn: func() error {
+			return nil
+		},
+	}
+
+	// Create a mock database that returns an existing repo and provides the successful transaction
+	mockDB := &mockTransactioner{
+		row: &mockRow{scanErr: nil},
+		beginTxFn: func(ctx context.Context, opts *sql.TxOptions) (Transactor, error) {
+			// Return our mock transaction
+			return mockTx, nil
+		},
+	}
+
+	err := ClearRepoExclusion(ctx, mockDB, "github", "owner/repo")
+	if err != nil {
+		t.Errorf("ClearRepoExclusion() with valid inputs should succeed, got error: %v", err)
+	}
+}
+
+// TestClearRepoExclusion_NonExcludedRepo tests that ClearRepoExclusion succeeds when clearing a non-excluded repo.
+// This is a no-op operation that should succeed (1 row affected).
+func TestClearRepoExclusion_NonExcludedRepo(t *testing.T) {
+	ctx := context.Background()
+
+	// Create a successful transaction (clearing NULL to NULL is still 1 row affected)
+	mockTx := &mockTransactor{
+		execContextFn: func(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+			// Return successful result with 1 row affected
+			return &mockResult{rowsAffected: 1, lastInsertId: 0}, nil
+		},
+		commitFn: func() error {
+			return nil
+		},
+		rollbackFn: func() error {
+			return nil
+		},
+	}
+
+	// Create a mock database that returns an existing repo and provides the successful transaction
+	mockDB := &mockTransactioner{
+		row: &mockRow{scanErr: nil},
+		beginTxFn: func(ctx context.Context, opts *sql.TxOptions) (Transactor, error) {
+			// Return our mock transaction
+			return mockTx, nil
+		},
+	}
+
+	err := ClearRepoExclusion(ctx, mockDB, "github", "owner/repo")
+	if err != nil {
+		t.Errorf("ClearRepoExclusion() with non-excluded repo should succeed (no-op), got error: %v", err)
+	}
+}
+
+// TestClearRepoExclusion_UpdateError tests that ClearRepoExclusion handles update errors properly.
+func TestClearRepoExclusion_UpdateError(t *testing.T) {
+	ctx := context.Background()
+
+	updateError := errors.New("database update failed")
+
+	// Create a transaction that fails on ExecContext
+	mockTx := &mockTransactor{
+		execContextFn: func(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+			return nil, updateError
+		},
+		commitFn: func() error {
+			return nil
+		},
+		rollbackFn: func() error {
+			return nil
+		},
+	}
+
+	mockDB := &mockTransactioner{
+		row: &mockRow{scanErr: nil},
+		beginTxFn: func(ctx context.Context, opts *sql.TxOptions) (Transactor, error) {
+			return mockTx, nil
+		},
+	}
+
+	err := ClearRepoExclusion(ctx, mockDB, "github", "owner/repo")
+	if err == nil {
+		t.Errorf("ClearRepoExclusion() with update error should return error, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to clear repo exclusion") {
+		t.Errorf("ClearRepoExclusion() wrong error for update failure: %v", err)
+	}
+}
+
+// TestClearRepoExclusion_CommitError tests that ClearRepoExclusion handles commit errors properly.
+func TestClearRepoExclusion_CommitError(t *testing.T) {
+	ctx := context.Background()
+
+	commitError := errors.New("transaction commit failed")
+
+	// Create a transaction that fails on Commit
+	mockTx := &mockTransactor{
+		execContextFn: func(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+			return &mockResult{rowsAffected: 1, lastInsertId: 0}, nil
+		},
+		commitFn: func() error {
+			return commitError
+		},
+		rollbackFn: func() error {
+			return nil
+		},
+	}
+
+	mockDB := &mockTransactioner{
+		row: &mockRow{scanErr: nil},
+		beginTxFn: func(ctx context.Context, opts *sql.TxOptions) (Transactor, error) {
+			return mockTx, nil
+		},
+	}
+
+	err := ClearRepoExclusion(ctx, mockDB, "github", "owner/repo")
+	if err == nil {
+		t.Errorf("ClearRepoExclusion() with commit error should return error, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to commit transaction") {
+		t.Errorf("ClearRepoExclusion() wrong error for commit failure: %v", err)
+	}
+}
+
+// TestClearRepoExclusion_BeginTxError tests that ClearRepoExclusion handles BeginTx errors properly.
+func TestClearRepoExclusion_BeginTxError(t *testing.T) {
+	ctx := context.Background()
+
+	beginTxError := errors.New("cannot begin transaction")
+
+	mockDB := &mockTransactioner{
+		row: &mockRow{scanErr: nil},
+		beginTxFn: func(ctx context.Context, opts *sql.TxOptions) (Transactor, error) {
+			return nil, beginTxError
+		},
+	}
+
+	err := ClearRepoExclusion(ctx, mockDB, "github", "owner/repo")
+	if err == nil {
+		t.Errorf("ClearRepoExclusion() with BeginTx error should return error, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to begin transaction") {
+		t.Errorf("ClearRepoExclusion() wrong error for BeginTx failure: %v", err)
+	}
+}
+
+// TestClearRepoExclusion_NoRowsAffected tests that ClearRepoExclusion handles the case where no rows are updated.
+func TestClearRepoExclusion_NoRowsAffected(t *testing.T) {
+	ctx := context.Background()
+
+	// Create a transaction that returns 0 rows affected
+	mockTx := &mockTransactor{
+		execContextFn: func(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+			return &mockResult{rowsAffected: 0, lastInsertId: 0}, nil
+		},
+		commitFn: func() error {
+			return nil
+		},
+		rollbackFn: func() error {
+			return nil
+		},
+	}
+
+	mockDB := &mockTransactioner{
+		row: &mockRow{scanErr: nil},
+		beginTxFn: func(ctx context.Context, opts *sql.TxOptions) (Transactor, error) {
+			return mockTx, nil
+		},
+	}
+
+	err := ClearRepoExclusion(ctx, mockDB, "github", "owner/repo")
+	if err == nil {
+		t.Errorf("ClearRepoExclusion() with no rows affected should return error, got nil")
+	}
+	if !strings.Contains(err.Error(), "no rows updated") {
+		t.Errorf("ClearRepoExclusion() wrong error for no rows affected: %v", err)
+	}
+}

@@ -210,3 +210,72 @@ func SetRepoExclusion(ctx context.Context, db Transactioner, provider, repoFullN
 
 	return nil
 }
+
+// ClearRepoExclusion clears the exclusion status for a repository.
+//
+// This function performs the following operations within a database transaction:
+// 1. Validates that the repo exists (using RepoExists)
+// 2. Sets excluded_at to NULL and excluded_reason to NULL
+//
+// Parameters:
+//   - ctx: Context for the operation
+//   - db: Database connection (will be used to create a transaction)
+//   - provider: Repository provider (e.g., "github")
+//   - repoFullName: Repository full name (e.g., "owner/repo")
+//
+// Returns:
+//   - nil on success
+//   - error if validation fails or database operation fails
+//
+// The function uses a database transaction to ensure atomicity:
+// - On success, the transaction is committed
+// - On error, the transaction is rolled back
+//
+// Note: Clearing exclusion on a repo that is not currently excluded is
+// considered a no-op and will succeed (1 row affected).
+func ClearRepoExclusion(ctx context.Context, db Transactioner, provider, repoFullName string) error {
+	// Check if repo exists
+	checker := NewRepoChecker(db)
+	if !checker.RepoExists(ctx, provider, repoFullName) {
+		return fmt.Errorf("repository %s/%s not found", provider, repoFullName)
+	}
+
+	// Start transaction
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+
+	// Ensure rollback happens on error
+	defer tx.Rollback()
+
+	// Update the repo to clear exclusion information
+	query := `
+		UPDATE repos
+		SET excluded_at = NULL,
+		    excluded_reason = NULL
+		WHERE provider = $1 AND repo_full_name = $2
+	`
+
+	result, err := tx.ExecContext(ctx, query, provider, repoFullName)
+	if err != nil {
+		return fmt.Errorf("failed to clear repo exclusion: %w", err)
+	}
+
+	// Verify that exactly one row was affected
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return fmt.Errorf("no rows updated - repo may have been deleted")
+	}
+
+	// Commit the transaction
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return nil
+}

@@ -557,18 +557,17 @@ class CorpusMigrator:
                 cur.execute(delete_query, (repo_id,))
 
                 # Step 4: Bulk INSERT new rollup rows
-                # Prepare batch insert data
+                # Prepare batch insert data (insert_time omitted - DEFAULT transaction_timestamp() applies)
                 insert_data = []
-                insert_time = datetime.utcnow()
 
                 for (email, _, tool, day), count in rollup_counts.items():
                     user_id = email_to_user_id[email]
-                    insert_data.append((repo_id, user_id, tool, day, count, insert_time))
+                    insert_data.append((repo_id, user_id, tool, day, count))
 
-                # Bulk insert using UNNEST
+                # Bulk insert using UNNEST (insert_time omitted, DEFAULT transaction_timestamp() applies)
                 insert_query = sql.SQL("""
-                    INSERT INTO repo_user_daily_tool (repo_id, user_id, tool, day, commits, insert_time)
-                    SELECT * FROM UNNEST(%s::bigint[], %s::bigint[], %s::text[], %s::date[], %s::int[], %s::timestamptz[])
+                    INSERT INTO repo_user_daily_tool (repo_id, user_id, tool, day, commits)
+                    SELECT * FROM UNNEST(%s::bigint[], %s::bigint[], %s::text[], %s::date[], %s::int[])
                 """)
 
                 # Transpose data for UNNEST
@@ -577,10 +576,9 @@ class CorpusMigrator:
                 tools = [row[2] for row in insert_data]
                 days = [row[3] for row in insert_data]
                 counts = [row[4] for row in insert_data]
-                insert_times = [row[5] for row in insert_data]
 
                 cur.execute(insert_query, (
-                    repo_ids, user_ids, tools, days, counts, insert_times
+                    repo_ids, user_ids, tools, days, counts
                 ))
 
                 self.pg_conn.commit()

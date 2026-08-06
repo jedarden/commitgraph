@@ -136,7 +136,30 @@ The `login` field in the current system is:
   3. Resolution cached in email_resolution table
   4. Imported into commitgraph Postgres database
 
-### 6. External Git Processing
+### 6. Git Operations via CLI (Warmstart Package)
+
+**The only git operations in the current codebase use CLI commands, not libraries.**
+
+**File**: `pkg/warmstart/extract.go`
+
+Git operations performed via `os/exec`:
+- **`git config`** - Setting repository configuration values
+- **`git fsck`** - Repository integrity verification (line 613)
+- **`git log`** - Commit history access (line 656)
+- **`git init`** - Repository initialization (implied)
+
+**Example** (lines 613-614):
+```go
+cmd := exec.Command("git", "--git-dir="+gitDir, "fsck", "--no-full", "--no-progress")
+```
+
+**Purpose**: The warmstart package handles git repository snapshots for incremental fetch optimization, NOT author extraction.
+
+**Key distinction**:
+- Warmstart git operations: Repository management and verification
+- Author extraction: Happens externally, results imported via corpus
+
+### 7. External Git Processing
 
 **Actual git repository cloning and author extraction happens externally:**
 
@@ -148,7 +171,7 @@ Based on documentation in `docs/plan/plan.md`:
 
 Current commitgraph **inherits the corpus** but does not re-clone repos.
 
-### 7. Key Code Locations
+### 8. Key Code Locations
 
 | Location | Purpose | Git Library Used |
 |----------|---------|------------------|
@@ -156,8 +179,49 @@ Current commitgraph **inherits the corpus** but does not re-clone repos.
 | `cmd/load-email-resolution-from-queue-api/main.go` | Import email resolutions | None (SQLite parsing) |
 | `pkg/identity/ingest.go` | Email resolution ingest | None (Postgres writes) |
 | `pkg/pg/identity.go` | Database operations | None (SQL only) |
+| `pkg/warmstart/extract.go` | Repository snapshot management | **CLI git commands** (not libraries) |
 
-### 8. Acceptance Criteria Status
+### 9. Author Data Processing (Detection System)
+
+**File**: `containers/clone-worker/detection.py`
+
+The current system uses author data for AI tool detection:
+
+**Signal Tier 2a - Author Emails** (lines 41-49):
+```python
+AUTHOR_EMAILS: Dict[str, Set[str]] = {
+    "openhands": {"openhands@all-hands.dev"},
+    "cubic": {"contact@cubic.dev"},
+    "replit-bot": {"noreply@replit.com"},
+    "codeium-bot": {"bot@codeium.com"},
+}
+```
+
+**Signal Tier 2b - Author Name Patterns** (lines 51-86):
+```python
+AUTHOR_NAME_PATTERNS: Dict[str, List[re.Pattern]] = {
+    "claude-code": [re.compile(r"claude\[bot\]", re.I)],
+    "copilot": [re.compile(r"^copilot(\[bot\])?$", re.I)],
+    # ... more patterns
+}
+```
+
+**Detection Function** (lines 108-158):
+```python
+def detect_tools(
+    author_email: str,
+    author_name: str,
+    coauthor_trailer: str,
+    commit_message: str,
+) -> Set[str]:
+    # Checks author_email against bot emails
+    # Checks author_name against bot patterns  
+    # Returns detected tools
+```
+
+This shows the current system **consumes** author data but doesn't extract it from git.
+
+### 10. Acceptance Criteria Status
 
 - [x] **Identified all git libraries used in the codebase**
   - Result: NONE - No git libraries in current codebase
@@ -173,15 +237,36 @@ Current commitgraph **inherits the corpus** but does not re-clone repos.
 
 ## Conclusion
 
-The current commitgraph codebase **does not contain git library usage or direct author extraction code**. The system is designed to consume pre-processed commit data from external sources (corpus files and queue-api SQLite dumps). 
+The current commitgraph codebase **does not contain git library usage or direct author extraction code**. The system is designed to consume pre-processed commit data from external sources (corpus files and queue-api SQLite dumps).
+
+**Git Interaction Methods**:
+1. **No Go git libraries**: No imports of go-git, golang-git, or similar
+2. **CLI git commands only**: Limited use in `pkg/warmstart/extract.go` for repository management
+3. **External author extraction**: Author data comes from pre-processed corpus files
+
+**Data Flow Architecture**:
+```
+External Git Processing (Predecessor System)
+    ↓
+Encrypted Parquet Corpus (B2 Storage)
+    ↓
+Streaming Reader (PyArrow) ← author_email, author_name
+    ↓
+AI Detection System (detection.py) ← uses author data for tool detection
+    ↓
+Email Resolution (email_resolution table) ← email → login mapping
+    ↓
+PostgreSQL Database (users, rollups)
+```
 
 The actual git repository cloning and author extraction happens in external systems:
 1. The deprecated predecessor system (`commitgraph-deprecated`)
 2. The corpus generation system (creates the encrypted Parquet files)
 3. The queue-api system (provides email→login resolution)
 
-Author fields in the current system:
-- `author_name` and `author_email`: Read from corpus schema
+**Author Fields Summary**:
+- `author_name` and `author_email`: Read from corpus Parquet schema
 - `login`: Derived from email_resolution table (external API resolution)
-- No git commands (git log, git clone, etc.) in current codebase
+- `author.Login`: NOT a direct git field - resolved via database lookup
+- Git CLI usage: Limited to warmstart snapshot management (fsck, log, config)
 - No git library imports (go-git, gitpython, etc.)

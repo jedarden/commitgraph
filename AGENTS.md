@@ -85,6 +85,11 @@ mirror updated by a server-side push mirror. Push only to `origin`.
 Commit at each completion point — ideally one commit per closed bead, not one
 batched commit per session.
 
+This is a ceiling on batching, not a floor on commit count: a bead that needed no
+file change must not manufacture one. Record that outcome with
+`bf update <id> --notes "..."` instead. Never write `notes/<bead-id>.md`, a
+summary, or a status file to satisfy a commit requirement.
+
 ## Beads
 
 `bf` is the CLI; `br` is deprecated. SQLite (`beads.db`) is the live store and

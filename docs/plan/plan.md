@@ -125,10 +125,13 @@ clone-worker variants, search-worker, user-worker, user-enrichment-worker,
 admin-ui, oauth2-proxy, admin-alias-sync.
 
 **Deliberately kept alive: `queue-api`, its Service, and its PVC.**
-`queue-api-data` holds `email_resolution` — 365K+ resolved email→login pairs
-representing months of spent GitHub API budget against a shared ~30 req/min
-ceiling — which this pipeline inherits rather than re-earns (see "Identity
-lives in Postgres" below). The `sata` StorageClass has
+`queue-api-data` holds `email_resolution`. **Measured live 2026-08-06** (see
+"What `email_resolution` actually contains" below): 966,679 rows, of which
+**59,745 are positive resolutions** and **3,821 of those are AI-relevant**.
+Earlier drafts of this plan said "365K+ resolved pairs" — that figure was
+wrong, and it was wrong in the direction that overstated the asset. The
+volume is still worth preserving, but for 3,821 rows that matter to this
+pipeline, not 365,000. The `sata` StorageClass has
 `reclaimPolicy: Delete`, so pruning that PVC destroys the Cinder volume and
 every row in it. Extraction is blocked on a refreshed
 `ord-devimprint-admin.kubeconfig` (currently 401). Full completion checklist
@@ -437,6 +440,57 @@ behind the five prior OOM incidents this redesign exists to end.
   (email → login) and `user_aliases` (login → canonical login), both
   read-only from the pipeline's perspective and written only through the
   ingest path below.
+
+### What `email_resolution` actually contains — measured 2026-08-06
+
+Read directly from the live queue-api SQLite (read-only, via `kubectl exec`
+once the admin kubeconfig was refreshed). These numbers replace several
+estimates that earlier drafts carried, and they change conclusions.
+
+| Slice | Rows |
+|---|---|
+| Total `email_resolution` | **966,679** |
+| `resolved` (positive — `github_login` present) | **59,745** |
+| `unresolvable` (negative cache) | 11,763 |
+| `pending` (never attempted) | 895,161 |
+| `claimed` (in flight) | 10 |
+| **AI-relevant** (`priority > 0`) — resolved | **3,821** |
+| AI-relevant — unresolvable | 421 |
+| **AI-relevant — pending** | **0** |
+
+`priority` on this table is documented in the schema as *"AI-tool commit
+count; claim spends highest-value first"* — so `priority > 0` is exactly the
+AI-relevant scope this plan adopted.
+
+**Three conclusions change:**
+
+1. **The inheritance is 3,821 rows, not 365K.** Earlier drafts described
+   "365K+ resolved email→login pairs representing months of spent GitHub API
+   budget." Wrong twice: the resolved count is 59,745 (365K was closer to a
+   *pending* figure), and under AI-relevant scoping only 3,821 matter here.
+   Preserving the PVC is still correct — those 3,821 plus the 421 negative
+   caches are real spent budget and cannot be re-earned for free — but the
+   asset is roughly two orders of magnitude smaller than stated.
+2. **The AI-relevant resolution backlog is empty.** Every email that authored
+   an AI-tagged commit has already been resolved or marked unresolvable;
+   `pending` for `priority > 0` is **0**. The predecessor's own
+   highest-value-first claim ordering had already drained it. So the "363k
+   pending emails, structurally bounded by the shared API budget" framing is
+   not a constraint on this redesign at all — under AI-relevant scoping there
+   is no backlog to clear. The ~30 req/min ceiling still governs *new*
+   discovery; it does not gate the migration.
+3. **Postgres identity sizing collapses again.** The sizing section estimated
+   `email_resolution` at single-digit-to-low-tens of MB under AI-relevant
+   scoping. Measured, it is ~4,242 rows — kilobytes. The whole database is
+   now dominated by `repos` (98,747 rows) and `users`, not identity.
+
+**Consequence for the claude-leaderboard seed:** its 349,425 frozen pairs are
+~91x the AI-relevant resolutions commitgraph earned on its own. That makes the
+seed far more valuable than previously framed — but only for the subset whose
+emails actually appear in this corpus's AI-tagged commits. **Measure that
+overlap before assuming the seed is a large win**; the plan should not repeat
+the mistake of quoting a big number without checking what fraction is
+relevant.
 
 ### Identity ingest endpoint
 
@@ -1463,8 +1517,9 @@ path to *something publishing again* over completeness in early phases.
    **First real task of this phase: extract `email_resolution` and ingest it
    into Postgres** through the ingest path above (`source='live'`). This is
    blocked on refreshing `ord-devimprint-admin.kubeconfig` and is the single
-   highest-value inheritance in the whole migration — 365K+ pairs of already
-   spent, rate-limited API budget.
+   highest-value inheritance in the whole migration — though **measured at
+   3,821 AI-relevant positive resolutions, not the 365K earlier drafts
+   claimed** (see "What `email_resolution` actually contains").
 3. **Phase 2 — subset validation and the load test that has numbers.** Drive
    a bounded repo set end-to-end. Cross-check rollup counts against the
    existing corpus for the same repos. **Load-test concurrent clone-worker

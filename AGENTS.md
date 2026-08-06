@@ -56,9 +56,10 @@ Cinder volumes **cannot be expanded or reclassed in place**. Size correctly the
 first time; the migration path is backup → restore into a larger PVC.
 
 **Do not prune `queue-api-pvc.yml`.** `sata` has `reclaimPolicy: Delete`, so
-removing that PVC destroys the volume holding `email_resolution` — 365K+
-resolved pairs representing months of rate-limited GitHub API budget that this
-pipeline inherits rather than re-earns.
+removing that PVC destroys the volume holding `email_resolution`. Measured
+2026-08-06: 966,679 rows, 59,745 positive resolutions, of which **3,821 are
+AI-relevant** — real spent GitHub API budget that cannot be re-earned for
+free. (Earlier drafts said "365K+ resolved pairs"; that was wrong.)
 
 ## Sizing on ord-devimprint
 

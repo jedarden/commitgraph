@@ -1141,10 +1141,14 @@ workload, not by conceptual tidiness.
    a Phase 0 blocking gate.
 5. **Give the aggregator its own read target** once a replica exists, so the
    15-minute ranking query stops competing with the write path.
-6. **State the clone-worker replica count.** This plan has never specified
-   one for the new pipeline — which is precisely why Phase 2's load test has
-   no pass/fail numbers. Pick it in Phase 0, load-test at that number plus
-   headroom, and record the result as the ceiling.
+6. **Clone-worker replica count — resolved 2026-08-06.** **3 replicas** is the
+   baseline deployment. See `docs/notes/cg-4pcs-clone-worker-replica-count.md`
+   for full rationale. The number is chosen against the confirmed
+   `compute1-4` headroom constraint (largest schedulable pod: 1.20 CPU / 1.64
+   GiB; clone-worker at 512 MiB/pod fits ~3 pods per slot), not just the old
+   architecture's 4-replica precedent. Phase 2 will load-test at 3 replicas
+   (baseline) and 4-5 replicas (headroom/ceiling test). This count is a
+   direct input to PgBouncer pool sizing (p0-deploy-pgbouncer).
 
 **Backup/restore is now the only recovery path.** It was already a Phase 0
 deliverable (`barmanObjectStore` + daily `ScheduledBackup` to ARMOR, plus a

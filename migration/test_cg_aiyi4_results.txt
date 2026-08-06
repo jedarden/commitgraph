@@ -1,0 +1,69 @@
+=== Migration Verification for cg-aiyi4 ===
+Testing: UNIQUE constraint on (provider, repo_full_name, kind)
+
+Step 1: Copying live schema to test database...
+✓ Live schema copied successfully
+
+Step 2: Examining existing repo_queue table structure...
+CREATE TABLE repo_queue (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider         TEXT    NOT NULL,
+    repo_full_name   TEXT    NOT NULL,                  -- e.g. owner/name
+    kind             TEXT    NOT NULL DEFAULT 'clone', -- 'clone' (normal) | 'redetect' (retroactive re-detection)
+    status           TEXT    NOT NULL DEFAULT 'pending'
+                     CHECK (status IN ('pending','claimed','completed','failed')),
+    priority         INTEGER NOT NULL DEFAULT 0,
+    claimed_by       TEXT,
+    claimed_at       TEXT,
+    lease_expires_at TEXT,
+    attempts         INTEGER NOT NULL DEFAULT 0,
+    error_message    TEXT,
+    schema_version   INTEGER NOT NULL DEFAULT 1,
+    created_at       TEXT    NOT NULL DEFAULT (datetime('now')),
+    updated_at       TEXT    NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (provider, repo_full_name, kind)
+);
+CREATE INDEX idx_repo_queue_claim
+    ON repo_queue (status, priority DESC, created_at);
+CREATE INDEX idx_repo_queue_repo
+    ON repo_queue (provider, repo_full_name);
+
+Step 3: Inserting test data (simulating existing production data)...
+✓ Test data inserted (5 rows)
+
+Step 4: Verifying initial data state...
+id  provider  repo_full_name  kind      status   
+--  --------  --------------  --------  ---------
+1   github    owner/repo1     clone     pending  
+2   github    owner/repo2     clone     completed
+3   gitlab    owner/repo3     clone     pending  
+4   github    owner/repo4     redetect  pending  
+5   github    owner/repo1     redetect  pending  
+
+Step 5: Checking if UNIQUE constraint already exists in schema...
+✓ UNIQUE constraint EXISTS in live schema
+
+Step 6: Testing constraint - attempting duplicate insert (should fail)...
+✓ SUCCESS: Duplicate insert correctly failed
+
+Step 7: Testing that different kinds for same repo are allowed...
+✓ SUCCESS: Different kind for same repo allowed
+id  provider  repo_full_name  kind      status   
+--  --------  --------------  --------  ---------
+2   github    owner/repo2     clone     completed
+6   github    owner/repo2     redetect  pending  
+
+Step 8: Final data integrity verification...
+Total rows: 6
+Unique (provider, repo_full_name, kind) combinations: 6
+
+=== VERIFICATION SUMMARY ===
+✓ Migration tested against actual live schema copy
+✓ All existing rows preserve their kind
+✓ UNIQUE constraint prevents duplicate same-kind jobs
+✓ Different kinds for same repo are allowed
+✓ No data loss or corruption
+
+Verification results saved to: /home/coding/commitgraph/migration/test_cg_aiyi4_results.txt
+✓ Test database cleaned up
+=== VERIFICATION COMPLETE ===

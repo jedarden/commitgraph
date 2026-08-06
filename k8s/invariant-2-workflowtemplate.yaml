@@ -1,0 +1,189 @@
+---
+# Argo WorkflowTemplate for Invariant 2 testing
+#
+# This workflow runs test_invariant_2.py against a fresh Postgres database
+# to validate that Invariant 2 correctly detects out-of-range dates.
+#
+# Usage:
+#   # Submit to Argo Workflows
+#   kubectl create -f k8s/invariant-2-workflowtemplate.yaml
+#
+#   # Run the workflow
+#   kubectl create -n argo-workflows -f - <<EOF
+#   apiVersion: argoproj.io/v1alpha1
+#   kind: Workflow
+#   metadata:
+#     generateName: invariant-2-test-
+#   spec:
+#     workflowTemplateRef:
+#       name: invariant-2-test
+#     arguments:
+#       parameters:
+#       - name: postgres-image
+#         value: "postgres:16-alpine"
+#       - name: python-image
+#         value: "python:3.11-slim"
+#   EOF
+#
+#   # Monitor execution
+#   kubectl get workflows -n argo-workflows
+#   kubectl logs -n argo-workflows <pod-name> -c main
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: invariant-2-test
+  namespace: argo-workflows
+  labels:
+    app: commitgraph
+    component: invariant-testing
+    invariant: "2"
+spec:
+  templates:
+  - name: main
+    inputs:
+      parameters:
+      - name: postgres-image
+        value: "postgres:16-alpine"
+      - name: python-image
+        value: "python:3.11-slim"
+    steps:
+    - - name: setup-postgres
+        template: postgres-setup
+        arguments:
+          parameters:
+          - name: image
+            value: "{{inputs.parameters.postgres-image}}"
+
+    - - name: wait-for-postgres
+        template: wait-for-ready
+        arguments:
+          parameters:
+          - name: postgres-host
+            value: "{{steps.setup-postgres.outputs.parameters.host}}"
+
+    - - name: run-invariant-tests
+        template: invariant-test
+        arguments:
+          parameters:
+          - name: postgres-host
+            value: "{{steps.setup-postgres.outputs.parameters.host}}"
+          - name: python-image
+            value: "{{inputs.parameters.python-image}}"
+
+  - name: postgres-setup
+    inputs:
+      parameters:
+      - name: image
+    outputs:
+      parameters:
+      - name: host
+        value: "{{pod.ip}}"
+    container:
+      image: "{{inputs.parameters.image}}"
+      env:
+      - name: POSTGRES_HOST_AUTH_METHOD
+        value: "trust"
+      command:
+      - postgres
+      - -c
+      - max_connections=200
+      - -c
+      - shared_buffers=128MB
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+      readinessProbe:
+        exec:
+          command:
+          - psql
+          - -U
+          - postgres
+          - -c
+          - "SELECT 1"
+        initialDelaySeconds: 5
+        periodSeconds: 5
+
+  - name: wait-for-ready
+    inputs:
+      parameters:
+      - name: postgres-host
+    script:
+      image: "{{inputs.parameters.postgres-image}}"
+      command:
+      - bash
+      source: |
+        set -e
+        echo "Waiting for Postgres at {{inputs.parameters.postgres-host}}..."
+        for i in {1..30}; do
+          if psql -h "{{inputs.parameters.postgres-host}}" -U postgres -c "SELECT 1" &>/dev/null; then
+            echo "Postgres is ready!"
+            exit 0
+          fi
+          echo "Attempt $i/30 failed, retrying in 2s..."
+          sleep 2
+        done
+        echo "ERROR: Postgres did not become ready"
+        exit 1
+
+  - name: invariant-test
+    inputs:
+      parameters:
+      - name: postgres-host
+      - name: python-image
+    container:
+      image: "{{inputs.parameters.python-image}}"
+      env:
+      - name: PGHOST
+        value: "{{inputs.parameters.postgres-host}}"
+      - name: PGUSER
+        value: "postgres"
+      - name: PGDATABASE
+        value: "postgres"
+      command:
+      - bash
+      - -c
+      - |
+        set -e
+        echo "Installing dependencies..."
+        pip install psycopg[binary] -q
+
+        echo ""
+        echo "=========================================="
+        echo "Running Invariant 2 Test Suite"
+        echo "=========================================="
+        echo ""
+
+        # Copy test files
+        cp /workspace/migration/test_invariant_2.py /tmp/test.py
+        cp /workspace/migrations/invariant_2_no_out_of_range_days.sql /tmp/invariant.sql
+
+        # Run the test
+        cd /tmp
+        python3 test.py
+
+        echo ""
+        echo "✅ All invariant tests passed!"
+      volumeMounts:
+      - name: workspace
+        mountPath: /workspace
+        readOnly: true
+    volumes:
+    - name: workspace
+      configMap:
+        name: commitgraph-code
+        items:
+        - key: test_invariant_2.py
+          path: migration/test_invariant_2.py
+        - key: invariant_sql
+          path: migrations/invariant_2_no_out_of_range_days.sql
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi

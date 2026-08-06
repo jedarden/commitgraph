@@ -1,0 +1,96 @@
+---
+# Reference Argo WorkflowTemplate for running goose migrations.
+#
+# NOTE: this was originally written as a `kind: Job` with `image: ...:latest`.
+# Both are banned org-wide:
+#   - Job/CronJob: ArgoCD cannot manage them idempotently, and their pods are
+#     not ArgoCD-owned, so they are never pruned and hold resource reservations
+#     indefinitely.
+#   - `:latest`: silently changes what runs and makes rollback impossible.
+#
+# A schema migration is genuinely a one-shot task, which is exactly what Argo
+# Workflows are for — so this is a WorkflowTemplate, not a Deployment loop (the
+# Deployment-with-internal-loop pattern is for *recurring* work; see
+# k8s/invariant-2-audit-deployment.yaml).
+#
+# This is a reference manifest. The deployed copy belongs in
+# jedarden/declarative-config under k8s/iad-ci/argo-workflows/, where ArgoCD
+# syncs it — never `kubectl apply`.
+#
+# Submit a run:
+#   kubectl --kubeconfig=~/.kube/iad-ci.kubeconfig create -n argo-workflows -f - <<EOF
+#   apiVersion: argoproj.io/v1alpha1
+#   kind: Workflow
+#   metadata:
+#     generateName: commitgraph-migrate-
+#   spec:
+#     workflowTemplateRef:
+#       name: commitgraph-migrate
+#     arguments:
+#       parameters:
+#       - name: goose-image
+#         value: ghcr.io/pressly/goose:<PINNED_VERSION>
+#   EOF
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: commitgraph-migrate
+  namespace: argo-workflows
+spec:
+  entrypoint: migrate
+  arguments:
+    parameters:
+    # REQUIRED — no default on purpose. Pin an explicit goose version before
+    # running this; `:latest` is prohibited. Resolve a concrete tag from
+    # https://github.com/pressly/goose/releases and use it here, e.g.
+    # ghcr.io/pressly/goose:v3.24.0
+    - name: goose-image
+    - name: postgres-host
+      value: commitgraph-rw.commitgraph.svc   # CNPG read-write service
+    - name: postgres-db
+      value: commitgraph
+    - name: postgres-port
+      value: "5432"
+  templates:
+  - name: migrate
+    inputs:
+      parameters:
+      - name: goose-image
+      - name: postgres-host
+      - name: postgres-db
+      - name: postgres-port
+    retryStrategy:
+      limit: "3"                # replaces the Job's backoffLimit: 3
+      retryPolicy: OnTransientError
+    activeDeadlineSeconds: 900
+    container:
+      image: "{{inputs.parameters.goose-image}}"
+      command: [goose]
+      args:
+      - postgres
+      - "user=$(POSTGRES_USER) password=$(POSTGRES_PASSWORD) host=$(POSTGRES_HOST) port=$(POSTGRES_PORT) dbname=$(POSTGRES_DB) sslmode=require"
+      - up
+      env:
+      - name: POSTGRES_HOST
+        value: "{{inputs.parameters.postgres-host}}"
+      - name: POSTGRES_DB
+        value: "{{inputs.parameters.postgres-db}}"
+      - name: POSTGRES_PORT
+        value: "{{inputs.parameters.postgres-port}}"
+      - name: POSTGRES_USER
+        valueFrom:
+          secretKeyRef:
+            name: commitgraph-app
+            key: username
+      - name: POSTGRES_PASSWORD
+        valueFrom:
+          secretKeyRef:
+            name: commitgraph-app
+            key: password
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 500m
+          memory: 256Mi

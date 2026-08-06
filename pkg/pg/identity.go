@@ -34,6 +34,14 @@ type Row interface {
 	Scan(dest ...interface{}) error
 }
 
+// Rows is the interface returned by QueryContext (subset of sql.Rows).
+type Rows interface {
+	Next() bool
+	Scan(dest ...interface{}) error
+	Close() error
+	Err() error
+}
+
 // SQLExecutor wraps *sql.DB to implement the Executor interface.
 type SQLExecutor struct {
 	db *sql.DB

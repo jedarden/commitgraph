@@ -3,7 +3,6 @@ package errors
 
 import (
 	"fmt"
-	"net/http"
 	"time"
 )
 

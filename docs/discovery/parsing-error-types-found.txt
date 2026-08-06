@@ -1,0 +1,368 @@
+# Parsing Error Type Definitions - Discovery Results
+## Task: Find all parsing error type definitions
+## Date: 2026-08-06
+## Workspace: /home/coding/commitgraph
+
+---
+
+## Summary
+Found 10 distinct error type definitions related to parsing across 3 packages:
+- **pkg/errors**: 6 error types (1 category constant, 2 structs, 1 interface type, 2 constructor functions)
+- **pkg/ingestlog**: 2 error types (1 struct, 1 enum string)
+- **pkg/warmstart**: 4 error types (1 enum, 3 structs)
+
+---
+
+## 1. pkg/errors/types.go
+**File**: `/home/coding/commitgraph/pkg/errors/types.go`
+
+### 1.1 ErrorCategory Type
+```go
+type ErrorCategory string
+```
+**Location**: types.go:12
+**Description**: String-based type for error categorization
+**Related Constants**:
+- `ParseError ErrorCategory = "parse_error"` (types.go:18)
+
+### 1.2 StructuredError Type
+```go
+type StructuredError struct {
+    // Core error information
+    Type      ErrorCategory  // Categorized error type
+    Severity  SeverityLevel  // Error severity level
+    Message   string         // Human-readable error message
+    Code      string         // Machine-readable error code
+
+    // Context information
+    Component string         // Component/package where error occurred
+    Operation string         // Operation being performed
+    Context   ErrorContext   // Additional contextual information
+
+    // Domain-specific context fields
+    CommitSHA  string // Commit SHA associated with the error
+    Position   int64  // Position/offset in data stream
+    Email      string // Email address involved in the error
+    TraceID    string // Trace ID for distributed tracing
+    RecordKey  string // Record key for database/storage operations
+
+    // Technical details
+    Cause      error         // Underlying error (for wrapping)
+    StackTrace string        // Stack trace at error site
+    Timestamp  time.Time     // When the error occurred
+
+    // Retry/Recovery information
+    Retryable bool              // Whether this error is retryable
+    RetryPolicy RetryPolicy     // Retry strategy if retryable
+    Recovery  RecoverySuggestion // Suggested recovery actions
+
+    // Additional metadata
+    Metadata map[string]interface{} // Additional context
+}
+```
+**Location**: types.go:112-143
+**Constructor**: `NewError(typ ErrorCategory, severity SeverityLevel, message, code, component, operation string, opts ...ErrorContextOption) *StructuredError` (types.go:260)
+
+### 1.3 ErrorContext Type
+```go
+type ErrorContext struct {
+    UserID      string            // User ID involved in the operation
+    RequestID   string            // Request ID for tracing
+    SessionID   string            // Session ID for context
+    Endpoint    string            // API endpoint involved
+    StatusCode  int               // HTTP status code (if applicable)
+    Query       string            // Database query (sanitized)
+    Package     string            // Package/function where error occurred
+    File        string            // File where error occurred
+    Line        int               // Line number where error occurred
+    Extra       map[string]string // Additional context
+}
+```
+**Location**: types.go:98-109
+
+### 1.4 ErrorContextOption Type
+```go
+type ErrorContextOption func(*StructuredError)
+```
+**Location**: types.go:222
+**Description**: Functional option type for NewError context setting
+**Related Functions**:
+- `WithCommitSHAOption(commitSHA string) ErrorContextOption` (types.go:225)
+- `WithPositionOption(position int64) ErrorContextOption` (types.go:232)
+- `WithEmailOption(email string) ErrorContextOption` (types.go:239)
+- `WithTraceIDOption(traceID string) ErrorContextOption` (types.go:246)
+- `WithRecordKeyOption(recordKey string) ErrorContextOption` (types.go:253)
+
+---
+
+## 2. pkg/errors/helpers.go
+**File**: `/home/coding/commitgraph/pkg/errors/helpers.go`
+
+### 2.1 ParseErrorf Constructor
+```go
+func ParseErrorf(component, operation, dataType, format string, args ...interface{}) *StructuredError
+```
+**Location**: helpers.go:48-71
+**Description**: Creates a parse error with formatted message
+**Signature Details**:
+- Returns: `*StructuredError` with Type=ParseError, Severity=SeverityHigh
+- Message format: `"failed to parse {dataType}: {formatted message}"`
+- Auto-generates error code via `generateErrorCode(component, ParseError, 0)`
+
+### 2.2 JSONParseError Constructor
+```go
+func JSONParseError(component, operation string) *StructuredError
+```
+**Location**: helpers.go:74-76
+**Description**: Creates an error specifically for JSON parsing failures
+**Signature Details**:
+- Returns: `*StructuredError` by calling `ParseErrorf(component, operation, "JSON", "invalid JSON structure")`
+- Simplified interface for JSON-specific parse errors
+
+---
+
+## 3. pkg/ingestlog/logger.go
+**File**: `/home/coding/commitgraph/pkg/ingestlog/logger.go`
+
+### 3.1 ErrorContext Type (ingestlog)
+```go
+type ErrorContext struct {
+    Type        string `json:"type"`                  // Type of error (network, timeout, client_error, server_error, parse_error, unknown)
+    Message     string `json:"message"`               // Human-readable error message
+    StackTrace  string `json:"stack_trace,omitempty"` // Stack trace captured at error time
+}
+```
+**Location**: logger.go:55-59
+**Note**: Different from pkg/errors.ErrorContext - this is for ingest logging specifically
+
+### 3.2 ErrorRecovery Type
+```go
+type ErrorRecovery struct {
+    Suggestion string // Actionable recovery suggestion
+    Severity   string // "low", "medium", "high"
+}
+```
+**Location**: logger.go:401-404
+**Related Function**: `GetErrorRecovery(errorType string, statusCode int) ErrorRecovery` (logger.go:407)
+**Parse Error Recovery**: Returns "Parse error - response format changed or invalid JSON, check API schema changes" with "high" severity
+
+### 3.3 Parse Error Classification
+```go
+func classifyError(err error, statusCode int) string
+```
+**Location**: logger.go:658-698
+**Description**: Classifies errors into types including "parse_error"
+**Parse Error Detection Pattern**:
+```go
+if contains(errMsg, "invalid JSON") ||
+   contains(errMsg, "cannot unmarshal") ||
+   contains(errMsg, "invalid character") ||
+   contains(errMsg, "unmarshal") ||
+   contains(errMsg, "parse error") {
+    return "parse_error"
+}
+```
+
+---
+
+## 4. pkg/warmstart/error.go
+**File**: `/home/coding/commitgraph/pkg/warmstart/error.go`
+
+### 4.1 ErrorKind Type
+```go
+type ErrorKind int
+```
+**Location**: error.go:10
+**Description**: Category of error during tarball operations
+**Related Constants**:
+- `Truncated ErrorKind = iota` (error.go:14)
+- `MissingMember` (error.go:17)
+- `CorruptPack` (error.go:20)
+- `IO` (error.go:23)
+- `Other` (error.go:26)
+
+### 4.2 Error Type (warmstart)
+```go
+type Error struct {
+    Kind       ErrorKind // Category of error
+    Context    string    // Human-readable details about what went wrong
+    MemberName string    // Tarball member name (if applicable)
+    Offset     int64     // Byte offset in the tarball (if applicable)
+    Underlying error    // Original error (if applicable)
+}
+```
+**Location**: error.go:47-62
+**Constructor Functions**:
+- `NewIOError(context string, err error) *Error` (error.go:140)
+- `NewTruncatedError(context string, offset int64) *Error` (error.go:149)
+- `NewTruncatedMemberError(memberName string, context string, offset int64) *Error` (error.go:158)
+- `NewMissingMemberError(memberName string) *Error` (error.go:168)
+- `NewCorruptPackError(memberName string, context string) *Error` (error.go:186)
+
+### 4.3 CorruptionError Type
+```go
+type CorruptionError struct {
+    Context string // Describes what was corrupted
+}
+```
+**Location**: error.go:106-109
+**Status**: ⚠️ DEPRECATED - Use Error with Kind=CorruptPack or Kind=Truncated instead
+
+### 4.4 NotAGitRepoError Type
+```go
+type NotAGitRepoError struct {
+    Path   string // Directory that was checked
+    Reason string // Why it's not a git repository
+}
+```
+**Location**: error.go:118-124
+**Status**: ⚠️ DEPRECATED - Use Error with Kind=Other instead
+**Methods**:
+- `Is(target error) bool` (error.go:135) - Allows errors.Is matching
+
+---
+
+## 5. Parse Error Classification Logic
+
+### 5.1 pkg/errors/types.go classifyError
+**Location**: types.go:453-531
+**Parse Error Detection**:
+```go
+// Check for parse errors
+if contains(errMsg, "invalid JSON") ||
+    contains(errMsg, "cannot unmarshal") ||
+    contains(errMsg, "invalid character") ||
+    contains(errMsg, "unmarshal") ||
+    contains(errMsg, "parse error") {
+    return ParseError
+}
+```
+
+### 5.2 Retry Policy for Parse Errors
+**Location**: types.go:439-450
+```go
+case ValidationError, ParseError, ClientError, AuthError, ConfigError, ResourceError:
+    return false  // Parse errors are NOT retryable by default
+```
+
+### 5.3 Severity for Parse Errors
+**Location**: types.go:534-547
+```go
+case AuthError, NetworkError, ParseError, DatabaseError:
+    return SeverityHigh  // Parse errors get HIGH severity
+```
+
+---
+
+## 6. Error Constructor Functions Summary
+
+### Primary Parse Error Constructors:
+1. **ParseErrorf()** - General parse error constructor (helpers.go:48)
+2. **JSONParseError()** - JSON-specific parse error (helpers.go:74)
+
+### Related Validation/Format Constructors:
+3. **ValidationErrorf()** - Validation errors (helpers.go:10)
+4. **InvalidFormatError()** - Invalid format errors (helpers.go:43)
+
+### Warmstart Error Constructors:
+5. **NewIOError()** - I/O errors (error.go:140)
+6. **NewTruncatedError()** - Truncation errors (error.go:149)
+7. **NewTruncatedMemberError()** - Member-specific truncation (error.go:158)
+8. **NewMissingMemberError()** - Missing member errors (error.go:168)
+9. **NewCorruptPackError()** - Pack corruption (error.go:186)
+
+---
+
+## 7. Error Type Hierarchy and Relationships
+
+```
+Error Types (by package):
+├── pkg/errors/
+│   ├── ErrorCategory (string type)
+│   │   └── ParseError = "parse_error"
+│   ├── StructuredError (main error struct)
+│   ├── ErrorContext (metadata struct)
+│   └── ErrorContextOption (functional option type)
+│
+├── pkg/ingestlog/
+│   ├── ErrorContext (logging-specific struct)
+│   └── ErrorRecovery (recovery suggestions struct)
+│
+└── pkg/warmstart/
+    ├── ErrorKind (int enum)
+    ├── Error (main warmstart error struct)
+    ├── CorruptionError (deprecated struct)
+    └── NotAGitRepoError (deprecated struct)
+```
+
+---
+
+## 8. Usage Patterns
+
+### Pattern 1: Creating Parse Errors
+```go
+// Using ParseErrorf
+err := ParseErrorf("parser", "parse-commit", "JSON", "invalid structure at offset %d", 42)
+
+// Using JSONParseError
+err := JSONParseError("parser", "parse-json-response")
+```
+
+### Pattern 2: Classifying Errors
+```go
+// Automatic classification via ClassifyError
+structuredErr := ClassifyError(originalErr, ClassifyOptions{
+    Component:  "parser",
+    Operation:  "parse-commit",
+    StatusCode: 0,
+})
+```
+
+### Pattern 3: Error Context Enhancement
+```go
+// Adding context via functional options
+err := NewError(ParseError, SeverityHigh, "message", "code", "component", "operation",
+    WithCommitSHAOption("abc123"),
+    WithPositionOption(1024),
+)
+```
+
+---
+
+## 9. Key Findings
+
+1. **Dual ErrorContext Types**: Found two different ErrorContext types in pkg/errors and pkg/ingestlog with different purposes
+2. **Deprecated Types**: CorruptionError and NotAGitRepoError in warmstart are deprecated
+3. **String-Based Enums**: ErrorCategory uses strings, ErrorKind uses integers
+4. **No Retry Policy**: Parse errors are explicitly marked as non-retryable
+5. **High Severity**: Parse errors automatically get SeverityHigh classification
+6. **Pattern Matching**: Both pkg/errors and pkg/ingestlog implement similar error classification logic
+
+---
+
+## 10. File Locations Reference
+
+| Error Type | File | Line(s) | Type |
+|------------|------|---------|------|
+| ErrorCategory | pkg/errors/types.go | 12 | type definition |
+| ParseError constant | pkg/errors/types.go | 18 | constant |
+| StructuredError | pkg/errors/types.go | 112-143 | struct |
+| ErrorContext (errors) | pkg/errors/types.go | 98-109 | struct |
+| ErrorContextOption | pkg/errors/types.go | 222 | function type |
+| ParseErrorf | pkg/errors/helpers.go | 48-71 | constructor |
+| JSONParseError | pkg/errors/helpers.go | 74-76 | constructor |
+| ErrorContext (ingestlog) | pkg/ingestlog/logger.go | 55-59 | struct |
+| ErrorRecovery | pkg/ingestlog/logger.go | 401-404 | struct |
+| classifyError | pkg/ingestlog/logger.go | 658-698 | function |
+| ErrorKind | pkg/warmstart/error.go | 10 | type definition |
+| Error (warmstart) | pkg/warmstart/error.go | 47-62 | struct |
+| CorruptionError | pkg/warmstart/error.go | 106-109 | struct (deprecated) |
+| NotAGitRepoError | pkg/warmstart/error.go | 118-124 | struct (deprecated) |
+
+---
+
+## Discovery Complete
+Total error type definitions found: 10
+Total constructor functions: 9
+Total classification functions: 2
+Deprecated types: 2

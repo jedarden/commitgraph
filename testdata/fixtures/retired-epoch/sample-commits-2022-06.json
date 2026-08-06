@@ -1,0 +1,12 @@
+[
+  {
+    "sha": "ccc333333333333333333333333333333333333333",
+    "provider": "github",
+    "repo_full_name": "test/ancient-repo",
+    "author_name": "Ancient User",
+    "author_email": "ancient@example.com",
+    "committed_at": "2022-06-15T12:00:00Z",
+    "message": "feat: ancient feature\n\nCo-Authored-By: Claude <noreply@anthropic.com>",
+    "epoch_key_id": "epoch-2022-06-ancient"
+  }
+]

@@ -1,0 +1,16 @@
+{
+  "encryption_keys": [
+    {
+      "key_id": "epoch-2023-12-retired",
+      "epoch": "2023-12",
+      "status": "retired",
+      "key_path": "/keys/epoch-2023-12-retired",
+      "created_at": "2023-12-01T00:00:00Z",
+      "retired_at": "2024-08-01T00:00:00Z",
+      "description": "Retired encryption key for December 2023 epoch"
+    }
+  ],
+  "partition_count": 1,
+  "row_count": 1,
+  "partition_path": "provider=github/year=2023/month=12"
+}

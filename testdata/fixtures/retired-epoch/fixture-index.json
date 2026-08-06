@@ -1,0 +1,39 @@
+{
+  "fixture_version": "1.0",
+  "description": "Test fixture data for retired epoch testing",
+  "created_at": "2024-08-06T00:00:00Z",
+  "retired_epochs": [
+    {
+      "key_id": "epoch-2023-12-retired",
+      "epoch": "2023-12",
+      "status": "retired",
+      "manifest_file": "manifest-retired-epoch.json",
+      "sample_data": "sample-commits-2023-12.json",
+      "primary_test_fixture": true
+    },
+    {
+      "key_id": "epoch-2022-06-ancient",
+      "epoch": "2022-06",
+      "status": "retired",
+      "manifest_file": "manifest-multi-epoch.json",
+      "sample_data": "sample-commits-2022-06.json",
+      "primary_test_fixture": false
+    }
+  ],
+  "current_epochs": [
+    {
+      "key_id": "epoch-2024-08-current",
+      "epoch": "2024-08",
+      "status": "current",
+      "manifest_file": "manifest-current-epoch.json",
+      "sample_data": "sample-commits-2024-08.json",
+      "primary_test_fixture": true
+    }
+  ],
+  "primary_retired_epoch_key": "epoch-2023-12-retired",
+  "fixture_directories": {
+    "root": "testdata/fixtures/retired-epoch/",
+    "manifests": "testdata/fixtures/retired-epoch/",
+    "sample_data": "testdata/fixtures/retired-epoch/"
+  }
+}

@@ -1,0 +1,12 @@
+[
+  {
+    "sha": "aaa222222222222222222222222222222222222222",
+    "provider": "github",
+    "repo_full_name": "test/current-repo",
+    "author_name": "Current User",
+    "author_email": "current@example.com",
+    "committed_at": "2024-08-15T12:00:00Z",
+    "message": "feat: new feature\n\nCo-Authored-By: Claude <noreply@anthropic.com>",
+    "epoch_key_id": "epoch-2024-08-current"
+  }
+]

@@ -1,0 +1,12 @@
+[
+  {
+    "sha": "bbb111111111111111111111111111111111111111",
+    "provider": "github",
+    "repo_full_name": "test/old-repo",
+    "author_name": "Old User",
+    "author_email": "old@example.com",
+    "committed_at": "2023-12-15T12:00:00Z",
+    "message": "fix: old bug\n\nCo-Authored-By: Claude <noreply@anthropic.com>",
+    "epoch_key_id": "epoch-2023-12-retired"
+  }
+]

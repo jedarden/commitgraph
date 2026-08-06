@@ -1,0 +1,15 @@
+{
+  "encryption_keys": [
+    {
+      "key_id": "epoch-2024-08-current",
+      "epoch": "2024-08",
+      "status": "current",
+      "key_path": "/keys/epoch-2024-08-current",
+      "created_at": "2024-08-01T00:00:00Z",
+      "description": "Current encryption key for August 2024 epoch"
+    }
+  ],
+  "partition_count": 1,
+  "row_count": 1,
+  "partition_path": "provider=github/year=2024/month=08"
+}

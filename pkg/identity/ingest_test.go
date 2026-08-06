@@ -281,6 +281,118 @@ func TestIngester_ProcessedCounter(t *testing.T) {
 	}
 }
 
+// TestIngester_ProcessedCounter_SingleRecord verifies single record ingest (counter = 1).
+func TestIngester_ProcessedCounter_SingleRecord(t *testing.T) {
+	db := &mockDB{}
+	ingester := NewIngester(db)
+
+	// Initially, counter should be zero
+	if ingester.GetProcessed() != 0 {
+		t.Errorf("expected initial processed count to be 0, got %d", ingester.GetProcessed())
+	}
+
+	now := time.Now().UTC()
+
+	// Single row
+	rows := []ResolutionRow{
+		{
+			Email:      "single@example.com",
+			Login:      "singleuser",
+			Source:     SourceLive,
+			ResolvedAt: now,
+		},
+	}
+
+	err := ingester.IngestResolution(context.Background(), rows)
+	if err != nil {
+		t.Fatalf("single record ingest failed: %v", err)
+	}
+
+	// Counter should be 1 after single record
+	if ingester.GetProcessed() != 1 {
+		t.Errorf("expected processed count to be 1 after single record, got %d", ingester.GetProcessed())
+	}
+}
+
+// TestIngester_ProcessedCounter_Reingest verifies re-ingest scenarios (counter tracks all attempts).
+func TestIngester_ProcessedCounter_Reingest(t *testing.T) {
+	db := &mockDB{}
+	ingester := NewIngester(db)
+
+	now := time.Now().UTC()
+
+	// First ingest of a record
+	rows1 := []ResolutionRow{
+		{
+			Email:      "user@example.com",
+			Login:      "user1",
+			Source:     SourceLive,
+			ResolvedAt: now,
+		},
+	}
+
+	err := ingester.IngestResolution(context.Background(), rows1)
+	if err != nil {
+		t.Fatalf("first ingest failed: %v", err)
+	}
+
+	if ingester.GetProcessed() != 1 {
+		t.Errorf("expected processed count to be 1 after first ingest, got %d", ingester.GetProcessed())
+	}
+
+	// Re-ingest the same email with different data (this would cause ON CONFLICT in real DB)
+	rows2 := []ResolutionRow{
+		{
+			Email:      "user@example.com", // Same email
+			Login:      "user2",             // Different login
+			Source:     SourceSeed,
+			ResolvedAt: now.Add(time.Hour),
+		},
+	}
+
+	err = ingester.IngestResolution(context.Background(), rows2)
+	if err != nil {
+		t.Fatalf("re-ingest failed: %v", err)
+	}
+
+	// Counter should be 2 (1 + 1) because it tracks all ingest attempts
+	if ingester.GetProcessed() != 2 {
+		t.Errorf("expected processed count to be 2 after re-ingest, got %d", ingester.GetProcessed())
+	}
+
+	// Ingest a batch with mixed new and duplicate emails
+	rows3 := []ResolutionRow{
+		{
+			Email:      "user@example.com", // Duplicate
+			Login:      "user3",
+			Source:     SourceManual,
+			ResolvedAt: now.Add(2 * time.Hour),
+		},
+		{
+			Email:      "new@example.com", // New
+			Login:      "newuser",
+			Source:     SourceLive,
+			ResolvedAt: now,
+		},
+		{
+			Email:      "another@example.com", // New
+			Login:      "another",
+			Source:     SourceLive,
+			ResolvedAt: now,
+		},
+	}
+
+	err = ingester.IngestResolution(context.Background(), rows3)
+	if err != nil {
+		t.Fatalf("mixed batch failed: %v", err)
+	}
+
+	// Counter should be 5 (1 + 1 + 3) = 5 total records processed
+	if ingester.GetProcessed() != 5 {
+		t.Errorf("expected processed count to be 5 after mixed batch, got %d", ingester.GetProcessed())
+	}
+}
+
 // TestResolutionRow_Validate tests the Validate method directly.
 func TestResolutionRow_Validate(t *testing.T) {
 	now := time.Now().UTC()

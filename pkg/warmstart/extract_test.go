@@ -3351,7 +3351,48 @@ func TestVerifyGitLog_ValidRepository(t *testing.T) {
 		t.Fatalf("failed to init git repo: %v\noutput: %s", err, output)
 	}
 
-	// VerifyGitLog should succeed on a valid repository
+	// Clone to a working directory to create commits (needed for git log to work)
+	workingDir := filepath.Join(tmpDir, "working")
+	cmd = exec.Command("git", "clone", gitDir, workingDir)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to clone working repo: %v\noutput: %s", err, output)
+	}
+
+	// Configure git user
+	cmd = exec.Command("git", "-C", workingDir, "config", "user.name", "Test User")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to configure git user.name: %v\noutput: %s", err, output)
+	}
+	cmd = exec.Command("git", "-C", workingDir, "config", "user.email", "test@example.com")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to configure git user.email: %v\noutput: %s", err, output)
+	}
+
+	// Create a commit
+	testFile := filepath.Join(workingDir, "test.txt")
+	if err := os.WriteFile(testFile, []byte("test content\n"), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+	cmd = exec.Command("git", "-C", workingDir, "add", "test.txt")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to add file: %v\noutput: %s", err, output)
+	}
+	cmd = exec.Command("git", "-C", workingDir, "commit", "-m", "Test commit")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to commit: %v\noutput: %s", err, output)
+	}
+
+	// Push to bare repository
+	cmd = exec.Command("git", "-C", workingDir, "push", "origin", "master")
+	if _, err := cmd.CombinedOutput(); err != nil {
+		// Try 'main' branch if 'master' fails
+		cmd = exec.Command("git", "-C", workingDir, "push", "origin", "main")
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("failed to push to origin: %v\noutput: %s", err, output)
+		}
+	}
+
+	// VerifyGitLog should succeed on a valid repository with commits
 	err := VerifyGitLog(gitDir)
 	if err != nil {
 		t.Errorf("VerifyGitLog failed on valid repository: %v", err)
@@ -3417,7 +3458,48 @@ func TestRunSanityChecks_Success(t *testing.T) {
 		t.Fatalf("failed to init git repo: %v\noutput: %s", err, output)
 	}
 
-	// RunSanityChecks should succeed on a valid repository
+	// Clone to a working directory to create commits (needed for sanity checks to pass)
+	workingDir := filepath.Join(tmpDir, "working")
+	cmd = exec.Command("git", "clone", gitDir, workingDir)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to clone working repo: %v\noutput: %s", err, output)
+	}
+
+	// Configure git user
+	cmd = exec.Command("git", "-C", workingDir, "config", "user.name", "Test User")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to configure git user.name: %v\noutput: %s", err, output)
+	}
+	cmd = exec.Command("git", "-C", workingDir, "config", "user.email", "test@example.com")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to configure git user.email: %v\noutput: %s", err, output)
+	}
+
+	// Create a commit
+	testFile := filepath.Join(workingDir, "test.txt")
+	if err := os.WriteFile(testFile, []byte("test content\n"), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+	cmd = exec.Command("git", "-C", workingDir, "add", "test.txt")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to add file: %v\noutput: %s", err, output)
+	}
+	cmd = exec.Command("git", "-C", workingDir, "commit", "-m", "Test commit")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to commit: %v\noutput: %s", err, output)
+	}
+
+	// Push to bare repository
+	cmd = exec.Command("git", "-C", workingDir, "push", "origin", "master")
+	if _, err := cmd.CombinedOutput(); err != nil {
+		// Try 'main' branch if 'master' fails
+		cmd = exec.Command("git", "-C", workingDir, "push", "origin", "main")
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("failed to push to origin: %v\noutput: %s", err, output)
+		}
+	}
+
+	// RunSanityChecks should succeed on a valid repository with commits
 	err := RunSanityChecks(gitDir)
 	if err != nil {
 		t.Errorf("RunSanityChecks failed on valid repository: %v", err)

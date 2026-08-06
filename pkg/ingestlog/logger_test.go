@@ -908,3 +908,254 @@ func TestEventToLogEntryConversion(t *testing.T) {
 		t.Errorf("Round-trip EndpointURL = %q, want %q", recoveredEvent.EndpointURL, event.EndpointURL)
 	}
 }
+
+// TestCaptureUserContext verifies CaptureUserContext creates valid UserContext.
+func TestCaptureUserContext(t *testing.T) {
+	tests := []struct {
+		name           string
+		email          string
+		githubUsername string
+		wantErr        bool
+		errContains    string
+	}{
+		{
+			name:           "valid user context",
+			email:          "user@example.com",
+			githubUsername: "octocat",
+			wantErr:        false,
+		},
+		{
+			name:           "empty email",
+			email:          "",
+			githubUsername: "octocat",
+			wantErr:        true,
+			errContains:    "email",
+		},
+		{
+			name:           "empty github username",
+			email:          "user@example.com",
+			githubUsername: "",
+			wantErr:        true,
+			errContains:    "github_username",
+		},
+		{
+			name:           "both empty",
+			email:          "",
+			githubUsername: "",
+			wantErr:        true,
+			errContains:    "email",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			userCtx, err := CaptureUserContext(tt.email, tt.githubUsername)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("CaptureUserContext expected error containing %q, got nil", tt.errContains)
+				}
+				if tt.errContains != "" && err != nil && !contains(err.Error(), tt.errContains) {
+					t.Errorf("Error message %q does not contain %q", err.Error(), tt.errContains)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("CaptureUserContext unexpected error: %v", err)
+			}
+
+			// Verify UserContext fields are populated
+			if userCtx.Email != tt.email {
+				t.Errorf("UserContext.Email = %q, want %q", userCtx.Email, tt.email)
+			}
+			if userCtx.GithubUsername != tt.githubUsername {
+				t.Errorf("UserContext.GithubUsername = %q, want %q", userCtx.GithubUsername, tt.githubUsername)
+			}
+		})
+	}
+}
+
+// TestCaptureEndpointContext verifies CaptureEndpointContext creates valid EndpointContext.
+func TestCaptureEndpointContext(t *testing.T) {
+	tests := []struct {
+		name          string
+		url           string
+		attemptNumber int
+		statusCode    int
+		responseBody  string
+		wantErr       bool
+		errContains   string
+	}{
+		{
+			name:          "valid endpoint context with status code",
+			url:           "http://queue-api:8080/email-resolution/resolve",
+			attemptNumber: 1,
+			statusCode:    200,
+			responseBody:  `{"success": true}`,
+			wantErr:       false,
+		},
+		{
+			name:          "valid endpoint context without status code",
+			url:           "http://queue-api:8080/email-resolution/resolve",
+			attemptNumber: 2,
+			statusCode:    0,
+			responseBody:  "",
+			wantErr:       false,
+		},
+		{
+			name:          "empty url",
+			url:           "",
+			attemptNumber: 1,
+			statusCode:    200,
+			responseBody:  "response",
+			wantErr:       true,
+			errContains:  "url",
+		},
+		{
+			name:          "zero attempt number",
+			url:           "http://queue-api:8080/resolve",
+			attemptNumber: 0,
+			statusCode:    200,
+			responseBody:  "response",
+			wantErr:       true,
+			errContains:  "attempt_number",
+		},
+		{
+			name:          "negative attempt number",
+			url:           "http://queue-api:8080/resolve",
+			attemptNumber: -1,
+			statusCode:    200,
+			responseBody:  "response",
+			wantErr:       true,
+			errContains:  "attempt_number",
+		},
+		{
+			name:          "large response body gets truncated",
+			url:           "http://queue-api:8080/resolve",
+			attemptNumber: 1,
+			statusCode:    500,
+			responseBody:  string(make([]byte, 11*1024)), // 11KB response
+			wantErr:       false,
+		},
+		{
+			name:          "exactly 10KB response body",
+			url:           "http://queue-api:8080/resolve",
+			attemptNumber: 1,
+			statusCode:    200,
+			responseBody:  string(make([]byte, 10*1024)), // Exactly 10KB
+			wantErr:       false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			endpointCtx, err := CaptureEndpointContext(tt.url, tt.attemptNumber, tt.statusCode, tt.responseBody)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("CaptureEndpointContext expected error containing %q, got nil", tt.errContains)
+				}
+				if tt.errContains != "" && err != nil && !contains(err.Error(), tt.errContains) {
+					t.Errorf("Error message %q does not contain %q", err.Error(), tt.errContains)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("CaptureEndpointContext unexpected error: %v", err)
+			}
+
+			// Verify EndpointContext fields are populated
+			if endpointCtx.URL != tt.url {
+				t.Errorf("EndpointContext.URL = %q, want %q", endpointCtx.URL, tt.url)
+			}
+			if endpointCtx.AttemptNumber != tt.attemptNumber {
+				t.Errorf("EndpointContext.AttemptNumber = %d, want %d", endpointCtx.AttemptNumber, tt.attemptNumber)
+			}
+			if endpointCtx.StatusCode != tt.statusCode {
+				t.Errorf("EndpointContext.StatusCode = %d, want %d", endpointCtx.StatusCode, tt.statusCode)
+			}
+
+			// Verify response body truncation
+			if tt.name == "large response body gets truncated" {
+				if len(endpointCtx.ResponseBody) >= len(tt.responseBody) {
+					t.Errorf("Response body was not truncated: got %d bytes, want < %d bytes",
+						len(endpointCtx.ResponseBody), len(tt.responseBody))
+				}
+				if !contains(endpointCtx.ResponseBody, "... (truncated)") {
+					t.Errorf("Truncated response body does not contain truncation marker")
+				}
+			}
+			if tt.name == "exactly 10KB response body" {
+				if len(endpointCtx.ResponseBody) != len(tt.responseBody) {
+					t.Errorf("Response body at exactly 10KB should not be truncated: got %d bytes, want %d bytes",
+						len(endpointCtx.ResponseBody), len(tt.responseBody))
+				}
+			}
+		})
+	}
+}
+
+// TestCaptureContextIntegration verifies integration of capture functions with LogEntry.
+func TestCaptureContextIntegration(t *testing.T) {
+	email := "user@example.com"
+	githubUsername := "octocat"
+	url := "http://queue-api:8080/email-resolution/resolve"
+	attemptNumber := 2
+	statusCode := 500
+	responseBody := `{"error": "internal server error"}`
+
+	// Capture contexts
+	userCtx, err := CaptureUserContext(email, githubUsername)
+	if err != nil {
+		t.Fatalf("CaptureUserContext failed: %v", err)
+	}
+
+	endpointCtx, err := CaptureEndpointContext(url, attemptNumber, statusCode, responseBody)
+	if err != nil {
+		t.Fatalf("CaptureEndpointContext failed: %v", err)
+	}
+
+	// Create LogEntry using captured contexts
+	entry := LogEntry{
+		Timestamp: time.Now().UTC(),
+		EventType: "retry",
+		User:      userCtx,
+		Endpoint:  endpointCtx,
+		Error: ErrorContext{
+			Type:    "server_error",
+			Message: "internal server error",
+		},
+		MaxRetries:      4,
+		RetryDelayMs:    200,
+		TotalDurationMs: 350,
+	}
+
+	// Verify LogEntry is properly populated
+	if entry.User.Email != email {
+		t.Errorf("User.Email = %q, want %q", entry.User.Email, email)
+	}
+	if entry.User.GithubUsername != githubUsername {
+		t.Errorf("User.GithubUsername = %q, want %q", entry.User.GithubUsername, githubUsername)
+	}
+	if entry.Endpoint.URL != url {
+		t.Errorf("Endpoint.URL = %q, want %q", entry.Endpoint.URL, url)
+	}
+	if entry.Endpoint.AttemptNumber != attemptNumber {
+		t.Errorf("Endpoint.AttemptNumber = %d, want %d", entry.Endpoint.AttemptNumber, attemptNumber)
+	}
+	if entry.Endpoint.StatusCode != statusCode {
+		t.Errorf("Endpoint.StatusCode = %d, want %d", entry.Endpoint.StatusCode, statusCode)
+	}
+	if entry.Endpoint.ResponseBody != responseBody {
+		t.Errorf("Endpoint.ResponseBody = %q, want %q", entry.Endpoint.ResponseBody, responseBody)
+	}
+
+	// Verify LogEntry can be logged
+	logger := NewLogger()
+	err = logger.LogRetryWithEntry(&entry)
+	if err != nil {
+		t.Errorf("LogRetryWithEntry failed: %v", err)
+	}
+}

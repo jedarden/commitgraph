@@ -464,3 +464,70 @@ func EventFromError(email, githubUsername, endpointURL string, err error, status
 		TotalDurationMs: totalDurationMs,
 	}
 }
+
+// CaptureUserContext creates a UserContext struct with validation.
+// This helper function accepts user identification parameters and returns
+// a populated UserContext struct for use in log entries.
+//
+// Parameters:
+//   - email: User's email address being resolved (required)
+//   - githubUsername: Target GitHub username for resolution (required)
+//
+// Returns:
+//   - A populated UserContext struct
+//   - An error if validation fails (empty email or githubUsername)
+func CaptureUserContext(email, githubUsername string) (UserContext, error) {
+	// Validate required fields
+	if email == "" {
+		return UserContext{}, fmt.Errorf("email is required for UserContext")
+	}
+	if githubUsername == "" {
+		return UserContext{}, fmt.Errorf("github_username is required for UserContext")
+	}
+
+	return UserContext{
+		Email:          email,
+		GithubUsername: githubUsername,
+	}, nil
+}
+
+// CaptureEndpointContext creates an EndpointContext struct with validation.
+// This helper function accepts endpoint interaction parameters and returns
+// a populated EndpointContext struct for use in log entries.
+//
+// Parameters:
+//   - url: Full HTTP endpoint URL being called (required)
+//   - attemptNumber: Current retry attempt (1-based, required)
+//   - statusCode: HTTP status code received (0 if not applicable, defaults to 0)
+//   - responseBody: Response body content (empty if not available, defaults to empty string)
+//
+// Returns:
+//   - A populated EndpointContext struct
+//   - An error if validation fails (empty URL or zero/negative attempt number)
+func CaptureEndpointContext(url string, attemptNumber int, statusCode int, responseBody string) (EndpointContext, error) {
+	// Validate required fields
+	if url == "" {
+		return EndpointContext{}, fmt.Errorf("url is required for EndpointContext")
+	}
+	if attemptNumber <= 0 {
+		return EndpointContext{}, fmt.Errorf("attempt_number must be positive (got %d)", attemptNumber)
+	}
+
+	// Apply default values for optional fields
+	if statusCode == 0 {
+		statusCode = 0 // Explicitly keep as 0 (no status code available)
+	}
+
+	// Truncate response body if it exceeds reasonable size limit (10KB)
+	const maxResponseBodySize = 10 * 1024
+	if len(responseBody) > maxResponseBodySize {
+		responseBody = responseBody[:maxResponseBodySize] + "... (truncated)"
+	}
+
+	return EndpointContext{
+		URL:           url,
+		AttemptNumber: attemptNumber,
+		StatusCode:    statusCode,
+		ResponseBody:  responseBody,
+	}, nil
+}

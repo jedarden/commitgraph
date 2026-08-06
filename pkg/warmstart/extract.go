@@ -113,8 +113,18 @@ func ParseTarball(data []byte) (*WarmStartSnapshot, error) {
 
 		// Read file content
 		var buf bytes.Buffer
-		if _, err := io.Copy(&buf, tr); err != nil {
+		written, err := io.Copy(&buf, tr)
+		if err != nil {
+			// Check if this is an unexpected EOF (truncated file)
+			if err == io.ErrUnexpectedEOF || errors.Is(err, io.ErrUnexpectedEOF) {
+				return nil, NewTruncatedError(fmt.Sprintf("member %s ended prematurely", hdr.Name), 0)
+			}
 			return nil, fmt.Errorf("%w: failed to read %s: %v", ErrInvalidTarball, hdr.Name, err)
+		}
+
+		// Verify we read the expected number of bytes
+		if written != hdr.Size {
+			return nil, NewTruncatedError(fmt.Sprintf("member %s: expected %d bytes, got %d", hdr.Name, hdr.Size, written), 0)
 		}
 		data := buf.Bytes()
 

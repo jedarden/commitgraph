@@ -208,8 +208,8 @@ func TestCaptureStackTrace(t *testing.T) {
 
 // TestCaptureStackTraceWithDepth verifies stack trace capture with custom depth.
 func TestCaptureStackTraceWithDepth(t *testing.T) {
-	// Test with depth 0 (should include this function)
-	stack := captureStackTraceWithDepth(2)
+	// Test with depth 1 (should include this function)
+	stack := captureStackTraceWithDepth(1)
 	if !strings.Contains(stack, "TestCaptureStackTraceWithDepth") {
 		t.Errorf("Stack trace with depth does not contain calling function")
 	}

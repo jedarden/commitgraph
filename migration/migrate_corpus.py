@@ -181,6 +181,9 @@ class CorpusMigrator:
         """
         Validate that migration credentials can decrypt all discovered keys.
 
+        This is a critical preflight check: scoping to only the current epoch
+        would silently skip older partitions still sitting on retired epochs.
+
         Args:
             keys: List of EncryptionKey objects discovered from manifests
 
@@ -189,23 +192,42 @@ class CorpusMigrator:
         """
         logger.info(f"Validating migration credentials against {len(keys)} keys...")
 
-        # Load migration credential
+        # Import the preflight checker
         try:
-            with open(self.migration_credential_path, 'r') as f:
-                migration_credential = json.load(f)
-        except Exception as e:
-            logger.error(f"Failed to load migration credential: {e}")
+            from preflight_check_epochs import EpochPreflightChecker
+        except ImportError:
+            logger.error("preflight_check_epochs module not available")
             return False
 
-        # Validate against each key
-        # This is a placeholder - implement actual decryption test
-        for key in keys:
-            # TODO: Test decryption of a sample encrypted value with this key
-            # If any key fails, log which epoch/key_id and return False
-            pass
+        # Create keys_by_id dict for the preflight checker
+        keys_by_id = {key.key_id: key for key in keys}
 
-        logger.info("✓ Migration credentials validated for all encryption keys")
-        return True
+        try:
+            checker = EpochPreflightChecker(
+                corpus_root=self.corpus_root,
+                credential_path=self.migration_credential_path
+            )
+
+            # Use the preflight checker's validation logic
+            all_passed, results = checker.validate_decryption(keys_by_id)
+
+            # Report results
+            passed_count = sum(1 for r in results if r.success)
+            failed_count = len(results) - passed_count
+
+            if all_passed:
+                logger.info(f"✓ Migration credentials validated for all {len(results)} encryption keys")
+            else:
+                logger.error(f"✗ Migration credential validation failed: {failed_count}/{len(results)} keys cannot decrypt")
+                for r in results:
+                    if not r.success:
+                        logger.error(f"    - key_id={r.key_id!r} (epoch={r.epoch!r}): {r.error_message}")
+
+            return all_passed
+
+        except Exception as e:
+            logger.error(f"Failed to validate encryption credentials: {e}")
+            return False
 
     def get_partition_progress(self, partition_key: str) -> Optional[MigrationProgress]:
         """Load migration progress for a specific partition."""

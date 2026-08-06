@@ -99,6 +99,7 @@ func TestParseTarball_Valid(t *testing.T) {
 	members := []TarballMember{
 		{Name: "objects/pack/pack-123.pack", Data: packData},
 		{Name: "objects/pack/pack-123.idx", Data: idxData},
+		{Name: "objects/pack/pack-123.ref", Data: []byte("test ref data")},
 		{Name: "config.json", Data: configData},
 		{Name: "ref", Data: refData},
 	}
@@ -111,8 +112,8 @@ func TestParseTarball_Valid(t *testing.T) {
 	}
 
 	// Verify pack files
-	if len(snapshot.PackFiles) != 2 {
-		t.Errorf("expected 2 pack files, got %d", len(snapshot.PackFiles))
+	if len(snapshot.PackFiles) != 3 {
+		t.Errorf("expected 3 pack files, got %d", len(snapshot.PackFiles))
 	}
 
 	// Verify config
@@ -819,6 +820,7 @@ func TestParseTarball_WithPromisorAndRev(t *testing.T) {
 	// Test that .promisor and .rev files are properly extracted
 	packData := []byte("PACK123456789") // 12 bytes, minimum valid header
 	idxData := []byte("idx data")
+	refFileData := []byte("ref file data")
 	promisorData := []byte("promisor data")
 	revData := []byte("rev data")
 	configData := []byte(`{
@@ -831,6 +833,7 @@ func TestParseTarball_WithPromisorAndRev(t *testing.T) {
 	members := []TarballMember{
 		{Name: "objects/pack/pack-abc.pack", Data: packData},
 		{Name: "objects/pack/pack-abc.idx", Data: idxData},
+		{Name: "objects/pack/pack-abc.ref", Data: refFileData},
 		{Name: "objects/pack/pack-abc.promisor", Data: promisorData},
 		{Name: "objects/pack/pack-abc.rev", Data: revData},
 		{Name: "config.json", Data: configData},
@@ -843,8 +846,8 @@ func TestParseTarball_WithPromisorAndRev(t *testing.T) {
 		t.Fatalf("ParseTarball failed: %v", err)
 	}
 
-	// Verify all 4 pack-related files were extracted
-	if len(snapshot.PackFiles) != 4 {
+	// Verify all 5 pack-related files were extracted
+	if len(snapshot.PackFiles) != 5 {
 		t.Errorf("expected 4 pack files, got %d", len(snapshot.PackFiles))
 	}
 
@@ -1836,6 +1839,58 @@ func TestParseTarball_MultiplePackFilesMissingIdxForOne(t *testing.T) {
 	t.Logf("Successfully detected missing .idx file for one of multiple pack files: %v", missingErr)
 }
 
+func TestParseTarball_MultipleMissingRefFiles(t *testing.T) {
+	// Test that multiple missing .ref files are all detected and reported
+	configData := []byte(`{
+		"core.repositoryformatversion": "1",
+		"remote.origin.promisor": "true",
+		"remote.origin.partialclonefilter": "blob:none"
+	}`)
+	refData := []byte("refs/heads/main abc123")
+
+	members := []TarballMember{
+		{Name: "objects/pack/pack-abc.pack", Data: []byte("PACK123456789")},
+		{Name: "objects/pack/pack-abc.idx", Data: []byte("idx abc")},
+		// Missing pack-abc.ref
+		{Name: "objects/pack/pack-def.pack", Data: []byte("PACK987654321")},
+		{Name: "objects/pack/pack-def.idx", Data: []byte("idx def")},
+		// Missing pack-def.ref
+		{Name: "config.json", Data: configData},
+		{Name: "ref", Data: refData},
+	}
+
+	tarball := createTestTarball(t, members)
+
+	_, err := ParseTarball(tarball)
+	if err == nil {
+		t.Fatal("expected error for missing .ref files, got nil")
+	}
+
+	// Verify it's a MissingMember error with ".ref" member name
+	var missingErr *Error
+	if !errors.As(err, &missingErr) {
+		t.Fatalf("expected *Error type, got %T: %v", err, err)
+	}
+
+	if missingErr.Kind != MissingMember {
+		t.Errorf("expected MissingMember error kind, got %v", missingErr.Kind)
+	}
+
+	if missingErr.MemberName != ".ref" {
+		t.Errorf("expected member name '.ref', got %s", missingErr.MemberName)
+	}
+
+	// Verify error context lists both missing files
+	if !strings.Contains(missingErr.Context, "objects/pack/pack-abc.ref") {
+		t.Errorf("error context should list missing pack-abc.ref, got: %s", missingErr.Context)
+	}
+	if !strings.Contains(missingErr.Context, "objects/pack/pack-def.ref") {
+		t.Errorf("error context should list missing pack-def.ref, got: %s", missingErr.Context)
+	}
+
+	t.Logf("Successfully detected multiple missing .ref files: %v", missingErr)
+}
+
 func TestDebugPackFileCollection(t *testing.T) {
 	configData := []byte(`{
 		"core.repositoryformatversion": "1",
@@ -1866,5 +1921,58 @@ func TestDebugPackFileCollection(t *testing.T) {
 	t.Logf("PackFiles count: %d", len(snapshot.PackFiles))
 	for _, pf := range snapshot.PackFiles {
 		t.Logf("  - %s (%d bytes)", pf.Name, len(pf.Data))
+	}
+}
+
+func TestRefFilenameFromPackFilename(t *testing.T) {
+	tests := []struct {
+		name        string
+		packFilename string
+		expected     string
+	}{
+		{
+			name:        "basic pack filename",
+			packFilename: "pack-abc123.pack",
+			expected:     "pack-abc123.ref",
+		},
+		{
+			name:        "pack filename with multiple dots",
+			packFilename: "pack-test.123.pack",
+			expected:     "pack-test.123.ref",
+		},
+		{
+			name:        "pack filename with full path",
+			packFilename: "objects/pack/pack-xyz.pack",
+			expected:     "objects/pack/pack-xyz.ref",
+		},
+		{
+			name:        "no pack extension",
+			packFilename: "somefile",
+			expected:     "somefile.ref",
+		},
+		{
+			name:        "pack with double extension",
+			packFilename: "pack-abc123.pack.promisor",
+			expected:     "pack-abc123.pack.promisor.ref",
+		},
+		{
+			name:        "pack with .idx extension",
+			packFilename: "pack-abc123.idx",
+			expected:     "pack-abc123.idx.ref",
+		},
+		{
+			name:        "empty string",
+			packFilename: "",
+			expected:     ".ref",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := RefFilenameFromPackFilename(tt.packFilename)
+			if result != tt.expected {
+				t.Errorf("RefFilenameFromPackFilename(%q) = %q, want %q", tt.packFilename, result, tt.expected)
+			}
+		})
 	}
 }

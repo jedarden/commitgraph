@@ -231,6 +231,7 @@ func ParseTarball(data []byte) (*WarmStartSnapshot, error) {
 	}
 
 	// Validate that corresponding .ref files exist for each .pack file
+	var missingRefFiles []string
 	for _, baseName := range packBaseNames {
 		refName := baseName + ".ref"
 		foundRef := false
@@ -241,7 +242,14 @@ func ParseTarball(data []byte) (*WarmStartSnapshot, error) {
 			}
 		}
 		if !foundRef {
-			return nil, NewMissingMemberError(".ref")
+			missingRefFiles = append(missingRefFiles, refName)
+		}
+	}
+	if len(missingRefFiles) > 0 {
+		return nil, &Error{
+			Kind:       MissingMember,
+			MemberName: ".ref",
+			Context:    fmt.Sprintf("missing .ref files: %s", strings.Join(missingRefFiles, ", ")),
 		}
 	}
 
@@ -435,4 +443,15 @@ func parseConfigKey(key string) (string, string) {
 		return `[remote "` + parts[1] + `"]`, parts[2]
 	}
 	return "", ""
+}
+
+// RefFilenameFromPackFilename constructs the expected .ref filename from a .pack filename.
+// It strips the .pack extension and appends .ref.
+// For example: "pack-abc123.pack" becomes "pack-abc123.ref"
+// Edge cases handled:
+//   - No .pack extension: appends .ref to the input as-is
+//   - Multiple dots: only the final .pack extension is stripped
+//   - Double extensions: "pack-abc123.pack.promisor" would become "pack-abc123.pack.promisor.ref"
+func RefFilenameFromPackFilename(packFilename string) string {
+	return strings.TrimSuffix(packFilename, ".pack") + ".ref"
 }

@@ -1,0 +1,308 @@
+---
+# ConfigMap update for Invariant 4 audit script
+# This should be merged into the existing invariant-audit-scripts ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: invariant-audit-scripts
+  namespace: commitgraph
+data:
+  # Invariant 2 script (already exists, kept for reference)
+  audit-invariant-2.sh: |
+    #!/usr/bin/env bash
+    #
+    # Production audit script for Invariant 2: No out-of-range days
+    #
+    # Exit codes: 0=pass, 1=violations, 2=error
+
+    set -euo pipefail
+
+    INVARIANT_SQL="${INVARIANT_SQL:-/invariants/invariant_2_no_out_of_range_days.sql}"
+    ENVIRONMENT="${ENVIRONMENT:-production}"
+
+    if [[ -z "${POSTGRES_DB:-}" ]]; then
+      echo "ERROR: POSTGRES_DB required" >&2
+      exit 2
+    fi
+
+    if [[ -z "${POSTGRES_USER:-}" ]]; then
+      echo "ERROR: POSTGRES_USER required" >&2
+      exit 2
+    fi
+
+    if [[ -z "${POSTGRES_PASSWORD_FILE:-}" ]]; then
+      echo "ERROR: POSTGRES_PASSWORD_FILE required" >&2
+      exit 2
+    fi
+
+    POSTGRES_PASSWORD=$(cat "${POSTGRES_PASSWORD_FILE}")
+
+    echo "========================================"
+    echo "Invariant 2 Audit: ${ENVIRONMENT}"
+    echo "========================================"
+    echo "Database: ${POSTGRES_DB}"
+    echo ""
+
+    VIOLATIONS=$(PGPASSWORD="${POSTGRES_PASSWORD}" psql \
+        -h "${POSTGRES_HOST}" \
+        -p "${POSTGRES_PORT:-5432}" \
+        -d "${POSTGRES_DB}" \
+        -U "${POSTGRES_USER}" \
+        -t -A -F ' ' \
+        -f "${INVARIANT_SQL}" \
+        2>&1) || true
+
+    if [[ "${VIOLATIONS}" == *"ERROR:"* ]]; then
+      echo "❌ ERROR: Failed to execute query" >&2
+      echo "${VIOLATIONS}" >&2
+      exit 2
+    fi
+
+    VIOLATION_COUNT=0
+    if [[ -n "${VIOLATIONS}" ]]; then
+      VIOLATION_COUNT=$(echo "${VIOLATIONS}" | grep -c '^[^[:space:]]' || true)
+    fi
+
+    echo "Violations found: ${VIOLATION_COUNT}"
+    echo ""
+
+    if [[ "${VIOLATION_COUNT}" -eq 0 ]]; then
+      echo "✅ PASS: No out-of-range dates"
+      exit 0
+    else
+      echo "❌ FAIL: ${VIOLATION_COUNT} violations"
+      echo "${VIOLATIONS}"
+      echo ""
+
+      ALERT_MESSAGE="🚨 Invariant 2 Violation in ${ENVIRONMENT}: ${VIOLATION_COUNT} rows with out-of-range dates"
+
+      if [[ -n "${SLACK_WEBHOOK_URL:-}" ]]; then
+        curl -s -X POST "${SLACK_WEBHOOK_URL}" \
+            -H 'Content-Type: application/json' \
+            -d "{\"text\": \"${ALERT_MESSAGE}\"}" || true
+      fi
+
+      echo "${ALERT_MESSAGE}" >&2
+      exit 1
+    fi
+
+  # Invariant 4 script (NEW)
+  audit-invariant-4.sh: |
+    #!/usr/bin/env bash
+    #
+    # Production audit script for Invariant 4: Identity referential integrity
+    #
+    # Validates three aspects:
+    # (a) Rollup user_id FK integrity
+    # (b) user_aliases.target_login exists in users.login
+    # (c) Alias graph acyclic + one-level-deep
+    #
+    # Exit codes: 0=pass, 1=violations, 2=error
+
+    set -euo pipefail
+
+    INVARIANT_SQL="${INVARIANT_SQL:-/invariants/invariant_4_identity_referential_integrity.sql}"
+    ENVIRONMENT="${ENVIRONMENT:-production}"
+
+    # Required environment variables
+    if [[ -z "${POSTGRES_DB:-}" ]]; then
+      echo "ERROR: POSTGRES_DB required" >&2
+      exit 2
+    fi
+
+    if [[ -z "${POSTGRES_USER:-}" ]]; then
+      echo "ERROR: POSTGRES_USER required" >&2
+      exit 2
+    fi
+
+    if [[ -z "${POSTGRES_PASSWORD_FILE:-}" ]]; then
+      echo "ERROR: POSTGRES_PASSWORD_FILE required" >&2
+      exit 2
+    fi
+
+    # Read password
+    POSTGRES_PASSWORD=$(cat "${POSTGRES_PASSWORD_FILE}")
+
+    echo "========================================"
+    echo "Invariant 4 Audit: ${ENVIRONMENT}"
+    echo "========================================"
+    echo "Database: ${POSTGRES_DB}"
+    echo ""
+
+    # Run all three queries from the invariant SQL file
+    # The file contains three SELECT queries; we run each separately
+    TOTAL_VIOLATIONS=0
+    QUERY_RESULTS=""
+
+    # Query (a): Rollup user_id FK integrity
+    echo "Running Query (a): Rollup user_id FK integrity..."
+    QUERY_A=$(PGPASSWORD="${POSTGRES_PASSWORD}" psql \
+        -h "${POSTGRES_HOST}" \
+        -p "${POSTGRES_PORT:-5432}" \
+        -d "${POSTGRES_DB}" \
+        -U "${POSTGRES_USER}" \
+        -t -A \
+        -c "
+          SELECT
+              rut.repo_id,
+              r.provider,
+              r.repo_full_name,
+              rut.user_id,
+              rut.tool,
+              rut.day,
+              rut.commits,
+              rut.insert_time
+          FROM repo_user_daily_tool rut
+          JOIN repos r ON rut.repo_id = r.repo_id
+          LEFT JOIN users u ON rut.user_id = u.user_id
+          WHERE u.user_id IS NULL
+          ORDER BY rut.repo_id, rut.user_id, rut.day;
+        " \
+        2>&1) || true
+
+    if [[ "${QUERY_A}" == *"ERROR:"* ]]; then
+      echo "❌ ERROR: Query (a) failed" >&2
+      echo "${QUERY_A}" >&2
+      exit 2
+    fi
+
+    COUNT_A=0
+    if [[ -n "${QUERY_A}" ]]; then
+      COUNT_A=$(echo "${QUERY_A}" | grep -c '^[^[:space:]]' || true)
+    fi
+
+    echo "  Query (a) violations: ${COUNT_A}"
+    TOTAL_VIOLATIONS=$((TOTAL_VIOLATIONS + COUNT_A))
+
+    if [[ ${COUNT_A} -gt 0 ]]; then
+      QUERY_RESULTS="${QUERY_RESULTS}
+Query (a) - Orphan user_id in rollup (${COUNT_A} rows):
+${QUERY_A}
+"
+    fi
+
+    # Query (b): user_aliases.target_login exists in users.login
+    echo "Running Query (b): user_aliases.target_login exists in users.login..."
+    QUERY_B=$(PGPASSWORD="${POSTGRES_PASSWORD}" psql \
+        -h "${POSTGRES_HOST}" \
+        -p "${POSTGRES_PORT:-5432}" \
+        -d "${POSTGRES_DB}" \
+        -U "${POSTGRES_USER}" \
+        -t -A \
+        -c "
+          SELECT
+              ua.source_login,
+              ua.target_login,
+              ua.reason,
+              ua.created_at
+          FROM user_aliases ua
+          LEFT JOIN users u ON ua.target_login = u.login
+          WHERE u.login IS NULL
+          ORDER BY ua.source_login;
+        " \
+        2>&1) || true
+
+    if [[ "${QUERY_B}" == *"ERROR:"* ]]; then
+      echo "❌ ERROR: Query (b) failed" >&2
+      echo "${QUERY_B}" >&2
+      exit 2
+    fi
+
+    COUNT_B=0
+    if [[ -n "${QUERY_B}" ]]; then
+      COUNT_B=$(echo "${QUERY_B}" | grep -c '^[^[:space:]]' || true)
+    fi
+
+    echo "  Query (b) violations: ${COUNT_B}"
+    TOTAL_VIOLATIONS=$((TOTAL_VIOLATIONS + COUNT_B))
+
+    if [[ ${COUNT_B} -gt 0 ]]; then
+      QUERY_RESULTS="${QUERY_RESULTS}
+Query (b) - Aliases targeting non-existent logins (${COUNT_B} rows):
+${QUERY_B}
+"
+    fi
+
+    # Query (c): Alias graph acyclic + one-level-deep
+    echo "Running Query (c): Alias graph acyclic + one-level-deep..."
+    QUERY_C=$(PGPASSWORD="${POSTGRES_PASSWORD}" psql \
+        -h "${POSTGRES_HOST}" \
+        -p "${POSTGRES_PORT:-5432}" \
+        -d "${POSTGRES_DB}" \
+        -U "${POSTGRES_USER}" \
+        -t -A \
+        -c "
+          SELECT
+              ua1.source_login AS level1_source,
+              ua1.target_login AS level1_target,
+              ua2.source_login AS level2_source,
+              ua2.target_login AS level2_target,
+              ua1.reason AS level1_reason,
+              ua2.reason AS level2_reason,
+              ua1.created_at AS level1_created,
+              ua2.created_at AS level2_created
+          FROM user_aliases ua1
+          JOIN user_aliases ua2 ON ua1.source_login = ua2.target_login
+          ORDER BY ua1.source_login, ua2.source_login;
+        " \
+        2>&1) || true
+
+    if [[ "${QUERY_C}" == *"ERROR:"* ]]; then
+      echo "❌ ERROR: Query (c) failed" >&2
+      echo "${QUERY_C}" >&2
+      exit 2
+    fi
+
+    COUNT_C=0
+    if [[ -n "${QUERY_C}" ]]; then
+      COUNT_C=$(echo "${QUERY_C}" | grep -c '^[^[:space:]]' || true)
+    fi
+
+    echo "  Query (c) violations: ${COUNT_C}"
+    TOTAL_VIOLATIONS=$((TOTAL_VIOLATIONS + COUNT_C))
+
+    if [[ ${COUNT_C} -gt 0 ]]; then
+      QUERY_RESULTS="${QUERY_RESULTS}
+Query (c) - Chained aliases or cycles (${COUNT_C} rows):
+${QUERY_C}
+"
+    fi
+
+    echo ""
+    echo "========================================"
+    echo "Total violations: ${TOTAL_VIOLATIONS}"
+    echo "========================================"
+    echo ""
+
+    if [[ "${TOTAL_VIOLATIONS}" -eq 0 ]]; then
+      echo "✅ PASS: Identity referential integrity maintained"
+      echo "   - All rollup user_id values reference valid users"
+      echo "   - All alias targets exist in users table"
+      echo "   - Alias graph is acyclic and one-level-deep"
+      exit 0
+    else
+      echo "❌ FAIL: ${TOTAL_VIOLATIONS} total violations"
+      echo ""
+      echo "Breakdown:"
+      echo "  Query (a): ${COUNT_A} orphan user_id violation(s)"
+      echo "  Query (b): ${COUNT_B} non-existent target_login violation(s)"
+      echo "  Query (c): ${COUNT_C} chain/cycle violation(s)"
+      echo ""
+      echo "Violation details:"
+      echo "${QUERY_RESULTS}"
+
+      # Create alert
+      ALERT_MESSAGE="🚨 Invariant 4 Violation in ${ENVIRONMENT}: ${TOTAL_VIOLATIONS} total violations
+- Query (a): ${COUNT_A} orphan user_id
+- Query (b): ${COUNT_B} bad target_login
+- Query (c): ${COUNT_C} chain/cycle violations"
+
+      if [[ -n "${SLACK_WEBHOOK_URL:-}" ]]; then
+        curl -s -X POST "${SLACK_WEBHOOK_URL}" \
+            -H 'Content-Type: application/json' \
+            -d "{\"text\": \"${ALERT_MESSAGE}\"}" || true
+      fi
+
+      echo "${ALERT_MESSAGE}" >&2
+      exit 1
+    fi

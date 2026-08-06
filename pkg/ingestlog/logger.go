@@ -265,18 +265,22 @@ func (l *Logger) logEntry(entry *LogEntry) error {
 		entry.Timestamp = time.Now().UTC()
 	}
 
-	// Validate required fields
-	if entry.User.Email == "" {
-		return fmt.Errorf("user.email is required")
-	}
-	if entry.User.GithubUsername == "" {
-		return fmt.Errorf("user.github_username is required")
-	}
+	// Validate endpoint fields (always required)
 	if entry.Endpoint.URL == "" {
 		return fmt.Errorf("endpoint.url is required")
 	}
 	if entry.Endpoint.AttemptNumber == 0 {
 		return fmt.Errorf("endpoint.attempt_number is required")
+	}
+
+	// Validate user identification - accept either basic context or extended context
+	// Basic context: Email and GithubUsername (legacy behavior)
+	// Extended context: At least one of UserID, SessionID, or RequestID
+	hasBasicContext := entry.User.Email != "" || entry.User.GithubUsername != ""
+	hasExtendedContext := entry.User.UserID != "" || entry.User.SessionID != "" || entry.User.RequestID != ""
+
+	if !hasBasicContext && !hasExtendedContext {
+		return fmt.Errorf("user identification required: either email/github_username or user_id/session_id/request_id must be provided")
 	}
 
 	// Serialize to JSON for structured log consumption

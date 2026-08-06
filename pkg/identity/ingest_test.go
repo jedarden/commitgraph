@@ -1058,3 +1058,26 @@ func TestIngester_AllSkipReasons(t *testing.T) {
 		t.Errorf("SkipDetails sum = %d, want 5", sum)
 	}
 }
+
+// TestSkipReasonString verifies the String() method returns correct string representation.
+func TestSkipReasonString(t *testing.T) {
+	tests := []struct {
+		reason  SkipReason
+		wantStr string
+	}{
+		{SkipReasonConflictManual, "conflict_manual"},
+		{SkipReasonConflictOlder, "conflict_older"},
+		{SkipReasonValidation, "validation"},
+		{SkipReasonDatabase, "database"},
+		{SkipReasonOther, "other"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.wantStr, func(t *testing.T) {
+			got := tt.reason.String()
+			if got != tt.wantStr {
+				t.Errorf("SkipReason.String() = %q, want %q", got, tt.wantStr)
+			}
+		})
+	}
+}

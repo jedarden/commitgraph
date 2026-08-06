@@ -4,9 +4,11 @@ import (
 	"archive/tar"
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -3547,8 +3549,8 @@ func TestWarmStartTarballIntegration(t *testing.T) {
 	if output, err := cmd.CombinedOutput(); err != nil {
 		// Try 'main' branch if 'master' fails
 		cmd = exec.Command("git", "-C", workingDir, "push", "origin", "main")
-		if output, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("failed to push to origin: %v\noutput: %s", err, output)
+		if _, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("failed to push to origin: %v", err)
 		}
 	} else {
 		// Master push succeeded - verify output
@@ -3683,3 +3685,530 @@ func TestWarmStartTarballIntegration(t *testing.T) {
 
 	t.Logf("Successfully created and materialized warm-start tarball with real git pack data")
 }
+
+// Comprehensive git log sanity check tests
+// Test various repository states to verify git log can read commit history
+
+func TestVerifyGitLog_EmptyRepository(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH, skipping")
+	}
+
+	// Create a temporary directory
+	tmpDir := t.TempDir()
+	gitDir := filepath.Join(tmpDir, "empty.git")
+
+	// Initialize an empty git repository (no commits)
+	cmd := exec.Command("git", "init", "--bare", gitDir)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to init empty git repo: %v\noutput: %s", err, output)
+	}
+
+	// VerifyGitLog should handle empty repository gracefully
+	// An empty repository has no commits, so git log should fail or produce no output
+	err := VerifyGitLog(gitDir)
+
+	// git log fails on empty repositories (no commits yet)
+	// This is expected behavior - empty repos have no commit history to read
+	if err == nil {
+		t.Error("VerifyGitLog should fail on empty repository (no commits)")
+	}
+
+	t.Logf("Empty repository handled correctly: %v", err)
+}
+
+func TestVerifyGitLog_SingleCommit(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH, skipping")
+	}
+
+	// Create a temporary directory
+	tmpDir := t.TempDir()
+	gitDir := filepath.Join(tmpDir, "single-commit.git")
+
+	// Initialize a git repository
+	cmd := exec.Command("git", "init", "--bare", gitDir)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to init git repo: %v\noutput: %s", err, output)
+	}
+
+	// Clone to a working directory to create a commit
+	workingDir := filepath.Join(tmpDir, "working")
+	cmd = exec.Command("git", "clone", gitDir, workingDir)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to clone working repo: %v\noutput: %s", err, output)
+	}
+
+	// Configure git user
+	cmd = exec.Command("git", "-C", workingDir, "config", "user.name", "Test User")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to configure git user.name: %v\noutput: %s", err, output)
+	}
+	cmd = exec.Command("git", "-C", workingDir, "config", "user.email", "test@example.com")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to configure git user.email: %v\noutput: %s", err, output)
+	}
+
+	// Create a single commit
+	testFile := filepath.Join(workingDir, "test.txt")
+	if err := os.WriteFile(testFile, []byte("single commit content\n"), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+	cmd = exec.Command("git", "-C", workingDir, "add", "test.txt")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to add file: %v\noutput: %s", err, output)
+	}
+	cmd = exec.Command("git", "-C", workingDir, "commit", "-m", "Single commit")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to commit: %v\noutput: %s", err, output)
+	}
+
+	// Push to bare repository
+	cmd = exec.Command("git", "-C", workingDir, "push", "origin", "master")
+	if _, err := cmd.CombinedOutput(); err != nil {
+		// Try 'main' branch if 'master' fails
+		cmd = exec.Command("git", "-C", workingDir, "push", "origin", "main")
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("failed to push to origin: %v\noutput: %s", err, output)
+		}
+	}
+
+	// VerifyGitLog should succeed on repository with single commit
+	err := VerifyGitLog(gitDir)
+	if err != nil {
+		t.Errorf("VerifyGitLog failed on single-commit repository: %v", err)
+	}
+
+	// Verify git log output contains commit information
+	cmd = exec.Command("git", "--git-dir="+gitDir, "log", "--oneline", "-n", "1")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Errorf("git log failed on single-commit repository: %v\noutput: %s", err, output)
+	}
+
+	outputStr := strings.TrimSpace(string(output))
+	if outputStr == "" {
+		t.Error("git log produced no output on single-commit repository")
+	}
+
+	// Output should contain commit SHA (at least some hex characters)
+	if !matchesCommitSHA(outputStr) {
+		t.Errorf("git log output should contain commit SHA, got: %s", outputStr)
+	}
+
+	t.Logf("Single commit repository verified: %s", outputStr)
+}
+
+func TestVerifyGitLog_MultipleCommits(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH, skipping")
+	}
+
+	// Create a temporary directory
+	tmpDir := t.TempDir()
+	gitDir := filepath.Join(tmpDir, "multi-commit.git")
+
+	// Initialize a git repository
+	cmd := exec.Command("git", "init", "--bare", gitDir)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to init git repo: %v\noutput: %s", err, output)
+	}
+
+	// Clone to a working directory to create commits
+	workingDir := filepath.Join(tmpDir, "working")
+	cmd = exec.Command("git", "clone", gitDir, workingDir)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to clone working repo: %v\noutput: %s", err, output)
+	}
+
+	// Configure git user
+	cmd = exec.Command("git", "-C", workingDir, "config", "user.name", "Test User")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to configure git user.name: %v\noutput: %s", err, output)
+	}
+	cmd = exec.Command("git", "-C", workingDir, "config", "user.email", "test@example.com")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to configure git user.email: %v\noutput: %s", err, output)
+	}
+
+	// Create multiple commits
+	for i := 1; i <= 3; i++ {
+		testFile := filepath.Join(workingDir, fmt.Sprintf("file%d.txt", i))
+		if err := os.WriteFile(testFile, []byte(fmt.Sprintf("commit %d content\n", i)), 0644); err != nil {
+			t.Fatalf("failed to create test file %d: %v", i, err)
+		}
+		cmd = exec.Command("git", "-C", workingDir, "add", fmt.Sprintf("file%d.txt", i))
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("failed to add file %d: %v\noutput: %s", i, err, output)
+		}
+		cmd = exec.Command("git", "-C", workingDir, "commit", "-m", fmt.Sprintf("Commit %d", i))
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("failed to commit %d: %v\noutput: %s", i, err, output)
+		}
+	}
+
+	// Push to bare repository
+	cmd = exec.Command("git", "-C", workingDir, "push", "origin", "master")
+	if _, err := cmd.CombinedOutput(); err != nil {
+		// Try 'main' branch if 'master' fails
+		cmd = exec.Command("git", "-C", workingDir, "push", "origin", "main")
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("failed to push to origin: %v\noutput: %s", err, output)
+		}
+	}
+
+	// VerifyGitLog should succeed on repository with multiple commits
+	err := VerifyGitLog(gitDir)
+	if err != nil {
+		t.Errorf("VerifyGitLog failed on multi-commit repository: %v", err)
+	}
+
+	// Verify git log output contains commit information
+	cmd = exec.Command("git", "--git-dir="+gitDir, "log", "--oneline", "-n", "1")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Errorf("git log failed on multi-commit repository: %v\noutput: %s", err, output)
+	}
+
+	outputStr := strings.TrimSpace(string(output))
+	if outputStr == "" {
+		t.Error("git log produced no output on multi-commit repository")
+	}
+
+	// Output should contain commit SHA
+	if !matchesCommitSHA(outputStr) {
+		t.Errorf("git log output should contain commit SHA, got: %s", outputStr)
+	}
+
+	// Verify git log can show multiple commits
+	cmd = exec.Command("git", "--git-dir="+gitDir, "log", "--oneline", "-n", "3")
+	output, err = cmd.CombinedOutput()
+	if err != nil {
+		t.Errorf("git log failed to show multiple commits: %v\noutput: %s", err, output)
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	if len(lines) < 3 {
+		t.Errorf("expected at least 3 commit lines, got %d", len(lines))
+	}
+
+	t.Logf("Multiple commit repository verified: %d commits", len(lines))
+}
+
+func TestVerifyGitLog_DetachedHEAD(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH, skipping")
+	}
+
+	// Create a temporary directory
+	tmpDir := t.TempDir()
+	gitDir := filepath.Join(tmpDir, "detached.git")
+
+	// Initialize a git repository
+	cmd := exec.Command("git", "init", "--bare", gitDir)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to init git repo: %v\noutput: %s", err, output)
+	}
+
+	// Clone to a working directory to create commits
+	workingDir := filepath.Join(tmpDir, "working")
+	cmd = exec.Command("git", "clone", gitDir, workingDir)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to clone working repo: %v\noutput: %s", err, output)
+	}
+
+	// Configure git user
+	cmd = exec.Command("git", "-C", workingDir, "config", "user.name", "Test User")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to configure git user.name: %v\noutput: %s", err, output)
+	}
+	cmd = exec.Command("git", "-C", workingDir, "config", "user.email", "test@example.com")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to configure git user.email: %v\noutput: %s", err, output)
+	}
+
+	// Create a commit
+	testFile := filepath.Join(workingDir, "test.txt")
+	if err := os.WriteFile(testFile, []byte("detached head test\n"), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+	cmd = exec.Command("git", "-C", workingDir, "add", "test.txt")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to add file: %v\noutput: %s", err, output)
+	}
+	cmd = exec.Command("git", "-C", workingDir, "commit", "-m", "Detached HEAD test")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to commit: %v\noutput: %s", err, output)
+	}
+
+	// Push to bare repository
+	cmd = exec.Command("git", "-C", workingDir, "push", "origin", "master")
+	if _, err := cmd.CombinedOutput(); err != nil {
+		// Try 'main' branch if 'master' fails
+		cmd = exec.Command("git", "-C", workingDir, "push", "origin", "main")
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("failed to push to origin: %v\noutput: %s", err, output)
+		}
+	}
+
+	// Get the commit SHA
+	cmd = exec.Command("git", "-C", workingDir, "rev-parse", "HEAD")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("failed to get commit SHA: %v\noutput: %s", err, output)
+	}
+	commitSHA := strings.TrimSpace(string(output))
+
+	// Put the repository in detached HEAD state
+	// Modify HEAD to point directly to a commit SHA
+	headPath := filepath.Join(gitDir, "HEAD")
+	if err := os.WriteFile(headPath, []byte(commitSHA+"\n"), 0644); err != nil {
+		t.Fatalf("failed to set detached HEAD: %v", err)
+	}
+
+	// VerifyGitLog should work with detached HEAD
+	err = VerifyGitLog(gitDir)
+	if err != nil {
+		t.Errorf("VerifyGitLog failed on detached HEAD repository: %v", err)
+	}
+
+	// Verify git log output contains commit information
+	cmd = exec.Command("git", "--git-dir="+gitDir, "log", "--oneline", "-n", "1")
+	output, err = cmd.CombinedOutput()
+	if err != nil {
+		t.Errorf("git log failed on detached HEAD repository: %v\noutput: %s", err, output)
+	}
+
+	outputStr := strings.TrimSpace(string(output))
+	if outputStr == "" {
+		t.Error("git log produced no output on detached HEAD repository")
+	}
+
+	// Output should contain commit SHA
+	if !matchesCommitSHA(outputStr) {
+		t.Errorf("git log output should contain commit SHA, got: %s", outputStr)
+	}
+
+	t.Logf("Detached HEAD repository verified: %s", outputStr)
+}
+
+func TestVerifyGitLog_OutputContainsCommitInfo(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH, skipping")
+	}
+
+	// Create a temporary directory
+	tmpDir := t.TempDir()
+	gitDir := filepath.Join(tmpDir, "commit-info.git")
+
+	// Initialize a git repository
+	cmd := exec.Command("git", "init", "--bare", gitDir)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to init git repo: %v\noutput: %s", err, output)
+	}
+
+	// Clone to a working directory to create commits
+	workingDir := filepath.Join(tmpDir, "working")
+	cmd = exec.Command("git", "clone", gitDir, workingDir)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to clone working repo: %v\noutput: %s", err, output)
+	}
+
+	// Configure git user
+	cmd = exec.Command("git", "-C", workingDir, "config", "user.name", "Test User")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to configure git user.name: %v\noutput: %s", err, output)
+	}
+	cmd = exec.Command("git", "-C", workingDir, "config", "user.email", "test@example.com")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to configure git user.email: %v\noutput: %s", err, output)
+	}
+
+	// Create a commit with a known message
+	testFile := filepath.Join(workingDir, "test.txt")
+	if err := os.WriteFile(testFile, []byte("commit info test\n"), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+	cmd = exec.Command("git", "-C", workingDir, "add", "test.txt")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to add file: %v\noutput: %s", err, output)
+	}
+	commitMsg := "Test commit message for verification"
+	cmd = exec.Command("git", "-C", workingDir, "commit", "-m", commitMsg)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to commit: %v\noutput: %s", err, output)
+	}
+
+	// Push to bare repository
+	cmd = exec.Command("git", "-C", workingDir, "push", "origin", "master")
+	if _, err := cmd.CombinedOutput(); err != nil {
+		// Try 'main' branch if 'master' fails
+		cmd = exec.Command("git", "-C", workingDir, "push", "origin", "main")
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("failed to push to origin: %v\noutput: %s", err, output)
+		}
+	}
+
+	// Test that git log output contains commit SHA or summary
+	tests := []struct {
+		name     string
+		args     []string
+		validate func(string) bool
+	}{
+		{
+			name: "oneline format contains SHA",
+			args: []string{"--oneline", "-n", "1"},
+			validate: func(output string) bool {
+				// oneline format: "SHA message"
+				return matchesCommitSHA(output)
+			},
+		},
+		{
+			name: "default format contains commit info",
+			args: []string{"-n", "1"},
+			validate: func(output string) bool {
+				// default format should contain "commit" word or SHA
+				return strings.Contains(output, "commit") || matchesCommitSHA(output)
+			},
+		},
+		{
+			name: "format option contains SHA",
+			args: []string{"--format=%H", "-n", "1"},
+			validate: func(output string) bool {
+				// %H format: full SHA only
+				return matchesCommitSHA(output)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd = exec.Command("git", "--git-dir="+gitDir, "log")
+			cmd.Args = append(cmd.Args, tt.args...)
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Errorf("git log %s failed: %v\noutput: %s", tt.name, err, output)
+			}
+
+			outputStr := strings.TrimSpace(string(output))
+			if outputStr == "" {
+				t.Errorf("git log %s produced no output", tt.name)
+			}
+
+			if !tt.validate(outputStr) {
+				t.Errorf("git log %s output validation failed: %s", tt.name, outputStr)
+			}
+
+			t.Logf("git log %s output: %s", tt.name, outputStr)
+		})
+	}
+}
+
+func TestVerifyGitLog_SymbolicRef(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH, skipping")
+	}
+
+	// Create a temporary directory
+	tmpDir := t.TempDir()
+	gitDir := filepath.Join(tmpDir, "symbolic.git")
+
+	// Initialize a git repository
+	cmd := exec.Command("git", "init", "--bare", gitDir)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to init git repo: %v\noutput: %s", err, output)
+	}
+
+	// Clone to a working directory to create commits
+	workingDir := filepath.Join(tmpDir, "working")
+	cmd = exec.Command("git", "clone", gitDir, workingDir)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to clone working repo: %v\noutput: %s", err, output)
+	}
+
+	// Configure git user
+	cmd = exec.Command("git", "-C", workingDir, "config", "user.name", "Test User")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to configure git user.name: %v\noutput: %s", err, output)
+	}
+	cmd = exec.Command("git", "-C", workingDir, "config", "user.email", "test@example.com")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to configure git user.email: %v\noutput: %s", err, output)
+	}
+
+	// Create a commit
+	testFile := filepath.Join(workingDir, "test.txt")
+	if err := os.WriteFile(testFile, []byte("symbolic ref test\n"), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+	cmd = exec.Command("git", "-C", workingDir, "add", "test.txt")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to add file: %v\noutput: %s", err, output)
+	}
+	cmd = exec.Command("git", "-C", workingDir, "commit", "-m", "Symbolic ref test")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to commit: %v\noutput: %s", err, output)
+	}
+
+	// Push to bare repository
+	cmd = exec.Command("git", "-C", workingDir, "push", "origin", "master")
+	if _, err := cmd.CombinedOutput(); err != nil {
+		// Try 'main' branch if 'master' fails
+		cmd = exec.Command("git", "-C", workingDir, "push", "origin", "main")
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("failed to push to origin: %v\noutput: %s", err, output)
+		}
+	}
+
+	// Modify HEAD to be a symbolic ref
+	headPath := filepath.Join(gitDir, "HEAD")
+	branchRef := "ref: refs/heads/master\n"
+	// First check what branch exists
+	for _, branch := range []string{"refs/heads/master", "refs/heads/main"} {
+		branchPath := filepath.Join(gitDir, branch)
+		if _, err := os.Stat(branchPath); err == nil {
+			// Branch exists, use it
+			branchRef = fmt.Sprintf("ref: %s\n", branch)
+			break
+		}
+	}
+
+	if err := os.WriteFile(headPath, []byte(branchRef), 0644); err != nil {
+		t.Fatalf("failed to set symbolic HEAD: %v", err)
+	}
+
+	// VerifyGitLog should work with symbolic refs
+	err := VerifyGitLog(gitDir)
+	if err != nil {
+		t.Errorf("VerifyGitLog failed on symbolic ref repository: %v", err)
+	}
+
+	// Verify git log output contains commit information
+	cmd = exec.Command("git", "--git-dir="+gitDir, "log", "--oneline", "-n", "1")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Errorf("git log failed on symbolic ref repository: %v\noutput: %s", err, output)
+	}
+
+	outputStr := strings.TrimSpace(string(output))
+	if outputStr == "" {
+		t.Error("git log produced no output on symbolic ref repository")
+	}
+
+	// Output should contain commit SHA
+	if !matchesCommitSHA(outputStr) {
+		t.Errorf("git log output should contain commit SHA, got: %s", outputStr)
+	}
+
+	t.Logf("Symbolic ref repository verified: %s", outputStr)
+}
+
+// matchesCommitSHA checks if the output string contains a commit SHA pattern
+// A commit SHA is typically 7+ hexadecimal characters
+func matchesCommitSHA(output string) bool {
+	// Git SHA is typically 7+ hex characters (abbreviated) or 40 (full)
+	// Look for patterns like "abc1234" or "abc1234 message"
+	pattern := regexp.MustCompile(`\b[0-9a-f]{7,}\b`)
+	return pattern.MatchString(output)
+}
+

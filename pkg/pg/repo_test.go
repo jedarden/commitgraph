@@ -2,7 +2,6 @@ package pg
 
 import (
 	"context"
-	"database/sql"
 	"testing"
 	"time"
 )
@@ -25,7 +24,7 @@ func TestExclusionOperations(t *testing.T) {
 
 // TestNewRepoExcluder tests the constructor.
 func TestNewRepoExcluder(t *testing.T) {
-	m := &mockExec{}
+	m := &mockExecutor{}
 	excluder := NewRepoExcluder(m)
 	if excluder == nil {
 		t.Fatal("NewRepoExcluder returned nil")
@@ -38,7 +37,7 @@ func TestNewRepoExcluder(t *testing.T) {
 // TestExclusionRequestValidation tests request validation.
 func TestExclusionRequestValidation(t *testing.T) {
 	ctx := context.Background()
-	excluder := NewRepoExcluder(&mockExec{})
+	excluder := NewRepoExcluder(&mockExecutor{})
 
 	now := time.Now()
 

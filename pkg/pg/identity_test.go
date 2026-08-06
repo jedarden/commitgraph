@@ -24,9 +24,14 @@ func TestIngestEmailResolution_SQLExact(t *testing.T) {
 		},
 	}
 
-	err := ingester.IngestEmailResolution(context.Background(), rows)
+	result, err := ingester.IngestEmailResolution(context.Background(), rows)
 	if err != nil {
 		t.Fatalf("IngestEmailResolution failed: %v", err)
+	}
+
+	// Verify result structure
+	if result == nil {
+		t.Fatal("expected non-nil result")
 	}
 
 	// Check that we got a query
@@ -61,9 +66,20 @@ func TestIngestEmailResolution_EmptyBatch(t *testing.T) {
 	ingester := NewIdentityIngester(db)
 
 	rows := []identity.ResolutionRow{}
-	err := ingester.IngestEmailResolution(context.Background(), rows)
+	result, err := ingester.IngestEmailResolution(context.Background(), rows)
 	if err != nil {
 		t.Fatalf("IngestEmailResolution with empty batch failed: %v", err)
+	}
+
+	// Verify empty result
+	if result == nil {
+		t.Fatal("expected non-nil result for empty batch")
+	}
+	if result.Ingested != 0 {
+		t.Errorf("expected 0 ingested for empty batch, got %d", result.Ingested)
+	}
+	if result.Skipped != 0 {
+		t.Errorf("expected 0 skipped for empty batch, got %d", result.Skipped)
 	}
 
 	// No query should be executed for empty batch
@@ -86,11 +102,14 @@ func TestIngestEmailResolution_DatabaseError(t *testing.T) {
 		},
 	}
 
-	err := ingester.IngestEmailResolution(context.Background(), rows)
+	result, err := ingester.IngestEmailResolution(context.Background(), rows)
 	if err == nil {
 		t.Fatal("expected error from database, but got nil")
 	}
-	if err.Error() != "bulk upsert failed: test error" {
+	if result != nil {
+		t.Error("expected nil result on error, got non-nil")
+	}
+	if err.Error() != "bulk upsert failed (batch size 1): test error" {
 		t.Errorf("unexpected error message: %v", err)
 	}
 }
@@ -122,9 +141,14 @@ func TestIngestEmailResolution_AllSources(t *testing.T) {
 		},
 	}
 
-	err := ingester.IngestEmailResolution(context.Background(), rows)
+	result, err := ingester.IngestEmailResolution(context.Background(), rows)
 	if err != nil {
 		t.Fatalf("IngestEmailResolution failed: %v", err)
+	}
+
+	// Verify result is returned
+	if result == nil {
+		t.Fatal("expected non-nil result")
 	}
 
 	// Verify that all three sources were passed to SQL
@@ -172,9 +196,17 @@ func TestIngestEmailResolution_BulkBatch(t *testing.T) {
 		}
 	}
 
-	err := ingester.IngestEmailResolution(context.Background(), rows)
+	result, err := ingester.IngestEmailResolution(context.Background(), rows)
 	if err != nil {
 		t.Fatalf("IngestEmailResolution with bulk batch failed: %v", err)
+	}
+
+	// Verify result
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Ingested != 1000 {
+		t.Errorf("expected 1000 ingested for bulk batch, got %d", result.Ingested)
 	}
 
 	// Should be a single query for the whole batch

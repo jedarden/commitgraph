@@ -691,16 +691,15 @@ class CorpusMigrator:
 
         Args:
             resume: If True, skip partitions already marked 'completed'
+
+        Note: Preflight validation is performed at startup (in __main__)
+        before the CorpusMigrator is created. This check is not duplicated here.
         """
         logger.info("Starting corpus migration...")
         logger.info(f"Corpus root: {self.corpus_root}")
+        logger.info("Preflight validation already completed at startup - proceeding with data migration")
 
-        # Step 1: Discover and validate encryption keys
-        keys = self.discover_encryption_keys()
-        if not self.validate_encryption_credentials(keys):
-            raise ValueError("Migration credentials cannot decrypt all partitions")
-
-        # Step 2: Stream and migrate each partition
+        # Stream and migrate each partition
         corpus_stream = CorpusStream(self.corpus_root, batch_size=self.batch_size)
 
         for partition_key, partition_stream in corpus_stream.iter_partitions():
@@ -730,6 +729,85 @@ if __name__ == "__main__":
     postgres_conn_string = sys.argv[2]
     credential_path = sys.argv[3]
 
+    # ===== CRITICAL PREFLIGHT CHECK =====
+    # Validate encryption credentials BEFORE any migration work begins.
+    # This prevents silent data loss from retired epochs that migration
+    # credentials cannot decrypt. DO NOT skip or bypass this check.
+    logger.info("=" * 70)
+    logger.info("MIGRATION STARTUP: Running preflight encryption validation")
+    logger.info("=" * 70)
+
+    try:
+        from preflight_check_epochs import EpochPreflightChecker
+
+        preflight_checker = EpochPreflightChecker(
+            corpus_root=corpus_root,
+            credential_path=credential_path
+        )
+
+        all_passed, results = preflight_checker.run_preflight()
+
+        if not all_passed:
+            # Preflight failed - abort migration with clear error message
+            logger.error("=" * 70)
+            logger.error("MIGRATION ABORTED: Preflight encryption validation failed")
+            logger.error("=" * 70)
+            logger.error("")
+            logger.error("The following encryption epochs cannot be decrypted with")
+            logger.error("the provided migration credentials:")
+            logger.error("")
+
+            failed_count = 0
+            for r in results:
+                if not r.success:
+                    failed_count += 1
+                    logger.error(f"  [{failed_count}] key_id={r.key_id!r}")
+                    logger.error(f"      epoch={r.epoch!r}")
+                    logger.error(f"      error: {r.error_message}")
+                    if r.test_partition:
+                        logger.error(f"      test partition: {r.test_partition}")
+                    logger.error("")
+
+            logger.error(f"TOTAL: {failed_count} epoch(s) failed decryption test")
+            logger.error("")
+            logger.error("This migration CANNOT proceed. Fix the credential access or restore")
+            logger.error("missing epoch keys before re-running the migration.")
+            logger.error("")
+            logger.error("DO NOT bypass this check - doing so would silently skip all data")
+            logger.error("in the failed epochs, causing permanent data loss.")
+            logger.error("=" * 70)
+
+            sys.exit(1)
+
+        # Preflight passed - proceed with migration
+        logger.info("=" * 70)
+        logger.info("✓ PREFLIGHT PASSED: All epochs can be decrypted")
+        logger.info("Proceeding with migration...")
+        logger.info("=" * 70)
+        logger.info("")
+
+    except ImportError as e:
+        logger.error("=" * 70)
+        logger.error("MIGRATION ABORTED: Preflight checker not available")
+        logger.error("=" * 70)
+        logger.error(f"Cannot import preflight_check_epochs: {e}")
+        logger.error("")
+        logger.error("The preflight check is a REQUIRED startup guard.")
+        logger.error("Ensure preflight_check_epochs.py is in the same directory.")
+        logger.error("=" * 70)
+        sys.exit(1)
+
+    except Exception as e:
+        logger.error("=" * 70)
+        logger.error("MIGRATION ABORTED: Preflight check error")
+        logger.error("=" * 70)
+        logger.error(f"Preflight validation raised an exception: {e}")
+        logger.error("")
+        logger.error("The migration cannot proceed without a successful preflight check.")
+        logger.error("=" * 70)
+        sys.exit(1)
+
+    # Preflight complete - initialize migrator and proceed
     migrator = CorpusMigrator(
         corpus_root=corpus_root,
         postgres_conn_string=postgres_conn_string,

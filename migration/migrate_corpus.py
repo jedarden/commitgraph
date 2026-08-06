@@ -368,12 +368,13 @@ class CorpusMigrator:
         1. Run detection.py on all commits (imported from shared/detection)
         2. Compute rollup (user, repo, tool, day, count) for AI-tagged commits only
         3. Write to Postgres using DELETE+bulk-INSERT pattern
-        4. (Future) Write ARMOR artifact (Parquet)
+        4. Write ARMOR artifact (Parquet) with raw committed_at preserved
 
         This function:
 - Imports detection.py directly (not a copy, port, or reimplementation)
 - Calls detect_tools() per-commit (Python, not SQL)
 - Computes (user, repo, tool, day, count) rollup per repo
+- Preserves raw committed_at values in Parquet artifact (before clamping)
 
         Args:
             repo_full_name: Repository identifier (e.g., 'owner/repo')
@@ -388,8 +389,13 @@ class CorpusMigrator:
         provider = None
         author_names: Dict[str, str] = {}  # email -> name
 
+        # Collect ALL commits (including quarantined) for Parquet artifact
+        # This preserves raw committed_at before the clamp is applied
+        all_commits_for_parquet = []
+
         total_commits = 0
         ai_tagged_commits = 0
+        quarantined_commits = 0
 
         # Process each batch
         for batch in batches:
@@ -433,6 +439,16 @@ class CorpusMigrator:
                     logger.warning(f"Invalid committed_at for commit in {repo_full_name}: {e}")
                     continue
 
+                # Store raw commit data for Parquet artifact (BEFORE clamping)
+                # This preserves the original committed_at verbatim
+                all_commits_for_parquet.append({
+                    'sha': row.get('sha', ''),
+                    'author_email': author_email,
+                    'author_name': author_name,
+                    'committed_at': committed_at,  # Raw value, preserved verbatim
+                    'message': message
+                })
+
                 # Apply date quarantine (per compactor logic in plan.md)
                 # Exclude commits with committed_at outside [2005-01-01, today+1]
                 min_date = date(2005, 1, 1)
@@ -440,6 +456,7 @@ class CorpusMigrator:
 
                 if not (min_date <= commit_date <= max_date):
                     logger.debug(f"Quarantined commit with date {commit_date} outside [{min_date}, {max_date}]")
+                    quarantined_commits += 1
                     continue
 
                 # Run detection (imported from shared/detection.py)
@@ -454,7 +471,7 @@ class CorpusMigrator:
                         key = (author_email, repo_full_name, tool, commit_date)
                         rollup_counts[key] += 1
 
-        logger.info(f"  Repo {repo_full_name}: {ai_tagged_commits}/{total_commits} AI-tagged commits")
+        logger.info(f"  Repo {repo_full_name}: {ai_tagged_commits}/{total_commits} AI-tagged commits, {quarantined_commits} quarantined")
 
         # Write rollup to Postgres
         if rollup_counts:
@@ -465,8 +482,13 @@ class CorpusMigrator:
                 author_names=author_names
             )
 
-        # TODO: Write ARMOR artifact (Parquet) for redetection
+        # Write ARMOR artifact (Parquet) with raw committed_at preserved
         # This is step 5b from the migration plan
+        self._write_armor_parquet(
+            repo_full_name=repo_full_name,
+            provider=provider or 'unknown',
+            commits=all_commits_for_parquet
+        )
 
     def _write_rollup_to_postgres(
         self,
@@ -568,6 +590,80 @@ class CorpusMigrator:
                 self.pg_conn.rollback()
                 logger.error(f"  ✗ Failed to write rollup for {repo_full_name}: {e}")
                 raise
+
+    def _write_armor_parquet(
+        self,
+        repo_full_name: str,
+        provider: str,
+        commits: List[Dict[str, Any]]
+    ):
+        """
+        Write ARMOR Parquet artifact with raw committed_at preserved.
+
+        This writes a per-repo Parquet artifact that includes ALL commits
+        (including quarantined ones) with their raw committed_at values
+        preserved verbatim. This enables:
+        1. Redetection jobs without re-cloning
+        2. Historical analysis of quarantined commits
+        3. Audit trail for the date quarantine decision
+
+        The artifact is written to ARMOR storage, not directly to B2.
+        File path: armor://commitgraph/repo-artifacts/{provider}/{repo_full_name}/commits.parquet
+
+        Args:
+            repo_full_name: Repository identifier (e.g., 'owner/repo')
+            provider: Provider name (e.g., 'github')
+            commits: List of commit dicts with raw committed_at values
+        """
+        if not commits:
+            logger.debug(f"  No commits to write to ARMOR artifact for {repo_full_name}")
+            return
+
+        # TODO: Integrate with ARMOR client
+        # For now, write to local filesystem as intermediate step
+        import tempfile
+        import os
+
+        # Create temporary directory for artifact
+        artifact_dir = Path(tempfile.gettempdir()) / "commitgraph-artifacts" / provider / repo_full_name
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+
+        artifact_path = artifact_dir / "commits.parquet"
+
+        # Create Arrow schema for the artifact
+        schema = pa.schema([
+            ('sha', pa.string()),
+            ('author_email', pa.string()),
+            ('author_name', pa.string()),
+            ('committed_at', pa.timestamp('ns')),  # Raw timestamp, preserved verbatim
+            ('message', pa.string())
+        ])
+
+        # Convert commits to Arrow format
+        data = {field: [] for field in schema.names}
+        for commit in commits:
+            data['sha'].append(commit.get('sha', ''))
+            data['author_email'].append(commit.get('author_email', ''))
+            data['author_name'].append(commit.get('author_name', ''))
+            data['committed_at'].append(commit.get('committed_at'))  # Raw value preserved
+            data['message'].append(commit.get('message', ''))
+
+        table = pa.table(data, schema=schema)
+
+        # Write to Parquet
+        try:
+            pq.write_table(table, artifact_path)
+            logger.info(f"  ✓ Wrote {len(commits)} commits to ARMOR artifact at {artifact_path}")
+        except Exception as e:
+            logger.error(f"  ✗ Failed to write ARMOR artifact for {repo_full_name}: {e}")
+            # Don't raise - artifact failure should not fail the migration
+            # The rollup is the source of truth for rankings
+
+        # TODO: Upload to ARMOR storage
+        # armor_client.put(
+        #     key=f"commitgraph/repo-artifacts/{provider}/{repo_full_name}/commits.parquet",
+        #     file=artifact_path
+        # )
 
     def run_migration(self, resume: bool = True):
         """

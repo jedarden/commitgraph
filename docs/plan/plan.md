@@ -175,17 +175,22 @@ elsewhere in this document.
 - **Write-path admission control**: lease-concurrency only, PgBouncer, or a
   purpose-built rate-limiting write API in front of Postgres (Write-path
   admission control section).
-- **ARMOR cross-namespace coupling**: accept `commitgraph` depending on
-  ARMOR in `devimprint`, or give this redesign its own scoped ARMOR
-  deployment (Storage placement section).
+- ~~**ARMOR cross-namespace coupling**~~ — **resolved 2026-08-06: reuse `devimprint` ARMOR instance.**
+  See `docs/notes/cg-4nlj-armor-cross-namespace-decision.md` for full rationale.
+  The SPOF concern is materially narrower than ADR-009's original worry (ARMOR is
+  not in the hot ranking-query path; unavailability only delays extraction/publishing,
+  not queries), and the cross-namespace coupling is an acceptable tradeoff for
+  operational simplicity (reuse battle-tested infra vs. provision new deployment).
 - **ARMOR instance/prefix scoping**: `ARMOR_PREFIX` is unset and four
   org-wide ARMOR instances exist (verified via `declarative-config/k8s/`:
   `devimprint` ns on ord-devimprint, `armor` ns on iad-ci, `armor` ns on
   iad-kalshi, `armor` ns on rs-manager) — confirm which is in scope before
   writing (Storage placement section).
-- **How long the frozen public `leaderboard.json` can stay frozen** before
-  the downstream presentation layer must ship or the file must be pulled
-  (Phase 5 section).
+- ~~**How long the frozen public `leaderboard.json` can stay frozen** before
+   the downstream presentation layer must ship or the file must be pulled~~
+   **RESOLVED 2026-08-06:** Maximum staleness decided in
+   `docs/notes/cg-1tkq-phase5-staleness-threshold.md`: 30 days from golden
+   snapshot (hard deadline 2026-09-02T22:05:42Z) with 14-day review checkpoint.
 
 ## Architecture
 
@@ -1462,8 +1467,11 @@ path to *something publishing again* over completeness in early phases.
    surprised by it.
    **Public serving:** the frozen `leaderboard.json` keeps serving until the
    downstream devimprint presentation layer ships. How long that is acceptable
-   is an open decision — the file only gets staler, and at some point serving
+   is decided in `docs/notes/cg-1tkq-phase5-staleness-threshold.md` — the file only gets staler, and at some point serving
    two-month-old rankings is worse than serving nothing.
+	   **Maximum acceptable staleness: 30 days from golden snapshot (hard deadline
+	   2026-09-02T22:05:42Z), with 14-day review checkpoint.** See the decision
+	   document for full trigger rules and escalation path.
 7. **Phase 6 — finish the decommission.**
    **Corrected 2026-08-05: queue-api is NOT decommissioned.** An earlier
    draft of this phase said to extract the remaining tables and then

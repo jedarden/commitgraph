@@ -322,20 +322,163 @@ This document catalogs all database operation functions found in the commitgraph
 
 ---
 
+## 7. Additional Query Functions (Read-Only)
+
+### Function: `GetAdminAliases`
+- **File:** `pkg/pg/user_aliases.go:92`
+- **Type:** Method on `*AliasIngester`
+- **Signature:**
+  ```go
+  func (a *AliasIngester) GetAdminAliases(ctx context.Context) (map[string]string, error)
+  ```
+- **Operation:** SELECT
+- **Target Table:** `user_aliases`
+- **Input Parameters:**
+  - `ctx context.Context` - Context for the operation
+- **Return Type:** `(map[string]string, error)` - Map of source_login -> target_login
+- **SQL Operation:**
+  ```sql
+  SELECT source_login, target_login
+  FROM user_aliases
+  WHERE reason = 'admin'
+  ```
+- **Special Handling:**
+  - Only returns admin aliases (reason='admin')
+  - Returns convenience map instead of struct slice
+  - Used for building ConfigMap from current database state
+
+---
+
+### Function: `GetExclusion`
+- **File:** `pkg/pg/repo.go:93`
+- **Type:** Method on `*RepoExcluder`
+- **Signature:**
+  ```go
+  func (r *RepoExcluder) GetExclusion(ctx context.Context, provider, repoFullName string) (*time.Time, string, error)
+  ```
+- **Operation:** SELECT
+- **Target Table:** `repos`
+- **Input Parameters:**
+  - `ctx context.Context` - Context for the operation
+  - `provider string` - Repository provider
+  - `repoFullName string` - Repository full name
+- **Return Type:** `(*time.Time, string, error)` - Excluded timestamp, reason, and error
+- **SQL Operation:**
+  ```sql
+  SELECT excluded_at, excluded_reason
+  FROM repos
+  WHERE provider = $1 AND repo_full_name = $2
+  ```
+- **Special Handling:**
+  - Converts nullable database fields to Go nil/empty string
+  - Returns (nil, "", error) if query fails
+  - Used for checking current exclusion status
+
+---
+
+### Function: `ListExclusions`
+- **File:** `pkg/pg/repo.go:126`
+- **Type:** Method on `*RepoExcluder`
+- **Signature:**
+  ```go
+  func (r *RepoExcluder) ListExclusions(ctx context.Context) ([]ExclusionInfo, error)
+  ```
+- **Operation:** SELECT
+- **Target Table:** `repos`
+- **Input Parameters:**
+  - `ctx context.Context` - Context for the operation
+- **Return Type:** `([]ExclusionInfo, error)` - Array of excluded repo information
+  - `ExclusionInfo.Provider string`
+  - `ExclusionInfo.RepoFullName string`
+  - `ExclusionInfo.ExcludedAt time.Time`
+  - `ExclusionInfo.ExcludedReason string`
+- **SQL Operation:**
+  ```sql
+  SELECT provider, repo_full_name, excluded_at, excluded_reason
+  FROM repos
+  WHERE excluded_at IS NOT NULL
+  ORDER BY excluded_at DESC
+  ```
+- **Special Handling:**
+  - Only returns repos where excluded_at IS NOT NULL
+  - Sorted by excluded_at DESC (most recent first)
+  - Used for administrative overview
+
+---
+
+## 8. Helper Functions
+
+### Function: `RepoExists`
+- **File:** `pkg/service/exclusion.go:64`
+- **Type:** Method on `*RepoChecker`
+- **Signature:**
+  ```go
+  func (r *RepoChecker) RepoExists(ctx context.Context, provider, repoFullName string) bool
+  ```
+- **Operation:** SELECT
+- **Target Table:** `repos`
+- **Input Parameters:**
+  - `ctx context.Context` - Context for the operation
+  - `provider string` - Repository provider
+  - `repoFullName string` - Repository full name
+- **Return Type:** `bool` - True if repo exists, false otherwise
+- **SQL Operation:**
+  ```sql
+  SELECT 1
+  FROM repos
+  WHERE provider = $1 AND repo_full_name = $2
+  LIMIT 1
+  ```
+- **Special Handling:**
+  - Fail-safe design: returns false on any error (including query errors)
+  - Returns false for empty inputs
+  - Used for validation before database operations
+
+---
+
+### Function: `SetRepoExclusion`
+- **File:** `pkg/service/exclusion.go:220`
+- **Type:** Function
+- **Signature:**
+  ```go
+  func SetRepoExclusion(ctx context.Context, db Transactioner, provider, repoFullName, reason string) error
+  ```
+- **Operation:** Wrapper function
+- **Special Handling:**
+  - Convenience wrapper that calls `SetRepoExclusionWithActor` with actor="system"
+  - Maintains backward compatibility
+
+---
+
+### Function: `ClearRepoExclusion`
+- **File:** `pkg/service/exclusion.go:369`
+- **Type:** Function
+- **Signature:**
+  ```go
+  func ClearRepoExclusion(ctx context.Context, db Transactioner, provider, repoFullName string) error
+  ```
+- **Operation:** Wrapper function
+- **Special Handling:**
+  - Convenience wrapper that calls `ClearRepoExclusionWithActor` with actor="system"
+  - Maintains backward compatibility
+
+---
+
 ## Summary Statistics
 
-- **Total Functions Documented:** 11
-- **INSERT Operations:** 2 (`IngestEmailResolution`, `RecordExclusionAudit`)
-- **UPSERT Operations:** 2 (`UpsertAliases`, `BatchUsersUpsertQuery`)
+- **Total Functions Documented:** 16
+- **INSERT Operations:** 1 (`RecordExclusionAudit`)
+- **UPSERT Operations:** 3 (`UpsertAliases`, `BatchUsersUpsertQuery`, `IngestEmailResolution`)
 - **UPDATE Operations:** 1 (`ApplyExclusion`)
 - **DELETE Operations:** 1 (`DeleteAdminAliases`)
 - **TRANSACTION Operations:** 2 (`SetRepoExclusionWithActor`, `ClearRepoExclusionWithActor`)
-- **SELECT Queries:** 2 (`UsersSelectByLoginsQuery`, and related query functions)
+- **SELECT Operations:** 4 (`UsersSelectByLoginsQuery`, `GetAdminAliases`, `GetExclusion`, `ListExclusions`)
+- **Helper/Wrapper Functions:** 4 (`RepoExists`, `SetRepoExclusion`, `ClearRepoExclusion`, `RecordExclusionAudit` impl)
 
 ## Tables Targeted
 
 1. `users` - User identity table
-2. `user_aliases` - Login alias mappings
+2. `user_aliases` - Login alias mappings  
 3. `email_resolution` - Email→login resolution results
 4. `repos` - Repository identity with exclusion tracking
 5. `exclusion_audit_log` - Audit trail for exclusion changes
@@ -347,9 +490,24 @@ This document catalogs all database operation functions found in the commitgraph
 3. **DO UPDATE with WHERE** - `IngestEmailResolution` (selective update based on source/timestamp)
 4. **Transactions** - Exclusion operations (atomic multi-table updates)
 
+## Key Design Patterns
+
+1. **Bulk Operations:** Most write operations use UNNEST with array parameters for efficiency
+2. **Conflict Resolution:** ON CONFLICT clauses implement business logic (manual source wins, newer timestamp wins)
+3. **Audit Trail:** Service layer functions maintain before/after state in audit logs
+4. **Idempotency:** Most operations are designed to be safely re-runnable
+5. **Transaction Safety:** Critical operations use transactions to ensure atomicity
+6. **Nullable Handling:** Extensive use of pointers and NULL checks for optional fields
+7. **Validation:** Input validation before database operations (format, existence checks)
+8. **Counter Tracking:** Some operations return detailed statistics (ingested vs skipped counts)
+9. **Interface-based Design:** Uses Executor/DBExecutor interfaces for testability
+10. **Fail-safe Validation:** Helper functions like `RepoExists` return false on errors rather than propagating
+
 ## Notes
 
-- No dedicated INSERT/Upsert functions found for `repo_user_daily_tool` table in main codebase (only test fixtures)
-- Most operations use bulk array parameters with UNNEST for efficiency
+- Most database operations are in `pkg/pg/` package (PostgreSQL-specific implementations)
+- Service layer (`pkg/service/`) provides transactional business logic wrappers
+- Identity layer (`pkg/identity/`) provides domain models for email resolution
 - All exclusion operations are wrapped in transactions for audit trail consistency
 - Conflict resolution implements business rules (manual wins, newer timestamps win)
+- No dedicated INSERT/Upsert functions found for `repo_user_daily_tool` table in main codebase (only test fixtures)

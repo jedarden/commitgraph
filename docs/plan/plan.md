@@ -181,11 +181,14 @@ elsewhere in this document.
   not in the hot ranking-query path; unavailability only delays extraction/publishing,
   not queries), and the cross-namespace coupling is an acceptable tradeoff for
   operational simplicity (reuse battle-tested infra vs. provision new deployment).
-- **ARMOR instance/prefix scoping**: `ARMOR_PREFIX` is unset and four
-  org-wide ARMOR instances exist (verified via `declarative-config/k8s/`:
-  `devimprint` ns on ord-devimprint, `armor` ns on iad-ci, `armor` ns on
-  iad-kalshi, `armor` ns on rs-manager) — confirm which is in scope before
-  writing (Storage placement section).
+- ~~**ARMOR instance/prefix scoping**~~ — **resolved 2026-08-06: use `devimprint` instance.**
+  The `devimprint` namespace ARMOR instance on ord-devimprint is chosen.
+  Cross-namespace coupling (`commitgraph` ns depends on `devimprint` ns) is
+  accepted — see `docs/notes/cg-4nlj-armor-cross-namespace-decision.md` for
+  full rationale. SPOF concern is materially narrower than ADR-009's original
+  worry (ARMOR is not in the hot ranking-query path; unavailability only
+  delays extraction/publishing, not queries). `ARMOR_PREFIX` scoping (e.g.,
+  `commitgraph/` keys) remains for Phase 0 implementation to avoid key collision.
 - ~~**How long the frozen public `leaderboard.json` can stay frozen** before
    the downstream presentation layer must ship or the file must be pulled~~
    **RESOLVED 2026-08-06:** Maximum staleness decided in

@@ -16,6 +16,18 @@ dumps/
 exports/
 *.dump
 
+# Agent trace logs — local only, never commit.
+#
+# bf writes one stdout capture per bead here. By 2026-08-06 that was 845 files
+# totalling 350 MB, i.e. 94% of everything tracked, growing with every bead
+# closed. They are machine-local debugging output with no cross-machine value
+# that justifies the weight. Stripped from history on 2026-08-06; archived at
+# ~/backups/commitgraph-prerewrite-20260806/beads-traces.tar.gz on ex44.
+#
+# This entry does NOT touch bead data itself — .beads/issues.jsonl and
+# .beads/beads.db are still tracked and still authoritative.
+.beads/traces/
+
 # Compiled binaries
 bin/
 main

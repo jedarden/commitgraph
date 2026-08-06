@@ -1609,3 +1609,262 @@ func TestParseTarball_TruncatedPackFileWith11BytePackUsingHelper(t *testing.T) {
 		t.Logf("Successfully detected 11-byte pack file as truncated: %v", truncErr)
 	})
 }
+
+func TestParseTarball_MissingIdxFileMember(t *testing.T) {
+	// Test validation that requires corresponding .idx files for each .pack file
+	// This tarball has .pack and .promisor files but NO .idx file
+	configData := []byte(`{
+		"core.repositoryformatversion": "1",
+		"remote.origin.promisor": "true",
+		"remote.origin.partialclonefilter": "blob:none"
+	}`)
+	refData := []byte("refs/heads/main abc123")
+	promisorData := []byte("test promisor data")
+
+	members := []TarballMember{
+		{Name: "objects/pack/pack-123.pack", Data: []byte("PACK123456789")}, // 12 bytes, minimum valid header
+		{Name: "objects/pack/pack-123.promisor", Data: promisorData},
+		{Name: "config.json", Data: configData},
+		{Name: "ref", Data: refData},
+	}
+
+	tarball := createTestTarball(t, members)
+
+	_, err := ParseTarball(tarball)
+	if err == nil {
+		t.Fatal("expected error for missing .idx file, got nil")
+	}
+
+	// Verify it's a MissingMember error with ".idx" member name
+	var missingErr *Error
+	if !errors.As(err, &missingErr) {
+		t.Fatalf("expected *Error type, got %T: %v", err, err)
+	}
+
+	if missingErr.Kind != MissingMember {
+		t.Errorf("expected MissingMember error kind, got %v", missingErr.Kind)
+	}
+
+	if missingErr.MemberName != ".idx" {
+		t.Errorf("expected member name '.idx', got %s", missingErr.MemberName)
+	}
+
+	t.Logf("Successfully detected missing .idx file: %v", missingErr)
+}
+
+func TestParseTarball_MissingRefFileMember(t *testing.T) {
+	// Test validation that requires corresponding .ref files for each .pack file
+	// This tarball has .pack, .idx, and .promisor files but NO .ref file
+	configData := []byte(`{
+		"core.repositoryformatversion": "1",
+		"remote.origin.promisor": "true",
+		"remote.origin.partialclonefilter": "blob:none"
+	}`)
+	refData := []byte("refs/heads/main abc123")
+	idxData := []byte("test idx data")
+	promisorData := []byte("test promisor data")
+
+	members := []TarballMember{
+		{Name: "objects/pack/pack-123.pack", Data: []byte("PACK123456789")}, // 12 bytes, minimum valid header
+		{Name: "objects/pack/pack-123.idx", Data: idxData},
+		{Name: "objects/pack/pack-123.promisor", Data: promisorData},
+		{Name: "config.json", Data: configData},
+		{Name: "ref", Data: refData},
+	}
+
+	tarball := createTestTarball(t, members)
+
+	_, err := ParseTarball(tarball)
+	if err == nil {
+		t.Fatal("expected error for missing .ref file, got nil")
+	}
+
+	// Verify it's a MissingMember error with ".ref" member name
+	var missingErr *Error
+	if !errors.As(err, &missingErr) {
+		t.Fatalf("expected *Error type, got %T: %v", err, err)
+	}
+
+	if missingErr.Kind != MissingMember {
+		t.Errorf("expected MissingMember error kind, got %v", missingErr.Kind)
+	}
+
+	if missingErr.MemberName != ".ref" {
+		t.Errorf("expected member name '.ref', got %s", missingErr.MemberName)
+	}
+
+	t.Logf("Successfully detected missing .ref file: %v", missingErr)
+}
+
+func TestParseTarball_CompletePackFileSet(t *testing.T) {
+	// Test validation succeeds when all required pack-related files are present
+	configData := []byte(`{
+		"core.repositoryformatversion": "1",
+		"remote.origin.promisor": "true",
+		"remote.origin.partialclonefilter": "blob:none"
+	}`)
+	refData := []byte("refs/heads/main abc123")
+	packData := []byte("PACK123456789") // 12 bytes, minimum valid header
+	idxData := []byte("test idx data")
+	refFileData := []byte("test ref data")
+	promisorData := []byte("test promisor data")
+
+	members := []TarballMember{
+		{Name: "objects/pack/pack-123.pack", Data: packData},
+		{Name: "objects/pack/pack-123.idx", Data: idxData},
+		{Name: "objects/pack/pack-123.ref", Data: refFileData},
+		{Name: "objects/pack/pack-123.promisor", Data: promisorData},
+		{Name: "config.json", Data: configData},
+		{Name: "ref", Data: refData},
+	}
+
+	tarball := createTestTarball(t, members)
+
+	snapshot, err := ParseTarball(tarball)
+	if err != nil {
+		t.Fatalf("expected success with complete pack file set, got error: %v", err)
+	}
+
+	// Verify all pack files were captured
+	if len(snapshot.PackFiles) != 4 {
+		t.Errorf("expected 4 pack files, got %d", len(snapshot.PackFiles))
+	}
+
+	// Verify specific files are present
+	foundPack := false
+	foundIdx := false
+	foundRef := false
+	for _, pf := range snapshot.PackFiles {
+		switch pf.Name {
+		case "objects/pack/pack-123.pack":
+			foundPack = true
+		case "objects/pack/pack-123.idx":
+			foundIdx = true
+		case "objects/pack/pack-123.ref":
+			foundRef = true
+		}
+	}
+
+	if !foundPack {
+		t.Error(".pack file not found in snapshot")
+	}
+	if !foundIdx {
+		t.Error(".idx file not found in snapshot")
+	}
+	if !foundRef {
+		t.Error(".ref file not found in snapshot")
+	}
+
+	t.Logf("Successfully validated complete pack file set")
+}
+
+func TestParseTarball_MultiplePackFilesWithCompleteSets(t *testing.T) {
+	// Test validation succeeds when multiple complete pack file sets are present
+	configData := []byte(`{
+		"core.repositoryformatversion": "1",
+		"remote.origin.promisor": "true",
+		"remote.origin.partialclonefilter": "blob:none"
+	}`)
+	refData := []byte("refs/heads/main abc123")
+
+	members := []TarballMember{
+		{Name: "objects/pack/pack-abc.pack", Data: []byte("PACK123456789")},
+		{Name: "objects/pack/pack-abc.idx", Data: []byte("idx abc")},
+		{Name: "objects/pack/pack-abc.ref", Data: []byte("ref abc")},
+		{Name: "objects/pack/pack-def.pack", Data: []byte("PACK987654321")},
+		{Name: "objects/pack/pack-def.idx", Data: []byte("idx def")},
+		{Name: "objects/pack/pack-def.ref", Data: []byte("ref def")},
+		{Name: "config.json", Data: configData},
+		{Name: "ref", Data: refData},
+	}
+
+	tarball := createTestTarball(t, members)
+
+	snapshot, err := ParseTarball(tarball)
+	if err != nil {
+		t.Fatalf("expected success with multiple complete pack file sets, got error: %v", err)
+	}
+
+	// Verify all pack files were captured (6 pack files)
+	if len(snapshot.PackFiles) != 6 {
+		t.Errorf("expected 6 pack files, got %d", len(snapshot.PackFiles))
+	}
+
+	t.Logf("Successfully validated multiple complete pack file sets")
+}
+
+func TestParseTarball_MultiplePackFilesMissingIdxForOne(t *testing.T) {
+	// Test validation fails when one of multiple .pack files is missing its .idx
+	configData := []byte(`{
+		"core.repositoryformatversion": "1",
+		"remote.origin.promisor": "true",
+		"remote.origin.partialclonefilter": "blob:none"
+	}`)
+	refData := []byte("refs/heads/main abc123")
+
+	members := []TarballMember{
+		{Name: "objects/pack/pack-abc.pack", Data: []byte("PACK123456789")},
+		{Name: "objects/pack/pack-abc.idx", Data: []byte("idx abc")},
+		{Name: "objects/pack/pack-abc.ref", Data: []byte("ref abc")},
+		{Name: "objects/pack/pack-def.pack", Data: []byte("PACK987654321")},
+		// Missing pack-def.idx
+		{Name: "objects/pack/pack-def.ref", Data: []byte("ref def")},
+		{Name: "config.json", Data: configData},
+		{Name: "ref", Data: refData},
+	}
+
+	tarball := createTestTarball(t, members)
+
+	_, err := ParseTarball(tarball)
+	if err == nil {
+		t.Fatal("expected error for missing .idx file for pack-def.pack, got nil")
+	}
+
+	var missingErr *Error
+	if !errors.As(err, &missingErr) {
+		t.Fatalf("expected *Error type, got %T: %v", err, err)
+	}
+
+	if missingErr.Kind != MissingMember {
+		t.Errorf("expected MissingMember error kind, got %v", missingErr.Kind)
+	}
+
+	if missingErr.MemberName != ".idx" {
+		t.Errorf("expected member name '.idx', got %s", missingErr.MemberName)
+	}
+
+	t.Logf("Successfully detected missing .idx file for one of multiple pack files: %v", missingErr)
+}
+
+func TestDebugPackFileCollection(t *testing.T) {
+	configData := []byte(`{
+		"core.repositoryformatversion": "1",
+		"remote.origin.promisor": "true",
+		"remote.origin.partialclonefilter": "blob:none"
+	}`)
+	refData := []byte("refs/heads/main abc123")
+	packData := []byte("PACK123456789")
+	idxData := []byte("test idx data")
+	refFileData := []byte("test ref data")
+	promisorData := []byte("test promisor data")
+
+	members := []TarballMember{
+		{Name: "objects/pack/pack-123.pack", Data: packData},
+		{Name: "objects/pack/pack-123.idx", Data: idxData},
+		{Name: "objects/pack/pack-123.ref", Data: refFileData},
+		{Name: "objects/pack/pack-123.promisor", Data: promisorData},
+		{Name: "config.json", Data: configData},
+		{Name: "ref", Data: refData},
+	}
+
+	tarball := createTestTarball(t, members)
+	snapshot, err := ParseTarball(tarball)
+	if err != nil {
+		t.Logf("Error: %v", err)
+	}
+
+	t.Logf("PackFiles count: %d", len(snapshot.PackFiles))
+	for _, pf := range snapshot.PackFiles {
+		t.Logf("  - %s (%d bytes)", pf.Name, len(pf.Data))
+	}
+}

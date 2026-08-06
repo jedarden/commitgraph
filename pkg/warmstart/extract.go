@@ -96,10 +96,11 @@ func ParseTarball(data []byte) (*WarmStartSnapshot, error) {
 	var configData []byte
 	var foundConfig, foundRef bool
 	packExtensions := map[string]bool{
-		".pack":    true,
-		".idx":     true,
+		".pack":     true,
+		".idx":      true,
+		".ref":      true,
 		".promisor": true,
-		".rev":     true,
+		".rev":      true,
 	}
 
 	for {
@@ -202,6 +203,46 @@ func ParseTarball(data []byte) (*WarmStartSnapshot, error) {
 	}
 	if !foundPack {
 		return nil, NewMissingMemberError(".pack")
+	}
+
+	// Collect base names of all .pack files for corresponding file validation
+	var packBaseNames []string
+	for _, pf := range snapshot.PackFiles {
+		if strings.HasSuffix(pf.Name, ".pack") {
+			// Extract base name without extension for corresponding file checks
+			baseName := strings.TrimSuffix(pf.Name, ".pack")
+			packBaseNames = append(packBaseNames, baseName)
+		}
+	}
+
+	// Validate that corresponding .idx files exist for each .pack file
+	for _, baseName := range packBaseNames {
+		idxName := baseName + ".idx"
+		foundIdx := false
+		for _, pf := range snapshot.PackFiles {
+			if pf.Name == idxName {
+				foundIdx = true
+				break
+			}
+		}
+		if !foundIdx {
+			return nil, NewMissingMemberError(".idx")
+		}
+	}
+
+	// Validate that corresponding .ref files exist for each .pack file
+	for _, baseName := range packBaseNames {
+		refName := baseName + ".ref"
+		foundRef := false
+		for _, pf := range snapshot.PackFiles {
+			if pf.Name == refName {
+				foundRef = true
+				break
+			}
+		}
+		if !foundRef {
+			return nil, NewMissingMemberError(".ref")
+		}
 	}
 
 	// Parse config

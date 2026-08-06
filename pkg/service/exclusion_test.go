@@ -6,18 +6,59 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // mockRow is a mock implementation of a row scanner for testing.
 type mockRow struct {
 	scanErr error
+	// Values to return on scan (for multi-column queries)
+	scanValues []interface{}
 }
 
 func (m *mockRow) Scan(dest ...interface{}) error {
 	if m.scanErr != nil {
 		return m.scanErr
 	}
-	// For successful scans, set the first dest to 1
+	// If scanValues are provided, use them
+	if m.scanValues != nil && len(m.scanValues) > 0 {
+		for i, val := range m.scanValues {
+			if i >= len(dest) {
+				break
+			}
+			switch v := val.(type) {
+			case int:
+				if ptr, ok := dest[i].(*int64); ok {
+					*ptr = int64(v)
+				}
+			case int64:
+				if ptr, ok := dest[i].(*int64); ok {
+					*ptr = v
+				}
+			case string:
+				if ptr, ok := dest[i].(*string); ok {
+					*ptr = v
+				}
+			case *string:
+				if ptr, ok := dest[i].(**string); ok {
+					*ptr = v
+				}
+			case time.Time:
+				if ptr, ok := dest[i].(*time.Time); ok {
+					*ptr = v
+				}
+			case *time.Time:
+				if ptr, ok := dest[i].(**time.Time); ok {
+					*ptr = v
+				}
+			case nil:
+				// Handle nil pointers for nullable fields
+				// The dest should already be a pointer to a pointer
+			}
+		}
+		return nil
+	}
+	// For successful scans without specific values, set the first dest to 1
 	if len(dest) > 0 {
 		if ptr, ok := dest[0].(*int); ok {
 			*ptr = 1
@@ -37,9 +78,10 @@ func (m *mockQuerier) QueryRowContext(ctx context.Context, query string, args ..
 
 // mockTransactor is a mock Transactor for testing.
 type mockTransactor struct {
-	execContextFn func(ctx context.Context, query string, args ...interface{}) (sql.Result, error)
-	commitFn      func() error
-	rollbackFn    func() error
+	execContextFn     func(ctx context.Context, query string, args ...interface{}) (sql.Result, error)
+	queryRowContextFn func(ctx context.Context, query string, args ...interface{}) RowScanner
+	commitFn          func() error
+	rollbackFn        func() error
 }
 
 func (m *mockTransactor) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
@@ -47,6 +89,13 @@ func (m *mockTransactor) ExecContext(ctx context.Context, query string, args ...
 		return m.execContextFn(ctx, query, args...)
 	}
 	return &mockResult{}, nil
+}
+
+func (m *mockTransactor) QueryRowContext(ctx context.Context, query string, args ...interface{}) RowScanner {
+	if m.queryRowContextFn != nil {
+		return m.queryRowContextFn(ctx, query, args...)
+	}
+	return &mockRow{}
 }
 
 func (m *mockTransactor) Commit() error {
@@ -1029,3 +1078,314 @@ func TestClearRepoExclusion_RollbackOnCommitError(t *testing.T) {
 // (e.g., race conditions, deadlocks) should be tested in integration tests with an
 // actual database connection. The transaction tests above verify that rollback is called
 // appropriately on errors, which is the service-level responsibility.
+
+// TestSetRepoExclusionWithActor_AuditRecording tests that SetRepoExclusionWithActor
+// properly records the audit log with before and after states.
+func TestSetRepoExclusionWithActor_AuditRecording(t *testing.T) {
+	ctx := context.Background()
+
+	var capturedAuditParams struct {
+		repoID            int64
+		actor             string
+		eventType         string
+		oldExcludedAt     *time.Time
+		oldExcludedReason *string
+		newExcludedAt     *time.Time
+		newExcludedReason *string
+	}
+
+	// Create a transaction that tracks what was passed to RecordExclusionAudit
+	mockTx := &mockTransactor{
+		queryRowContextFn: func(ctx context.Context, query string, args ...interface{}) RowScanner {
+			// Return mock row with repo data
+			// repo_id = 123, excluded_at = NULL, excluded_reason = NULL
+			return &mockRow{
+				scanValues: []interface{}{
+					int64(123),
+					(*time.Time)(nil), // NULL excluded_at
+					(*string)(nil),    // NULL excluded_reason
+				},
+			}
+		},
+		execContextFn: func(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+			return &mockResult{rowsAffected: 1, lastInsertId: 0}, nil
+		},
+		commitFn: func() error {
+			return nil
+		},
+		rollbackFn: func() error {
+			return nil
+		},
+	}
+
+	mockDB := &mockTransactioner{
+		row: &mockRow{scanErr: nil},
+		beginTxFn: func(ctx context.Context, opts *sql.TxOptions) (Transactor, error) {
+			return mockTx, nil
+		},
+	}
+
+	// Create a mock RecordExclusionAudit function
+	originalRecordExclusionAudit := RecordExclusionAudit
+	defer func() { RecordExclusionAudit = originalRecordExclusionAudit }()
+
+	RecordExclusionAudit = func(
+		ctx context.Context,
+		tx Transactor,
+		repoID int64,
+		actor string,
+		eventType string,
+		oldExcludedAt *time.Time,
+		oldExcludedReason *string,
+		newExcludedAt *time.Time,
+		newExcludedReason *string,
+	) error {
+		capturedAuditParams.repoID = repoID
+		capturedAuditParams.actor = actor
+		capturedAuditParams.eventType = eventType
+		capturedAuditParams.oldExcludedAt = oldExcludedAt
+		capturedAuditParams.oldExcludedReason = oldExcludedReason
+		capturedAuditParams.newExcludedAt = newExcludedAt
+		capturedAuditParams.newExcludedReason = newExcludedReason
+		return nil
+	}
+
+	actor := "test-admin"
+	reason := "policy violation"
+
+	err := SetRepoExclusionWithActor(ctx, mockDB, "github", "owner/repo", reason, actor)
+	if err != nil {
+		t.Errorf("SetRepoExclusionWithActor() should succeed, got error: %v", err)
+	}
+
+	// Verify audit parameters
+	if capturedAuditParams.repoID != 123 {
+		t.Errorf("Expected repo_id 123, got %d", capturedAuditParams.repoID)
+	}
+	if capturedAuditParams.actor != actor {
+		t.Errorf("Expected actor '%s', got '%s'", actor, capturedAuditParams.actor)
+	}
+	if capturedAuditParams.eventType != "exclude" {
+		t.Errorf("Expected event_type 'exclude', got '%s'", capturedAuditParams.eventType)
+	}
+	if capturedAuditParams.oldExcludedAt != nil {
+		t.Errorf("Expected old excluded_at to be nil, got %v", capturedAuditParams.oldExcludedAt)
+	}
+	if capturedAuditParams.oldExcludedReason != nil {
+		t.Errorf("Expected old excluded_reason to be nil, got %v", capturedAuditParams.oldExcludedReason)
+	}
+	if capturedAuditParams.newExcludedAt == nil {
+		t.Errorf("Expected new excluded_at to be non-nil")
+	}
+	if capturedAuditParams.newExcludedReason == nil {
+		t.Errorf("Expected new excluded_reason to be non-nil")
+	}
+	if *capturedAuditParams.newExcludedReason != reason {
+		t.Errorf("Expected new excluded_reason '%s', got '%s'", reason, *capturedAuditParams.newExcludedReason)
+	}
+}
+
+// TestSetRepoExclusionWithActor_AuditRecordingFromPrevious tests that SetRepoExclusionWithActor
+// correctly captures the previous exclusion state when re-excluding an already-excluded repo.
+func TestSetRepoExclusionWithActor_AuditRecordingFromPrevious(t *testing.T) {
+	ctx := context.Background()
+
+	var capturedAuditParams struct {
+		repoID            int64
+		actor             string
+		eventType         string
+		oldExcludedAt     *time.Time
+		oldExcludedReason *string
+		newExcludedAt     *time.Time
+		newExcludedReason *string
+	}
+
+	// Previous exclusion state
+	oldTime := time.Now().Add(-24 * time.Hour)
+	oldReason := "old policy violation"
+
+	// Create a transaction that returns a previously excluded repo
+	mockTx := &mockTransactor{
+		queryRowContextFn: func(ctx context.Context, query string, args ...interface{}) RowScanner {
+			// Return mock row with repo data showing previous exclusion
+			return &mockRow{
+				scanValues: []interface{}{
+					int64(456),
+					&oldTime,  // previous excluded_at
+					&oldReason, // previous excluded_reason
+				},
+			}
+		},
+		execContextFn: func(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+			return &mockResult{rowsAffected: 1, lastInsertId: 0}, nil
+		},
+		commitFn: func() error {
+			return nil
+		},
+		rollbackFn: func() error {
+			return nil
+		},
+	}
+
+	mockDB := &mockTransactioner{
+		row: &mockRow{scanErr: nil},
+		beginTxFn: func(ctx context.Context, opts *sql.TxOptions) (Transactor, error) {
+			return mockTx, nil
+		},
+	}
+
+	// Create a mock RecordExclusionAudit function
+	originalRecordExclusionAudit := RecordExclusionAudit
+	defer func() { RecordExclusionAudit = originalRecordExclusionAudit }()
+
+	RecordExclusionAudit = func(
+		ctx context.Context,
+		tx Transactor,
+		repoID int64,
+		actor string,
+		eventType string,
+		oldExcludedAt *time.Time,
+		oldExcludedReason *string,
+		newExcludedAt *time.Time,
+		newExcludedReason *string,
+	) error {
+		capturedAuditParams.repoID = repoID
+		capturedAuditParams.actor = actor
+		capturedAuditParams.eventType = eventType
+		capturedAuditParams.oldExcludedAt = oldExcludedAt
+		capturedAuditParams.oldExcludedReason = oldExcludedReason
+		capturedAuditParams.newExcludedAt = newExcludedAt
+		capturedAuditParams.newExcludedReason = newExcludedReason
+		return nil
+	}
+
+	actor := "admin"
+	reason := "new policy violation"
+
+	err := SetRepoExclusionWithActor(ctx, mockDB, "github", "owner/repo", reason, actor)
+	if err != nil {
+		t.Errorf("SetRepoExclusionWithActor() should succeed, got error: %v", err)
+	}
+
+	// Verify audit parameters captured the old state
+	if capturedAuditParams.repoID != 456 {
+		t.Errorf("Expected repo_id 456, got %d", capturedAuditParams.repoID)
+	}
+	if capturedAuditParams.oldExcludedAt == nil {
+		t.Errorf("Expected old excluded_at to be non-nil, got nil")
+	} else if !capturedAuditParams.oldExcludedAt.Equal(oldTime) {
+		t.Errorf("Expected old excluded_at %v, got %v", oldTime, *capturedAuditParams.oldExcludedAt)
+	}
+	if capturedAuditParams.oldExcludedReason == nil {
+		t.Errorf("Expected old excluded_reason to be non-nil, got nil")
+	} else if *capturedAuditParams.oldExcludedReason != oldReason {
+		t.Errorf("Expected old excluded_reason '%s', got '%s'", oldReason, *capturedAuditParams.oldExcludedReason)
+	}
+	if capturedAuditParams.newExcludedReason == nil {
+		t.Errorf("Expected new excluded_reason to be non-nil")
+	} else if *capturedAuditParams.newExcludedReason != reason {
+		t.Errorf("Expected new excluded_reason '%s', got '%s'", reason, *capturedAuditParams.newExcludedReason)
+	}
+}
+
+// TestSetRepoExclusionWithActor_SelectError tests error handling when the SELECT query fails.
+func TestSetRepoExclusionWithActor_SelectError(t *testing.T) {
+	ctx := context.Background()
+
+	selectError := errors.New("database select failed")
+
+	// Create a transaction that fails on QueryRowContext
+	mockTx := &mockTransactor{
+		queryRowContextFn: func(ctx context.Context, query string, args ...interface{}) RowScanner {
+			return &mockRow{scanErr: selectError}
+		},
+		execContextFn: func(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+			return &mockResult{rowsAffected: 1, lastInsertId: 0}, nil
+		},
+		commitFn: func() error {
+			return nil
+		},
+		rollbackFn: func() error {
+			return nil
+		},
+	}
+
+	mockDB := &mockTransactioner{
+		row: &mockRow{scanErr: nil},
+		beginTxFn: func(ctx context.Context, opts *sql.TxOptions) (Transactor, error) {
+			return mockTx, nil
+		},
+	}
+
+	err := SetRepoExclusionWithActor(ctx, mockDB, "github", "owner/repo", "test reason", "admin")
+	if err == nil {
+		t.Errorf("SetRepoExclusionWithActor() with select error should return error, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to query current repo state") {
+		t.Errorf("SetRepoExclusionWithActor() wrong error for select failure: %v", err)
+	}
+}
+
+// TestSetRepoExclusion_WithSystemActor tests that SetRepoExclusion uses "system" as the actor.
+func TestSetRepoExclusion_WithSystemActor(t *testing.T) {
+	ctx := context.Background()
+
+	var capturedActor string
+
+	// Create a transaction
+	mockTx := &mockTransactor{
+		queryRowContextFn: func(ctx context.Context, query string, args ...interface{}) RowScanner {
+			return &mockRow{
+				scanValues: []interface{}{
+					int64(789),
+					(*time.Time)(nil),
+					(*string)(nil),
+				},
+			}
+		},
+		execContextFn: func(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+			return &mockResult{rowsAffected: 1, lastInsertId: 0}, nil
+		},
+		commitFn: func() error {
+			return nil
+		},
+		rollbackFn: func() error {
+			return nil
+		},
+	}
+
+	mockDB := &mockTransactioner{
+		row: &mockRow{scanErr: nil},
+		beginTxFn: func(ctx context.Context, opts *sql.TxOptions) (Transactor, error) {
+			return mockTx, nil
+		},
+	}
+
+	// Create a mock RecordExclusionAudit function
+	originalRecordExclusionAudit := RecordExclusionAudit
+	defer func() { RecordExclusionAudit = originalRecordExclusionAudit }()
+
+	RecordExclusionAudit = func(
+		ctx context.Context,
+		tx Transactor,
+		repoID int64,
+		actor string,
+		eventType string,
+		oldExcludedAt *time.Time,
+		oldExcludedReason *string,
+		newExcludedAt *time.Time,
+		newExcludedReason *string,
+	) error {
+		capturedActor = actor
+		return nil
+	}
+
+	err := SetRepoExclusion(ctx, mockDB, "github", "owner/repo", "test reason")
+	if err != nil {
+		t.Errorf("SetRepoExclusion() should succeed, got error: %v", err)
+	}
+
+	if capturedActor != "system" {
+		t.Errorf("Expected actor 'system', got '%s'", capturedActor)
+	}
+}

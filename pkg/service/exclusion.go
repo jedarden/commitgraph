@@ -30,6 +30,7 @@ type Execer interface {
 // Transactor is the interface for database transactions.
 type Transactor interface {
 	Execer
+	Querier
 	Commit() error
 	Rollback() error
 }
@@ -109,6 +110,10 @@ type SQLTx struct {
 
 func (s *SQLTx) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
 	return s.tx.ExecContext(ctx, query, args...)
+}
+
+func (s *SQLTx) QueryRowContext(ctx context.Context, query string, args ...interface{}) RowScanner {
+	return &sqlRowScanner{row: s.tx.QueryRowContext(ctx, query, args...)}
 }
 
 func (s *SQLTx) Commit() error {
@@ -213,6 +218,34 @@ func validateRepoFullName(repoFullName string) error {
 // - On success, the transaction is committed
 // - On error, the transaction is rolled back
 func SetRepoExclusion(ctx context.Context, db Transactioner, provider, repoFullName, reason string) error {
+	return SetRepoExclusionWithActor(ctx, db, provider, repoFullName, reason, "system")
+}
+
+// SetRepoExclusionWithActor sets the exclusion status for a repository with a specific actor.
+//
+// This function performs the following operations within a database transaction:
+// 1. Validates that the repo exists (using RepoExists)
+// 2. Validates that the reason is not empty
+// 3. Queries the current exclusion state (excluded_at, excluded_reason, repo_id) BEFORE updating
+// 4. Sets excluded_at to NOW() and excluded_reason to the provided reason
+// 5. Records an audit log entry with the before and after states
+//
+// Parameters:
+//   - ctx: Context for the operation
+//   - db: Database connection (will be used to create a transaction)
+//   - provider: Repository provider (e.g., "github")
+//   - repoFullName: Repository full name (e.g., "owner/repo")
+//   - reason: Human-readable reason for exclusion (must not be empty)
+//   - actor: Who performed the action (e.g., 'admin', 'system')
+//
+// Returns:
+//   - nil on success
+//   - error if validation fails or database operation fails
+//
+// The function uses a database transaction to ensure atomicity:
+// - On success, the transaction is committed
+// - On error, the transaction is rolled back
+func SetRepoExclusionWithActor(ctx context.Context, db Transactioner, provider, repoFullName, reason, actor string) error {
 	// Validate provider format
 	if err := validateProvider(provider); err != nil {
 		return err
@@ -243,15 +276,32 @@ func SetRepoExclusion(ctx context.Context, db Transactioner, provider, repoFullN
 	// Ensure rollback happens on error
 	defer tx.Rollback()
 
+	// Capture the current exclusion state BEFORE updating
+	// We need repo_id for the audit log, and the current excluded_at and excluded_reason
+	var repoID int64
+	var oldExcludedAt *time.Time
+	var oldExcludedReason *string
+
+	selectQuery := `
+		SELECT id, excluded_at, excluded_reason
+		FROM repos
+		WHERE provider = $1 AND repo_full_name = $2
+	`
+
+	selectRow := tx.QueryRowContext(ctx, selectQuery, provider, repoFullName)
+	if err := selectRow.Scan(&repoID, &oldExcludedAt, &oldExcludedReason); err != nil {
+		return fmt.Errorf("failed to query current repo state: %w", err)
+	}
+
 	// Update the repo with exclusion information
-	query := `
+	updateQuery := `
 		UPDATE repos
 		SET excluded_at = NOW(),
 		    excluded_reason = $1
 		WHERE provider = $2 AND repo_full_name = $3
 	`
 
-	result, err := tx.ExecContext(ctx, query, reason, provider, repoFullName)
+	result, err := tx.ExecContext(ctx, updateQuery, reason, provider, repoFullName)
 	if err != nil {
 		return fmt.Errorf("failed to update repo exclusion: %w", err)
 	}
@@ -264,6 +314,24 @@ func SetRepoExclusion(ctx context.Context, db Transactioner, provider, repoFullN
 
 	if rowsAffected == 0 {
 		return fmt.Errorf("no rows updated - repo may have been deleted")
+	}
+
+	// Record the audit log entry with before and after states
+	newExcludedAt := time.Now()
+	newExcludedReason := &reason
+
+	if err := RecordExclusionAudit(
+		ctx,
+		tx,
+		repoID,
+		actor,
+		"exclude",
+		oldExcludedAt,
+		oldExcludedReason,
+		&newExcludedAt,
+		newExcludedReason,
+	); err != nil {
+		return fmt.Errorf("failed to record exclusion audit: %w", err)
 	}
 
 	// Commit the transaction
@@ -353,28 +421,9 @@ func ClearRepoExclusion(ctx context.Context, db Transactioner, provider, repoFul
 	return nil
 }
 
-// RecordExclusionAudit records an audit event to the exclusion_audit_log table.
-//
-// This is a pure data access function that inserts a new row into the exclusion_audit_log
-// table with all required fields. It operates within an existing transaction.
-//
-// Parameters:
-//   - ctx: Context for the operation
-//   - tx: Database transaction (Transactor interface)
-//   - repoID: ID of the repository (BIGINT in database)
-//   - actor: Who performed the action (e.g., 'admin', 'system')
-//   - eventType: Type of event ('exclude' or 'unexclude')
-//   - oldExcludedAt: Previous excluded_at value (nil if NULL)
-//   - oldExcludedReason: Previous excluded_reason value (nil if NULL)
-//   - newExcludedAt: New excluded_at value (nil if NULL)
-//   - newExcludedReason: New excluded_reason value (nil if NULL)
-//
-// Returns:
-//   - nil on success
-//   - error if the database insert fails
-//
-// The id and timestamp columns are auto-generated by the database.
-func RecordExclusionAudit(
+// recordExclusionAuditImpl is the actual implementation of RecordExclusionAudit.
+// This is a separate function to allow mocking in tests.
+func recordExclusionAuditImpl(
 	ctx context.Context,
 	tx Transactor,
 	repoID int64,
@@ -412,4 +461,20 @@ func RecordExclusionAudit(
 	}
 
 	return nil
+}
+
+// RecordExclusionAudit is a variable that holds the current implementation.
+// This allows tests to mock the function for verification.
+var RecordExclusionAudit = func(
+	ctx context.Context,
+	tx Transactor,
+	repoID int64,
+	actor string,
+	eventType string,
+	oldExcludedAt *time.Time,
+	oldExcludedReason *string,
+	newExcludedAt *time.Time,
+	newExcludedReason *string,
+) error {
+	return recordExclusionAuditImpl(ctx, tx, repoID, actor, eventType, oldExcludedAt, oldExcludedReason, newExcludedAt, newExcludedReason)
 }

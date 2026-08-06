@@ -94,7 +94,6 @@ func ParseTarball(data []byte) (*WarmStartSnapshot, error) {
 
 	snapshot := &WarmStartSnapshot{}
 	var configData []byte
-	var refData []byte
 	var foundConfig, foundRef bool
 	packExtensions := map[string]bool{
 		".pack":    true,
@@ -124,8 +123,18 @@ func ParseTarball(data []byte) (*WarmStartSnapshot, error) {
 			foundConfig = true
 			configData = data
 		case "ref":
+			// Legacy format: ref file contains "refs/heads/main SHA"
 			foundRef = true
-			refData = data
+			refParts := strings.TrimSpace(string(data))
+			if refParts == "" {
+				return nil, fmt.Errorf("%w: empty ref data", ErrInvalidTarball)
+			}
+			parts := strings.Fields(refParts)
+			if len(parts) != 2 {
+				return nil, fmt.Errorf("%w: invalid ref format, expected 'refpath SHA'", ErrInvalidTarball)
+			}
+			snapshot.RefPath = parts[0]
+			snapshot.RefSHA = parts[1]
 		default:
 			// Check if it's a pack file (objects/pack/*.pack, etc.)
 			if strings.HasPrefix(hdr.Name, "objects/pack/") {
@@ -137,6 +146,18 @@ func ParseTarball(data []byte) (*WarmStartSnapshot, error) {
 						Name: hdr.Name,
 						Data: data,
 					})
+				}
+			} else if strings.HasPrefix(hdr.Name, "refs/") || hdr.Name == "HEAD" || strings.HasPrefix(hdr.Name, "refs/tags/") {
+				// New format: ref at its original path (e.g., "refs/heads/main")
+				// Also handles top-level refs like "HEAD" and tags
+				// The file content is just the SHA or symbolic ref target
+				foundRef = true
+				snapshot.RefPath = hdr.Name
+				snapshot.RefSHA = strings.TrimSpace(string(data))
+				// Check if it's a symbolic ref (starts with "ref:")
+				if strings.HasPrefix(snapshot.RefSHA, "ref:") {
+					// Symbolic ref - store as-is without newline
+					snapshot.RefSHA = strings.TrimSpace(snapshot.RefSHA)
 				}
 			}
 		}
@@ -160,18 +181,6 @@ func ParseTarball(data []byte) (*WarmStartSnapshot, error) {
 	if err := snapshot.Config.Validate(); err != nil {
 		return nil, err
 	}
-
-	// Parse ref (format: "refs/heads/main SHA")
-	refParts := strings.TrimSpace(string(refData))
-	if refParts == "" {
-		return nil, fmt.Errorf("%w: empty ref data", ErrInvalidTarball)
-	}
-	parts := strings.Fields(refParts)
-	if len(parts) != 2 {
-		return nil, fmt.Errorf("%w: invalid ref format, expected 'refpath SHA'", ErrInvalidTarball)
-	}
-	snapshot.RefPath = parts[0]
-	snapshot.RefSHA = parts[1]
 
 	return snapshot, nil
 }
@@ -214,7 +223,18 @@ func Materialize(gitDir string, snapshot *WarmStartSnapshot) error {
 		}
 	}
 	refPath := filepath.Join(gitDir, snapshot.RefPath)
-	if err := os.WriteFile(refPath, []byte(snapshot.RefSHA+"\n"), 0444); err != nil {
+
+	// Determine the ref content based on whether it's a symbolic ref
+	var refContent []byte
+	if strings.HasPrefix(snapshot.RefSHA, "ref:") {
+		// Symbolic ref - store as-is without newline
+		refContent = []byte(snapshot.RefSHA)
+	} else {
+		// Direct ref - store SHA with newline
+		refContent = []byte(snapshot.RefSHA + "\n")
+	}
+
+	if err := os.WriteFile(refPath, refContent, 0444); err != nil {
 		return fmt.Errorf("failed to write ref file: %w", err)
 	}
 

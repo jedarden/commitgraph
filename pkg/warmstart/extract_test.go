@@ -499,6 +499,225 @@ func TestParseTarball_InvalidTarHeader(t *testing.T) {
 	}
 }
 
+func TestParseTarball_RefAtOriginalPath(t *testing.T) {
+	// Test the new format where refs are stored at their original paths
+	configData := []byte(`{
+		"core.repositoryformatversion": "1",
+		"remote.origin.promisor": "true",
+		"remote.origin.partialclonefilter": "blob:none"
+	}`)
+
+	// Ref is stored at its original path with just the SHA as content
+	refData := []byte("abc123def456\n")
+
+	members := []TarballMember{
+		{Name: "objects/pack/pack-123.pack", Data: []byte("pack")},
+		{Name: "config.json", Data: configData},
+		{Name: "refs/heads/main", Data: refData},
+	}
+
+	tarball := createTestTarball(t, members)
+
+	snapshot, err := ParseTarball(tarball)
+	if err != nil {
+		t.Fatalf("ParseTarball failed: %v", err)
+	}
+
+	// Verify ref path and SHA
+	if snapshot.RefPath != "refs/heads/main" {
+		t.Errorf("expected ref path refs/heads/main, got %s", snapshot.RefPath)
+	}
+	if snapshot.RefSHA != "abc123def456" {
+		t.Errorf("expected ref SHA abc123def456, got %s", snapshot.RefSHA)
+	}
+}
+
+func TestParseTarball_SymbolicRef(t *testing.T) {
+	// Test handling of symbolic refs (e.g., HEAD pointing to refs/heads/main)
+	configData := []byte(`{
+		"core.repositoryformatversion": "1",
+		"remote.origin.promisor": "true",
+		"remote.origin.partialclonefilter": "blob:none"
+	}`)
+
+	// Symbolic ref content
+	refData := []byte("ref: refs/heads/main")
+
+	members := []TarballMember{
+		{Name: "objects/pack/pack-123.pack", Data: []byte("pack")},
+		{Name: "config.json", Data: configData},
+		{Name: "HEAD", Data: refData},
+	}
+
+	tarball := createTestTarball(t, members)
+
+	snapshot, err := ParseTarball(tarball)
+	if err != nil {
+		t.Fatalf("ParseTarball failed: %v", err)
+	}
+
+	// Verify symbolic ref is preserved
+	if snapshot.RefPath != "HEAD" {
+		t.Errorf("expected ref path HEAD, got %s", snapshot.RefPath)
+	}
+	if snapshot.RefSHA != "ref: refs/heads/main" {
+		t.Errorf("expected symbolic ref 'ref: refs/heads/main', got %s", snapshot.RefSHA)
+	}
+}
+
+func TestParseTarball_LegacyRefFormat(t *testing.T) {
+	// Test backward compatibility with legacy "ref" file format
+	configData := []byte(`{
+		"core.repositoryformatversion": "1",
+		"remote.origin.promisor": "true",
+		"remote.origin.partialclonefilter": "blob:none"
+	}`)
+
+	// Legacy format: "ref" file contains "refs/heads/main SHA"
+	refData := []byte("refs/heads/main abc123def456")
+
+	members := []TarballMember{
+		{Name: "objects/pack/pack-123.pack", Data: []byte("pack")},
+		{Name: "config.json", Data: configData},
+		{Name: "ref", Data: refData},
+	}
+
+	tarball := createTestTarball(t, members)
+
+	snapshot, err := ParseTarball(tarball)
+	if err != nil {
+		t.Fatalf("ParseTarball failed: %v", err)
+	}
+
+	// Verify legacy format still works
+	if snapshot.RefPath != "refs/heads/main" {
+		t.Errorf("expected ref path refs/heads/main, got %s", snapshot.RefPath)
+	}
+	if snapshot.RefSHA != "abc123def456" {
+		t.Errorf("expected ref SHA abc123def456, got %s", snapshot.RefSHA)
+	}
+}
+
+func TestMaterialize_RefAtOriginalPath(t *testing.T) {
+	// Test materialization with new format (ref at original path)
+	configData := []byte(`{
+		"core.repositoryformatversion": "1",
+		"remote.origin.promisor": "true",
+		"remote.origin.partialclonefilter": "blob:none"
+	}`)
+
+	refData := []byte("abc123def456\n")
+
+	members := []TarballMember{
+		{Name: "objects/pack/pack-123.pack", Data: []byte("pack")},
+		{Name: "config.json", Data: configData},
+		{Name: "refs/heads/main", Data: refData},
+	}
+
+	tarball := createTestTarball(t, members)
+	snapshot, err := ParseTarball(tarball)
+	if err != nil {
+		t.Fatalf("ParseTarball failed: %v", err)
+	}
+
+	// Create temporary git directory
+	tmpDir := t.TempDir()
+	gitDir := filepath.Join(tmpDir, "test.git")
+	if err := os.MkdirAll(gitDir, 0755); err != nil {
+		t.Fatalf("failed to create git dir: %v", err)
+	}
+
+	// Initialize minimal git repository
+	headPath := filepath.Join(gitDir, "HEAD")
+	if err := os.WriteFile(headPath, []byte("ref: refs/heads/main\n"), 0644); err != nil {
+		t.Fatalf("failed to write HEAD: %v", err)
+	}
+
+	// Materialize snapshot
+	if err := Materialize(gitDir, snapshot); err != nil {
+		t.Fatalf("Materialize failed: %v", err)
+	}
+
+	// Verify loose ref file exists at correct path
+	looseRefPath := filepath.Join(gitDir, "refs", "heads", "main")
+	refContent, err := os.ReadFile(looseRefPath)
+	if err != nil {
+		t.Fatalf("failed to read loose ref: %v", err)
+	}
+
+	if string(refContent) != "abc123def456\n" {
+		t.Errorf("loose ref content mismatch: got %q, want %q", string(refContent), "abc123def456\n")
+	}
+
+	// Verify packed-refs does NOT exist
+	packedRefsPath := filepath.Join(gitDir, "packed-refs")
+	if _, err := os.Stat(packedRefsPath); err == nil {
+		t.Error("packed-refs file should not exist")
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("unexpected error checking packed-refs: %v", err)
+	}
+}
+
+func TestMaterialize_SymbolicRef(t *testing.T) {
+	// Test materialization of symbolic refs
+	configData := []byte(`{
+		"core.repositoryformatversion": "1",
+		"remote.origin.promisor": "true",
+		"remote.origin.partialclonefilter": "blob:none"
+	}`)
+
+	// Symbolic ref (e.g., for HEAD)
+	refData := []byte("ref: refs/heads/main")
+
+	members := []TarballMember{
+		{Name: "objects/pack/pack-123.pack", Data: []byte("pack")},
+		{Name: "config.json", Data: configData},
+		{Name: "HEAD", Data: refData},
+	}
+
+	tarball := createTestTarball(t, members)
+	snapshot, err := ParseTarball(tarball)
+	if err != nil {
+		t.Fatalf("ParseTarball failed: %v", err)
+	}
+
+	// Create temporary git directory
+	tmpDir := t.TempDir()
+	gitDir := filepath.Join(tmpDir, "test.git")
+	if err := os.MkdirAll(gitDir, 0755); err != nil {
+		t.Fatalf("failed to create git dir: %v", err)
+	}
+
+	// Initialize minimal git repository (create a dummy HEAD for validation)
+	headPath := filepath.Join(gitDir, "HEAD")
+	if err := os.WriteFile(headPath, []byte("ref: refs/heads/master\n"), 0644); err != nil {
+		t.Fatalf("failed to write initial HEAD: %v", err)
+	}
+
+	// Materialize snapshot (should overwrite HEAD with our symbolic ref)
+	if err := Materialize(gitDir, snapshot); err != nil {
+		t.Fatalf("Materialize failed: %v", err)
+	}
+
+	// Verify symbolic ref is written correctly
+	headContent, err := os.ReadFile(headPath)
+	if err != nil {
+		t.Fatalf("failed to read HEAD: %v", err)
+	}
+
+	if string(headContent) != "ref: refs/heads/main" {
+		t.Errorf("symbolic ref content mismatch: got %q, want %q", string(headContent), "ref: refs/heads/main")
+	}
+
+	// Verify packed-refs does NOT exist
+	packedRefsPath := filepath.Join(gitDir, "packed-refs")
+	if _, err := os.Stat(packedRefsPath); err == nil {
+		t.Error("packed-refs file should not exist")
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("unexpected error checking packed-refs: %v", err)
+	}
+}
+
 func TestParseTarball_WithPromisorAndRev(t *testing.T) {
 	// Test that .promisor and .rev files are properly extracted
 	packData := []byte("pack data")

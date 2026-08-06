@@ -531,3 +531,84 @@ func CaptureEndpointContext(url string, attemptNumber int, statusCode int, respo
 		ResponseBody:  responseBody,
 	}, nil
 }
+
+// LogIngestError is the main logging function that integrates all components
+// and writes formatted log entries for ingest endpoint operations.
+//
+// This function brings together error serialization (from cg-2iff2), context
+// capture helpers (from cg-4zz54), and the Logger to create a complete
+// ingest error logging solution.
+//
+// Parameters:
+//   - logger: The Logger instance to write the log entry (can be nil, will use default)
+//   - email: User's email address being resolved (required)
+//   - githubUsername: Target GitHub username for resolution (required)
+//   - endpointURL: Full HTTP endpoint URL being called (required)
+//   - err: The error that occurred (can be nil for success cases)
+//   - statusCode: HTTP status code received (0 if not applicable)
+//   - responseBody: Response body content (empty if not available)
+//   - attemptNumber: Current retry attempt (1-based, required)
+//   - maxRetries: Maximum number of retry attempts configured (required)
+//   - retryDelayMs: Delay before next retry in milliseconds (0 for final failure)
+//   - totalDurationMs: Total time spent attempting in milliseconds
+//   - eventType: Type of event ("retry", "failure", or "success")
+//
+// Returns:
+//   - error: Any error that occurred during logging (nil indicates success)
+//
+// The function handles logging failures gracefully by returning the error
+// to the caller while ensuring the log entry is properly formatted and written.
+func LogIngestError(logger *Logger, email, githubUsername, endpointURL string, err error, statusCode int, responseBody string, attemptNumber, maxRetries, retryDelayMs int, totalDurationMs int64, eventType string) error {
+	// Use default logger if none provided
+	if logger == nil {
+		logger = NewLogger()
+	}
+
+	// Capture user context using the context capture helper (from cg-4zz54)
+	userCtx, userErr := CaptureUserContext(email, githubUsername)
+	if userErr != nil {
+		return fmt.Errorf("failed to capture user context: %w", userErr)
+	}
+
+	// Capture endpoint context using the context capture helper (from cg-4zz54)
+	endpointCtx, endpointErr := CaptureEndpointContext(endpointURL, attemptNumber, statusCode, responseBody)
+	if endpointErr != nil {
+		return fmt.Errorf("failed to capture endpoint context: %w", endpointErr)
+	}
+
+	// Serialize error using the error serialization helper (from cg-2iff2)
+	errorCtx := SerializeError(err)
+
+	// Assemble the complete LogEntry struct with all captured context
+	entry := &LogEntry{
+		Timestamp: time.Now().UTC(),
+		EventType: eventType,
+		User:      userCtx,
+		Endpoint:  endpointCtx,
+		Error:     errorCtx,
+		MaxRetries:      maxRetries,
+		RetryDelayMs:    retryDelayMs,
+		TotalDurationMs: totalDurationMs,
+	}
+
+	// Write the log entry using the appropriate method based on event type
+	var logErr error
+	switch eventType {
+	case "retry":
+		logErr = logger.LogRetryWithEntry(entry)
+	case "failure":
+		logErr = logger.LogFailureWithEntry(entry)
+	case "success":
+		logErr = logger.LogSuccessWithEntry(entry)
+	default:
+		// Default to retry for unknown event types
+		logErr = logger.LogRetryWithEntry(entry)
+	}
+
+	// Handle logging failures gracefully - return the error to the caller
+	if logErr != nil {
+		return fmt.Errorf("failed to write ingest log entry: %w", logErr)
+	}
+
+	return nil
+}

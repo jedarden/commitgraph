@@ -455,3 +455,28 @@ func parseConfigKey(key string) (string, string) {
 func RefFilenameFromPackFilename(packFilename string) string {
 	return strings.TrimSuffix(packFilename, ".pack") + ".ref"
 }
+
+// RefFileExistsInTarball checks if a .ref file exists in the tarball for a given .pack file.
+// It uses RefFilenameFromPackFilename to construct the expected .ref filename and searches
+// the provided member list for a matching file.
+//
+// Parameters:
+//   - packFilename: The .pack file name (e.g., "objects/pack/pack-abc123.pack")
+//   - members: Slice of TarballMember representing files in the tarball
+//
+// Returns:
+//   - true if the corresponding .ref file is found in the member list, false otherwise
+//
+// Example:
+//   packFile := "objects/pack/pack-abc123.pack"
+//   members := []TarballMember{{Name: "objects/pack/pack-abc123.ref", Data: ...}}
+//   found := RefFileExistsInTarball(packFile, members) // returns true
+func RefFileExistsInTarball(packFilename string, members []TarballMember) bool {
+	expectedRefName := RefFilenameFromPackFilename(packFilename)
+	for _, member := range members {
+		if member.Name == expectedRefName {
+			return true
+		}
+	}
+	return false
+}

@@ -1976,3 +1976,111 @@ func TestRefFilenameFromPackFilename(t *testing.T) {
 		})
 	}
 }
+
+func TestRefFileExistsInTarball(t *testing.T) {
+	tests := []struct {
+		name         string
+		packFilename string
+		members      []TarballMember
+		expected     bool
+	}{
+		{
+			name:         "ref file exists",
+			packFilename: "objects/pack/pack-abc123.pack",
+			members: []TarballMember{
+				{Name: "objects/pack/pack-abc123.pack", Data: []byte("pack data")},
+				{Name: "objects/pack/pack-abc123.ref", Data: []byte("ref data")},
+			},
+			expected: true,
+		},
+		{
+			name:         "ref file does not exist",
+			packFilename: "objects/pack/pack-abc123.pack",
+			members: []TarballMember{
+				{Name: "objects/pack/pack-abc123.pack", Data: []byte("pack data")},
+				{Name: "objects/pack/pack-abc123.idx", Data: []byte("idx data")},
+			},
+			expected: false,
+		},
+		{
+			name:         "empty member list",
+			packFilename: "objects/pack/pack-abc123.pack",
+			members:      []TarballMember{},
+			expected:     false,
+		},
+		{
+			name:         "ref file exists with different pack",
+			packFilename: "objects/pack/pack-abc123.pack",
+			members: []TarballMember{
+				{Name: "objects/pack/pack-def456.pack", Data: []byte("pack data")},
+				{Name: "objects/pack/pack-def456.ref", Data: []byte("ref data")},
+			},
+			expected: false,
+		},
+		{
+			name:         "multiple pack files with corresponding refs",
+			packFilename: "objects/pack/pack-abc123.pack",
+			members: []TarballMember{
+				{Name: "objects/pack/pack-abc123.pack", Data: []byte("pack data")},
+				{Name: "objects/pack/pack-abc123.ref", Data: []byte("ref data")},
+				{Name: "objects/pack/pack-def456.pack", Data: []byte("pack data")},
+				{Name: "objects/pack/pack-def456.ref", Data: []byte("ref data")},
+			},
+			expected: true,
+		},
+		{
+			name:         "ref file exists with path separator",
+			packFilename: "objects/pack/pack-abc123.pack",
+			members: []TarballMember{
+				{Name: "objects/pack/pack-abc123.pack", Data: []byte("pack data")},
+				{Name: "objects/pack/pack-abc123.ref", Data: []byte("ref data")},
+			},
+			expected: true,
+		},
+		{
+			name:         "pack file without objects/pack prefix",
+			packFilename: "pack-abc123.pack",
+			members: []TarballMember{
+				{Name: "pack-abc123.pack", Data: []byte("pack data")},
+				{Name: "pack-abc123.ref", Data: []byte("ref data")},
+			},
+			expected: true,
+		},
+		{
+			name:         "pack with double extension has corresponding ref",
+			packFilename: "objects/pack/pack-abc123.pack.promisor",
+			members: []TarballMember{
+				{Name: "objects/pack/pack-abc123.pack.promisor", Data: []byte("promisor data")},
+				{Name: "objects/pack/pack-abc123.pack.promisor.ref", Data: []byte("ref data")},
+			},
+			expected: true,
+		},
+		{
+			name:         "ref file with different case is not found",
+			packFilename: "objects/pack/pack-abc123.pack",
+			members: []TarballMember{
+				{Name: "objects/pack/pack-abc123.pack", Data: []byte("pack data")},
+				{Name: "objects/pack/pack-ABC123.REF", Data: []byte("ref data")},
+			},
+			expected: false,
+		},
+		{
+			name:         "ref file with similar but different name is not found",
+			packFilename: "objects/pack/pack-abc123.pack",
+			members: []TarballMember{
+				{Name: "objects/pack/pack-abc123.pack", Data: []byte("pack data")},
+				{Name: "objects/pack/pack-abc1234.ref", Data: []byte("ref data")},
+			},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := RefFileExistsInTarball(tt.packFilename, tt.members)
+			if result != tt.expected {
+				t.Errorf("RefFileExistsInTarball(%q, members) = %v, want %v", tt.packFilename, result, tt.expected)
+			}
+		})
+	}
+}

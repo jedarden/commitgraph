@@ -848,3 +848,91 @@ func TestParseTarball_WithPromisorAndRev(t *testing.T) {
 		t.Error("written rev data is not byte-identical")
 	}
 }
+
+func TestSetGitConfigValue_ReadOnlyConfigFile(t *testing.T) {
+	// Test error handling when config file is read-only
+	configData := []byte(`{
+			"core.repositoryformatversion": "1",
+			"remote.origin.promisor": "true",
+			"remote.origin.partialclonefilter": "blob:none"
+		}`)
+	refData := []byte("refs/heads/main abc123")
+
+	members := []TarballMember{
+		{Name: "objects/pack/pack-123.pack", Data: []byte("pack")},
+		{Name: "config.json", Data: configData},
+		{Name: "ref", Data: refData},
+	}
+
+	tarball := createTestTarball(t, members)
+	snapshot, err := ParseTarball(tarball)
+	if err != nil {
+		t.Fatalf("ParseTarball failed: %v", err)
+	}
+
+	// Create temporary git directory
+	tmpDir := t.TempDir()
+	gitDir := filepath.Join(tmpDir, "test.git")
+	if err := os.MkdirAll(gitDir, 0755); err != nil {
+		t.Fatalf("failed to create git dir: %v", err)
+	}
+
+	// Initialize minimal git repository
+	headPath := filepath.Join(gitDir, "HEAD")
+	if err := os.WriteFile(headPath, []byte("ref: refs/heads/main\n"), 0644); err != nil {
+		t.Fatalf("failed to write HEAD: %v", err)
+	}
+
+	// Create config file and make it read-only
+	configPath := filepath.Join(gitDir, "config")
+	if err := os.WriteFile(configPath, []byte("[core]\nrepositoryformatversion = 0\n"), 0444); err != nil {
+		t.Fatalf("failed to create config file: %v", err)
+	}
+
+	// Materialize should fail when trying to write to read-only config
+	err = Materialize(gitDir, snapshot)
+	if err == nil {
+		t.Error("expected error when config file is read-only")
+	}
+	// Error should indicate permission issue
+	if err != nil && !strings.Contains(err.Error(), "permission") && !strings.Contains(err.Error(), "denied") {
+		t.Logf("Got error (may vary by OS): %v", err)
+	}
+}
+
+func TestSetGitConfigValue_MissingConfigDirectory(t *testing.T) {
+	// Test error handling when config directory doesn't exist and can't be created
+	configData := []byte(`{
+			"core.repositoryformatversion": "1",
+			"remote.origin.promisor": "true",
+			"remote.origin.partialclonefilter": "blob:none"
+		}`)
+	refData := []byte("refs/heads/main abc123")
+
+	members := []TarballMember{
+		{Name: "objects/pack/pack-123.pack", Data: []byte("pack")},
+		{Name: "config.json", Data: configData},
+		{Name: "ref", Data: refData},
+	}
+
+	tarball := createTestTarball(t, members)
+	snapshot, err := ParseTarball(tarball)
+	if err != nil {
+		t.Fatalf("ParseTarball failed: %v", err)
+	}
+
+	// Create git directory but not as a directory (as a file instead)
+	tmpDir := t.TempDir()
+	gitDir := filepath.Join(tmpDir, "test.git")
+
+	// Create gitDir as a file instead of directory to cause write failure
+	if err := os.WriteFile(gitDir, []byte("not a directory"), 0644); err != nil {
+		t.Fatalf("failed to create file: %v", err)
+	}
+
+	// Materialize should fail when trying to write config
+	err = Materialize(gitDir, snapshot)
+	if err == nil {
+		t.Error("expected error when git dir is not a directory")
+	}
+}

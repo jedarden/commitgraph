@@ -1534,6 +1534,15 @@ func TestParseTarball_TruncatedPackFileWith11BytePackUsingHelper(t *testing.T) {
 			t.Errorf("expected context to mention minimum 12 bytes, got: %s", truncErr.Context)
 		}
 
+		// Validate the full error message contains member name and size information
+		errMsg := truncErr.Error()
+		if !strings.Contains(errMsg, "pack-test.pack") {
+			t.Errorf("error message should include pack file name, got: %s", errMsg)
+		}
+		if !strings.Contains(errMsg, "12") && !strings.Contains(errMsg, "minimum") {
+			t.Errorf("error message should mention size constraint ('12' or 'minimum'), got: %s", errMsg)
+		}
+
 		t.Logf("Successfully detected 11-byte pack file as truncated: %v", truncErr)
 	})
 }

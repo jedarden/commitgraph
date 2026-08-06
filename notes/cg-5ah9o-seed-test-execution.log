@@ -1,0 +1,22 @@
+2026/08/06 08:25:33 Opening claude-leaderboard SQLite database: cmd/seed-email-resolution/testdata/sample.db
+2026/08/06 08:25:33 Reading author_login_cache table...
+2026/08/06 08:25:33 Read 20 rows from author_login_cache (skipped 0 with empty login)
+2026/08/06 08:25:33 Valid rows to ingest: 20
+2026/08/06 08:25:33 Connecting to PostgreSQL at localhost:5432/commitgraph
+2026/08/06 08:25:33 email_resolution rows before ingest: 100
+2026/08/06 08:25:33 Ingesting 20 rows in batches of 1000...
+2026/08/06 08:25:33   Progress: 1/1 batches (20 rows)...
+2026/08/06 08:25:33 Ingest completed in 1.458615ms (13711.64 rows/sec)
+2026/08/06 08:25:33 
+=== Seed Summary ===
+2026/08/06 08:25:33 Rows read from author_login_cache: 20
+2026/08/06 08:25:33 Rows skipped (empty login):        0
+2026/08/06 08:25:33 Valid rows submitted:               20
+2026/08/06 08:25:33 email_resolution rows before:       100
+2026/08/06 08:25:33 email_resolution rows after:        100
+2026/08/06 08:25:33 Rows accepted (won conflict):       0
+2026/08/06 08:25:33 Rows rejected (lost conflict):      20
+2026/08/06 08:25:33 Source:                            'seed'
+2026/08/06 08:25:33 Batch size:                         1000
+2026/08/06 08:25:33 
+✓ Seed completed successfully

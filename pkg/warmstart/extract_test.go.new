@@ -1,0 +1,27 @@
+	// Create minimal valid config for promisor partial clone
+	configData := []byte(`{
+				"core.repositoryformatversion": "1",
+				"remote.origin.promisor": "true",
+				"remote.origin.partialclonefilter": "blob:none"
+			}`)
+
+	// Create minimal valid ref data (legacy format: "refpath SHA")
+	refData := []byte("refs/heads/main abc123")
+
+	// Extract base pack name for corresponding files
+	basePackName := strings.TrimSuffix(packName, ".pack")
+	idxName := basePackName + ".idx"
+	refFileName := basePackName + ".ref"
+
+	// Build tarball members with the custom pack content
+	// Include .idx and .ref files for a complete pack file set
+	members := []TarballMember{
+		{Name: packName, Data: packContent},
+		{Name: idxName, Data: []byte("test idx data")},
+		{Name: refFileName, Data: []byte("test ref data")},
+		{Name: "config.json", Data: configData},
+		{Name: "ref", Data: refData},
+	}
+
+	return createTestTarball(t, members)
+}

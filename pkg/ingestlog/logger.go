@@ -88,6 +88,7 @@ type LogEntry struct {
 	MaxRetries      int             `json:"max_retries"`                 // Maximum number of retry attempts configured
 	RetryDelayMs    int             `json:"retry_delay_ms,omitempty"`   // Delay before next retry in milliseconds
 	TotalDurationMs int64           `json:"total_duration_ms,omitempty"` // Total time spent attempting in milliseconds
+	Metadata        RequestMetadata `json:"metadata,omitempty"`          // Optional metadata for additional context
 }
 
 // Event represents a single ingest log event.
@@ -166,6 +167,13 @@ func (l *Logger) RecordFailure(entry *LogEntry) error {
 	l.stats.TotalFailures++
 	l.stats.LastUpdateTime = time.Now().UTC()
 	return l.LogFailureWithEntry(entry)
+}
+
+// RecordProcessed records a record as it enters the ingest flow.
+// This increments the TotalProcessed counter and updates the LastUpdateTime.
+func (l *Logger) RecordProcessed() {
+	l.stats.TotalProcessed++
+	l.stats.LastUpdateTime = time.Now().UTC()
 }
 
 // GetStats returns the current aggregate statistics.
@@ -971,16 +979,22 @@ func CaptureEndpointContext(endpoint, method, path, url string, attemptNumber in
 //   - retryDelayMs: Delay before next retry in milliseconds (0 for final failure)
 //   - totalDurationMs: Total time spent attempting in milliseconds
 //   - eventType: Type of event ("retry", "failure", or "success")
+//   - metadata: Optional metadata map for additional context (can be nil)
 //
 // Returns:
 //   - error: Any error that occurred during logging (nil indicates success)
 //
 // The function handles logging failures gracefully by returning the error
 // to the caller while ensuring the log entry is properly formatted and written.
-func LogIngestError(logger *Logger, email, githubUsername, userID, sessionID, requestID, endpoint, method, path, endpointURL string, err error, statusCode int, responseBody string, attemptNumber, maxRetries, retryDelayMs int, totalDurationMs int64, eventType string) error {
+func LogIngestError(logger *Logger, email, githubUsername, userID, sessionID, requestID, endpoint, method, path, endpointURL string, err error, statusCode int, responseBody string, attemptNumber, maxRetries, retryDelayMs int, totalDurationMs int64, eventType string, metadata RequestMetadata) error {
 	// Use default logger if none provided
 	if logger == nil {
 		logger = NewLogger()
+	}
+
+	// Validate metadata keys to prevent collisions with LogEntry fields
+	if err := ValidateMetadataKeys(metadata); err != nil {
+		return fmt.Errorf("metadata validation failed: %w", err)
 	}
 
 	// Capture userID using the userID capture helper
@@ -1044,6 +1058,7 @@ func LogIngestError(logger *Logger, email, githubUsername, userID, sessionID, re
 		MaxRetries:      maxRetries,
 		RetryDelayMs:    retryDelayMs,
 		TotalDurationMs: totalDurationMs,
+		Metadata:        metadata,
 	}
 
 	// Write the log entry using the appropriate method based on event type
@@ -1070,6 +1085,49 @@ func LogIngestError(logger *Logger, email, githubUsername, userID, sessionID, re
 
 // RequestMetadata contains optional metadata for ingest requests.
 type RequestMetadata map[string]interface{}
+
+// reservedLogEntryFields contains the names of fields that are reserved in LogEntry
+// and cannot be used as metadata keys to prevent key collisions.
+var reservedLogEntryFields = map[string]bool{
+	"timestamp":         true,
+	"event_type":        true,
+	"user":              true,
+	"endpoint":          true,
+	"error":             true,
+	"max_retries":       true,
+	"retry_delay_ms":    true,
+	"total_duration_ms": true,
+	"metadata":          true,
+}
+
+// ValidateMetadataKeys validates that metadata keys do not collide with reserved LogEntry fields.
+// This prevents metadata from overwriting core LogEntry fields during JSON marshaling.
+//
+// Parameters:
+//   - metadata: The metadata map to validate (can be nil or empty)
+//
+// Returns:
+//   - error: An error if a reserved key is found, nil otherwise
+//
+// The reserved keys correspond to the top-level JSON fields in LogEntry:
+//   - timestamp, event_type, user, endpoint, error, max_retries, retry_delay_ms, total_duration_ms, metadata
+//
+// Example:
+//   metadata := RequestMetadata{"batch_id": "123"} // valid
+//   metadata := RequestMetadata{"user": "collision"} // returns error
+func ValidateMetadataKeys(metadata RequestMetadata) error {
+	if metadata == nil {
+		return nil
+	}
+
+	for key := range metadata {
+		if reservedLogEntryFields[key] {
+			return fmt.Errorf("metadata key '%s' is reserved and cannot be used", key)
+		}
+	}
+
+	return nil
+}
 
 // ExtendedUserContext contains enhanced user identification information.
 type ExtendedUserContext struct {

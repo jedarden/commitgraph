@@ -3,6 +3,7 @@ package pg
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"time"
 
@@ -19,11 +20,40 @@ type IdentityIngester struct {
 // allowing for both transactional and non-transactional use.
 type Executor interface {
 	ExecContext(ctx context.Context, query string, args ...interface{}) (Result, error)
+	QueryRowContext(ctx context.Context, query string, args ...interface{}) Row
+	QueryContext(ctx context.Context, query string, args ...interface{}) (Rows, error)
 }
 
 // Result is the interface returned by ExecContext (subset of sql.Result).
 type Result interface {
 	RowsAffected() (int64, error)
+}
+
+// Row is the interface returned by QueryRowContext (subset of sql.Row).
+type Row interface {
+	Scan(dest ...interface{}) error
+}
+
+// SQLExecutor wraps *sql.DB to implement the Executor interface.
+type SQLExecutor struct {
+	db *sql.DB
+}
+
+// NewSQLExecutor creates a new SQLExecutor from *sql.DB.
+func NewSQLExecutor(db *sql.DB) *SQLExecutor {
+	return &SQLExecutor{db: db}
+}
+
+func (e *SQLExecutor) ExecContext(ctx context.Context, query string, args ...interface{}) (Result, error) {
+	return e.db.ExecContext(ctx, query, args...)
+}
+
+func (e *SQLExecutor) QueryRowContext(ctx context.Context, query string, args ...interface{}) Row {
+	return e.db.QueryRowContext(ctx, query, args...)
+}
+
+func (e *SQLExecutor) QueryContext(ctx context.Context, query string, args ...interface{}) (Rows, error) {
+	return e.db.QueryContext(ctx, query, args...)
 }
 
 // NewIdentityIngester creates a new PostgreSQL identity ingester.

@@ -160,8 +160,13 @@ Hand-curated aliases needed no extraction — they live in
 Pointers only — each item is discussed in full where it's flagged inline
 elsewhere in this document.
 
-- **Spot fallback node class** if `mh.vs1.large-ord` doesn't fulfill on the
-  bid market (Postgres provisioning section; Phase 0).
+- ~~**Spot fallback node class if `mh.vs1.large-ord` doesn't fulfill on the
+  bid market**~~ — **resolved 2026-08-06: `ch.vs1.large-ord` with 15-minute fallback trigger.**
+  See `docs/notes/cg-2ypl-spot-fallback-node-class.md` for full rationale.
+  Fallback to `ch.vs1.large-ord` (4 CPU / 30GB, compute-optimized) at p50 $0.011/hr
+  if target class remains unfulfilled for 15 minutes after provisioning attempt.
+  Same "large" size class with ~1.8x p50 price (~$3.60/month delta per instance);
+  lower market price ($0.001 vs $0.005/hr) suggests better availability.
 - **`mh.vs1.large-ord` bid price**: a low bid (mirroring the current
   `ch.vs1.medium-ord` nodepool's $0.001/hr) rather than the $0.006/hr p50 is
   the reasonable default, but hasn't been explicitly decided (Postgres

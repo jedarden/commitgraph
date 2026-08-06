@@ -1,0 +1,3 @@
+2026/08/06 03:57:12 Opening claude-leaderboard database: cmd/seed-author-login-cache/testdata/sample.db
+2026/08/06 03:57:12 Connecting to PostgreSQL at localhost:5432/commitgraph_test
+2026/08/06 03:57:12 error: PostgreSQL ping failed: pq: role "test_user" does not exist (28000)

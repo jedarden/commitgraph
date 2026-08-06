@@ -1,0 +1,3 @@
+2026/08/06 03:56:23 Opening claude-leaderboard database: cmd/seed-author-login-cache/testdata/sample.db
+2026/08/06 03:56:23 Connecting to PostgreSQL at localhost:5432/commitgraph_test
+2026/08/06 03:56:23 error: PostgreSQL ping failed: pq: SSL is not enabled on the server

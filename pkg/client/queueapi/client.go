@@ -6,10 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"io"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"time"
+
+	"github.com/jedarden/commitgraph/pkg/ingestlog"
 )
 
 // Client is a client for the queue-api ingest endpoint.
@@ -18,6 +21,7 @@ type Client struct {
 	httpClient *http.Client
 	authToken  string
 	maxRetries int
+	logger     *ingestlog.Logger // Optional structured logger
 }
 
 // DefaultMaxRetries is the maximum number of retry attempts for ingest endpoint failures.

@@ -1046,6 +1046,16 @@ ranking table this section already names as the fallback, not before. This
 deliberately doesn't build that materialization now — the SLO decides
 whether it's ever needed at all, rather than assuming it will be.
 
+**Concrete SLO (cg-1179): AGG-CORE ranking query p99 < 2s, measured over
+each trailing 15-minute leaderboard-publish cycle.** This is the sole
+re-evaluation trigger for moving from direct-Postgres-SQL ranking to a
+materialized/precomputed ranking table. Row count is explicitly NOT the
+trigger — do not introduce a row-count-based threshold in the future.
+The materialized ranking table is NOT built as part of this work — it
+is a future action gated on SLO breach. When the ranking query's p99
+latency exceeds 2s over any 15-minute cycle, that is the signal to build
+the materialized ranking table.
+
 Write pattern per repo, one transaction: upsert `repos` and any new `users`
 rows to obtain surrogate ids, `DELETE ... WHERE repo_id=$1` on
 `repo_user_daily_tool`, then a single set-based bulk `INSERT` via

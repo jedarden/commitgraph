@@ -1,0 +1,4 @@
+2026/08/06 02:56:25 Opening claude-leaderboard database: cmd/seed-author-login-cache/testdata/sample.db
+2026/08/06 02:56:25 Connecting to PostgreSQL at localhost:5432/commitgraph
+2026/08/06 02:56:25 Reading author_login_cache table...
+2026/08/06 02:56:25 error: failed to read author_login_cache: could not detect email/login columns

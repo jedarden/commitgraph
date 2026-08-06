@@ -4,6 +4,7 @@ package service
 import (
 	"context"
 	"database/sql"
+	"fmt"
 )
 
 // RowScanner is the interface for scanning row results.
@@ -16,6 +17,24 @@ type RowScanner interface {
 // This matches database/sql's DB and Conn interfaces.
 type Querier interface {
 	QueryRowContext(ctx context.Context, query string, args ...interface{}) RowScanner
+}
+
+// Execer is the database interface for executing statements.
+type Execer interface {
+	ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error)
+}
+
+// Transactor is the interface for database transactions.
+type Transactor interface {
+	Execer
+	Commit() error
+	Rollback() error
+}
+
+// Transactioner is the interface for beginning transactions.
+type Transactioner interface {
+	QueryRowContext(ctx context.Context, query string, args ...interface{}) RowScanner
+	BeginTx(ctx context.Context, opts *sql.TxOptions) (Transactor, error)
 }
 
 // RepoChecker validates repo existence and related business rules.
@@ -80,7 +99,114 @@ func (s *SQLQuerier) QueryRowContext(ctx context.Context, query string, args ...
 	return &sqlRowScanner{row: s.db.QueryRowContext(ctx, query, args...)}
 }
 
+// SQLTx wraps *sql.Tx to implement Transactor.
+type SQLTx struct {
+	tx *sql.Tx
+}
+
+func (s *SQLTx) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+	return s.tx.ExecContext(ctx, query, args...)
+}
+
+func (s *SQLTx) Commit() error {
+	return s.tx.Commit()
+}
+
+func (s *SQLTx) Rollback() error {
+	return s.tx.Rollback()
+}
+
+// SQLDB wraps *sql.DB to implement Transactioner.
+type SQLDB struct {
+	db *sql.DB
+}
+
+func (s *SQLDB) QueryRowContext(ctx context.Context, query string, args ...interface{}) RowScanner {
+	return &sqlRowScanner{row: s.db.QueryRowContext(ctx, query, args...)}
+}
+
+func (s *SQLDB) BeginTx(ctx context.Context, opts *sql.TxOptions) (Transactor, error) {
+	tx, err := s.db.BeginTx(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	return &SQLTx{tx: tx}, nil
+}
+
 // NewRepoCheckerFromDB creates a RepoChecker from a *sql.DB.
 func NewRepoCheckerFromDB(db *sql.DB) *RepoChecker {
 	return NewRepoChecker(&SQLQuerier{db: db})
+}
+
+// SetRepoExclusion sets the exclusion status for a repository.
+//
+// This function performs the following operations within a database transaction:
+// 1. Validates that the repo exists (using RepoExists)
+// 2. Validates that the reason is not empty
+// 3. Sets excluded_at to NOW() and excluded_reason to the provided reason
+//
+// Parameters:
+//   - ctx: Context for the operation
+//   - db: Database connection (will be used to create a transaction)
+//   - provider: Repository provider (e.g., "github")
+//   - repoFullName: Repository full name (e.g., "owner/repo")
+//   - reason: Human-readable reason for exclusion (must not be empty)
+//
+// Returns:
+//   - nil on success
+//   - error if validation fails or database operation fails
+//
+// The function uses a database transaction to ensure atomicity:
+// - On success, the transaction is committed
+// - On error, the transaction is rolled back
+func SetRepoExclusion(ctx context.Context, db Transactioner, provider, repoFullName, reason string) error {
+	// Validate reason is not empty
+	if reason == "" {
+		return fmt.Errorf("exclusion reason cannot be empty")
+	}
+
+	// Check if repo exists
+	checker := NewRepoChecker(db)
+	if !checker.RepoExists(ctx, provider, repoFullName) {
+		return fmt.Errorf("repository %s/%s not found", provider, repoFullName)
+	}
+
+	// Start transaction
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+
+	// Ensure rollback happens on error
+	defer tx.Rollback()
+
+	// Update the repo with exclusion information
+	query := `
+		UPDATE repos
+		SET excluded_at = NOW(),
+		    excluded_reason = $1
+		WHERE provider = $2 AND repo_full_name = $3
+	`
+
+	result, err := tx.ExecContext(ctx, query, reason, provider, repoFullName)
+	if err != nil {
+		return fmt.Errorf("failed to update repo exclusion: %w", err)
+	}
+
+	// Verify that exactly one row was affected
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return fmt.Errorf("no rows updated - repo may have been deleted")
+	}
+
+	// Commit the transaction
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return nil
 }

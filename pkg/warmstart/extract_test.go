@@ -1494,3 +1494,46 @@ func TestMakeMockTarballWithPack_CustomPackName(t *testing.T) {
 
 	t.Logf("Custom pack name correctly set: %s", snapshot.PackFiles[0].Name)
 }
+
+func TestParseTarball_TruncatedPackFileWith11BytePackUsingHelper(t *testing.T) {
+	t.Run("11-byte-pack-file-raises-truncated-error", func(t *testing.T) {
+		// Create tarball with exactly 11-byte pack file using the helper from cg-2gh0m
+		// 11 bytes is below the 12-byte minimum header size
+		elevenBytePackData := []byte("PACK1234567") // 11 bytes - just under minimum
+
+		tarball := makeMockTarballWithPack(t, elevenBytePackData, "")
+
+		// Process the tarball
+		_, err := ParseTarball(tarball)
+
+		// Assert Truncated error is returned
+		if err == nil {
+			t.Fatal("expected Truncated error for 11-byte pack file, got nil")
+		}
+
+		// Verify it's a Truncated error
+		var truncErr *Error
+		if !errors.As(err, &truncErr) {
+			t.Fatalf("expected *Error type, got %T: %v", err, err)
+		}
+
+		if truncErr.Kind != Truncated {
+			t.Errorf("expected Truncated error kind, got %v", truncErr.Kind)
+		}
+
+		// Verify error details
+		if truncErr.MemberName != "objects/pack/pack-test.pack" {
+			t.Errorf("expected member name 'objects/pack/pack-test.pack', got %s", truncErr.MemberName)
+		}
+
+		if !strings.Contains(truncErr.Context, "11 bytes") {
+			t.Errorf("expected context to mention '11 bytes', got: %s", truncErr.Context)
+		}
+
+		if !strings.Contains(truncErr.Context, "minimum 12 bytes") {
+			t.Errorf("expected context to mention minimum 12 bytes, got: %s", truncErr.Context)
+		}
+
+		t.Logf("Successfully detected 11-byte pack file as truncated: %v", truncErr)
+	})
+}

@@ -295,6 +295,7 @@ func TestMaterialize_ByteIdenticalPackFiles(t *testing.T) {
 	members := []TarballMember{
 		{Name: "objects/pack/pack-123.pack", Data: packData},
 		{Name: "objects/pack/pack-123.idx", Data: idxData},
+		{Name: "objects/pack/pack-123.ref", Data: []byte("test ref data")},
 		{Name: "config.json", Data: configData},
 		{Name: "ref", Data: refData},
 	}
@@ -355,6 +356,8 @@ func TestMaterialize_LooseRefNotPackedRefs(t *testing.T) {
 
 	members := []TarballMember{
 		{Name: "objects/pack/pack-123.pack", Data: []byte("PACK123456789")}, // 12 bytes, minimum valid header
+		{Name: "objects/pack/pack-123.idx", Data: []byte("test idx data")},
+		{Name: "objects/pack/pack-123.ref", Data: []byte("test ref data")},
 		{Name: "config.json", Data: configData},
 		{Name: "ref", Data: refData},
 	}
@@ -413,6 +416,8 @@ func TestMaterialize_GitConfigValuesSet(t *testing.T) {
 
 	members := []TarballMember{
 		{Name: "objects/pack/pack-123.pack", Data: []byte("PACK123456789")},
+		{Name: "objects/pack/pack-123.idx", Data: []byte("test idx data")},
+		{Name: "objects/pack/pack-123.ref", Data: []byte("test ref data")},
 		{Name: "config.json", Data: configData},
 		{Name: "ref", Data: refData},
 	}
@@ -475,6 +480,8 @@ func TestMaterialize_NotAGitRepo(t *testing.T) {
 
 	members := []TarballMember{
 		{Name: "objects/pack/pack-123.pack", Data: []byte("PACK123456789")},
+		{Name: "objects/pack/pack-123.idx", Data: []byte("test idx data")},
+		{Name: "objects/pack/pack-123.ref", Data: []byte("test ref data")},
 		{Name: "config.json", Data: configData},
 		{Name: "ref", Data: refData},
 	}
@@ -511,9 +518,13 @@ func TestMaterialize_GitFsck(t *testing.T) {
 		"remote.origin.partialclonefilter": "blob:none"
 	}`)
 	refData := []byte("refs/heads/main abc123def456789")
+	idxData := []byte("test idx data")
+	refFileData := []byte("test ref data")
 
 	members := []TarballMember{
-		{Name: "objects/pack/pack-123.pack", Data: []byte("minimal pack data")},
+		{Name: "objects/pack/pack-123.pack", Data: []byte("PACK123456789")},
+		{Name: "objects/pack/pack-123.idx", Data: idxData},
+		{Name: "objects/pack/pack-123.ref", Data: refFileData},
 		{Name: "config.json", Data: configData},
 		{Name: "ref", Data: refData},
 	}
@@ -607,9 +618,13 @@ func TestParseTarball_RefAtOriginalPath(t *testing.T) {
 
 	// Ref is stored at its original path with just the SHA as content
 	refData := []byte("abc123def456\n")
+	idxData := []byte("test idx data")
+	refFileData := []byte("test ref data")
 
 	members := []TarballMember{
 		{Name: "objects/pack/pack-123.pack", Data: []byte("PACK123456789")}, // 12 bytes, minimum valid header
+		{Name: "objects/pack/pack-123.idx", Data: idxData},
+		{Name: "objects/pack/pack-123.ref", Data: refFileData},
 		{Name: "config.json", Data: configData},
 		{Name: "refs/heads/main", Data: refData},
 	}
@@ -640,9 +655,13 @@ func TestParseTarball_SymbolicRef(t *testing.T) {
 
 	// Symbolic ref content
 	refData := []byte("ref: refs/heads/main")
+	idxData := []byte("test idx data")
+	refFileData := []byte("test ref data")
 
 	members := []TarballMember{
 		{Name: "objects/pack/pack-123.pack", Data: []byte("PACK123456789")},
+		{Name: "objects/pack/pack-123.idx", Data: idxData},
+		{Name: "objects/pack/pack-123.ref", Data: refFileData},
 		{Name: "config.json", Data: configData},
 		{Name: "HEAD", Data: refData},
 	}
@@ -673,9 +692,13 @@ func TestParseTarball_LegacyRefFormat(t *testing.T) {
 
 	// Legacy format: "ref" file contains "refs/heads/main SHA"
 	refData := []byte("refs/heads/main abc123def456")
+	idxData := []byte("test idx data")
+	refFileData := []byte("test ref data")
 
 	members := []TarballMember{
 		{Name: "objects/pack/pack-123.pack", Data: []byte("PACK123456789")},
+		{Name: "objects/pack/pack-123.idx", Data: idxData},
+		{Name: "objects/pack/pack-123.ref", Data: refFileData},
 		{Name: "config.json", Data: configData},
 		{Name: "ref", Data: refData},
 	}
@@ -708,6 +731,8 @@ func TestMaterialize_RefAtOriginalPath(t *testing.T) {
 
 	members := []TarballMember{
 		{Name: "objects/pack/pack-123.pack", Data: []byte("PACK123456789")}, // 12 bytes, minimum valid header
+		{Name: "objects/pack/pack-123.idx", Data: []byte("test idx data")},
+		{Name: "objects/pack/pack-123.ref", Data: []byte("test ref data")},
 		{Name: "config.json", Data: configData},
 		{Name: "refs/heads/main", Data: refData},
 	}
@@ -2225,5 +2250,208 @@ func TestCollectMissingRefFiles(t *testing.T) {
 
 			t.Logf("PASS: %s", tt.description)
 		})
+	}
+}
+
+func TestValidateRefFiles(t *testing.T) {
+	tests := []struct {
+		name        string
+		packFiles   []string
+		setupFiles  map[string]string // map filename -> content (empty string creates empty file)
+		expected    []string
+		description string
+	}{
+		{
+			name:        "empty input",
+			packFiles:   []string{},
+			setupFiles:  map[string]string{},
+			expected:    []string{},
+			description: "Empty input returns empty slice",
+		},
+		{
+			name:      "single pack with ref present",
+			packFiles: []string{"objects/pack/pack-abc.pack"},
+			setupFiles: map[string]string{
+				"objects/pack/pack-abc.pack": "pack data",
+				"objects/pack/pack-abc.ref":  "ref data",
+			},
+			expected:    []string{},
+			description: "Returns empty when all ref files present",
+		},
+		{
+			name:      "single pack with ref missing",
+			packFiles: []string{"objects/pack/pack-abc.pack"},
+			setupFiles: map[string]string{
+				"objects/pack/pack-abc.pack": "pack data",
+			},
+			expected:    []string{"objects/pack/pack-abc.ref"},
+			description: "Returns missing ref file when not present",
+		},
+		{
+			name:      "multiple packs with all refs present",
+			packFiles: []string{
+				"objects/pack/pack-abc.pack",
+				"objects/pack/pack-def.pack",
+				"objects/pack/pack-ghi.pack",
+			},
+			setupFiles: map[string]string{
+				"objects/pack/pack-abc.pack": "pack data 1",
+				"objects/pack/pack-abc.ref":  "ref data 1",
+				"objects/pack/pack-def.pack": "pack data 2",
+				"objects/pack/pack-def.ref":  "ref data 2",
+				"objects/pack/pack-ghi.pack": "pack data 3",
+				"objects/pack/pack-ghi.ref":  "ref data 3",
+			},
+			expected:    []string{},
+			description: "All ref files present returns empty",
+		},
+		{
+			name:      "multiple packs with some refs missing",
+			packFiles: []string{
+				"objects/pack/pack-abc.pack",
+				"objects/pack/pack-def.pack",
+				"objects/pack/pack-ghi.pack",
+			},
+			setupFiles: map[string]string{
+				"objects/pack/pack-abc.pack": "pack data 1",
+				"objects/pack/pack-abc.ref":  "ref data 1",
+				"objects/pack/pack-def.pack": "pack data 2",
+				"objects/pack/pack-ghi.pack": "pack data 3",
+				"objects/pack/pack-ghi.ref":  "ref data 3",
+			},
+			expected:    []string{"objects/pack/pack-def.ref"},
+			description: "Returns only missing ref files",
+		},
+		{
+			name:      "all refs missing",
+			packFiles: []string{
+				"objects/pack/pack-abc.pack",
+				"objects/pack/pack-def.pack",
+			},
+			setupFiles: map[string]string{
+				"objects/pack/pack-abc.pack": "pack data 1",
+				"objects/pack/pack-def.pack": "pack data 2",
+			},
+			expected:    []string{"objects/pack/pack-abc.ref", "objects/pack/pack-def.ref"},
+			description: "Returns all missing ref files in order",
+		},
+		{
+			name:      "duplicate pack names",
+			packFiles: []string{
+				"objects/pack/pack-abc.pack",
+				"objects/pack/pack-abc.pack",
+			},
+			setupFiles: map[string]string{
+				"objects/pack/pack-abc.pack": "pack data",
+			},
+			expected:    []string{"objects/pack/pack-abc.ref", "objects/pack/pack-abc.ref"},
+			description: "Duplicates are checked independently, may appear twice",
+		},
+		{
+			name:      "pack file without extension",
+			packFiles: []string{"objects/pack/pack-abc"},
+			setupFiles: map[string]string{
+				"objects/pack/pack-abc": "pack data",
+			},
+			expected:    []string{"objects/pack/pack-abc.ref"},
+			description: "Non-.pack extension still processed (appends .ref)",
+		},
+		{
+			name:      "pack file with double extension",
+			packFiles: []string{"objects/pack/pack-abc.pack.promisor"},
+			setupFiles: map[string]string{
+				"objects/pack/pack-abc.pack.promisor": "pack data",
+			},
+			expected:    []string{"objects/pack/pack-abc.pack.promisor.ref"},
+			description: "Double extensions handled correctly",
+		},
+		{
+			name:      "absolute paths",
+			packFiles: []string{"/absolute/path/pack.pack"},
+			setupFiles: map[string]string{
+				"/absolute/path/pack.pack": "pack data",
+			},
+			expected:    []string{"/absolute/path/pack.ref"},
+			description: "Absolute paths work correctly",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create a temporary directory for this test case
+			tempDir := t.TempDir()
+
+			// Create all files in temp directory
+			for filename, content := range tt.setupFiles {
+				fullPath := filepath.Join(tempDir, filename)
+				// Create parent directories if needed
+				if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+					t.Fatalf("failed to create directory: %v", err)
+				}
+				// Create the file
+				if err := os.WriteFile(fullPath, []byte(content), 0644); err != nil {
+					t.Fatalf("failed to create file %s: %v", filename, err)
+				}
+			}
+
+			// Convert pack file paths to full paths for testing
+			fullPackPaths := make([]string, len(tt.packFiles))
+			for i, pf := range tt.packFiles {
+				fullPackPaths[i] = filepath.Join(tempDir, pf)
+			}
+
+			// Convert expected paths to full paths
+			fullExpected := make([]string, len(tt.expected))
+			for i, e := range tt.expected {
+				fullExpected[i] = filepath.Join(tempDir, e)
+			}
+
+			// Run the function
+			result := ValidateRefFiles(fullPackPaths)
+
+			// Compare lengths first
+			if len(result) != len(fullExpected) {
+				t.Errorf("ValidateRefFiles() returned %d items, want %d", len(result), len(fullExpected))
+				t.Logf("Got:      %v", result)
+				t.Logf("Expected: %v", fullExpected)
+				return
+			}
+
+			// Compare content (order matters)
+			for i := range result {
+				if result[i] != fullExpected[i] {
+					t.Errorf("ValidateRefFiles()[%d] = %q, want %q", i, result[i], fullExpected[i])
+					t.Logf("Got:      %v", result)
+					t.Logf("Expected: %v", fullExpected)
+					return
+				}
+			}
+
+			t.Logf("PASS: %s", tt.description)
+		})
+	}
+}
+
+func TestValidateRefFiles_DirectoryDoesNotExist(t *testing.T) {
+	// Test behavior when pack file directories don't exist
+	packFiles := []string{
+		"/nonexistent/path/pack-abc.pack",
+		"/another/missing/path/pack-def.pack",
+	}
+
+	result := ValidateRefFiles(packFiles)
+
+	// Should report both as missing since the directories don't exist
+	if len(result) != 2 {
+		t.Errorf("ValidateRefFiles() returned %d items, want 2", len(result))
+		t.Logf("Got: %v", result)
+	}
+
+	// Verify the expected ref files are reported as missing
+	expected := []string{"/nonexistent/path/pack-abc.ref", "/another/missing/path/pack-def.ref"}
+	for i, e := range expected {
+		if result[i] != e {
+			t.Errorf("ValidateRefFiles()[%d] = %q, want %q", i, result[i], e)
+		}
 	}
 }

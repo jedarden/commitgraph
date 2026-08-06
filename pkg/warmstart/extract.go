@@ -516,3 +516,42 @@ func CollectMissingRefFiles(members []TarballMember) []string {
 
 	return missingRefFiles
 }
+
+// ValidateRefFiles validates .ref file existence for a given list of .pack files.
+// For each .pack file, it constructs the expected .ref filename and checks if it exists
+// on the filesystem using os.Stat.
+//
+// Parameters:
+//   - packFiles: List of .pack file paths (e.g., []string{"objects/pack/pack-abc123.pack"})
+//
+// Returns:
+//   - []string: List of missing .ref file names (empty if all present)
+//
+// Edge cases handled:
+//   - Empty input: returns empty slice
+//   - Duplicate pack names: each is checked independently (duplicate .ref entries possible)
+//   - Files with non-.pack extensions: still processed (constructs .ref by appending if no .pack suffix)
+//   - Filesystem errors: treats non-existence as missing; other errors are ignored
+//
+// Example:
+//   packFiles := []string{"objects/pack/pack-abc.pack", "objects/pack/pack-def.pack"}
+//   // If only pack-abc.ref exists on filesystem:
+//   missing := ValidateRefFiles(packFiles) // returns ["objects/pack/pack-def.ref"]
+func ValidateRefFiles(packFiles []string) []string {
+	var missingRefFiles []string
+
+	for _, packFile := range packFiles {
+		// Construct expected .ref filename using existing helper
+		refFile := RefFilenameFromPackFilename(packFile)
+
+		// Check if .ref file exists on filesystem
+		if _, err := os.Stat(refFile); err != nil {
+			if os.IsNotExist(err) {
+				missingRefFiles = append(missingRefFiles, refFile)
+			}
+			// Other errors (permission, etc.) are ignored - file not accessible treated as missing
+		}
+	}
+
+	return missingRefFiles
+}

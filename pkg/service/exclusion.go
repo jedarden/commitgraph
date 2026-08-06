@@ -123,6 +123,11 @@ type SQLDB struct {
 	db *sql.DB
 }
 
+// NewSQLDB creates a new SQLDB from *sql.DB for use with service functions.
+func NewSQLDB(db *sql.DB) *SQLDB {
+	return &SQLDB{db: db}
+}
+
 func (s *SQLDB) QueryRowContext(ctx context.Context, query string, args ...interface{}) RowScanner {
 	return &sqlRowScanner{row: s.db.QueryRowContext(ctx, query, args...)}
 }

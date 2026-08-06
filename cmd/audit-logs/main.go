@@ -174,11 +174,17 @@ func handleQuery(repoID int64, startDate, endDate, actor, eventType string, limi
 		opts.EventType = eventType
 	}
 
+	// Log query invocation
+	log.Printf("Querying audit logs: repo_id=%d, start_time=%v, end_time=%v, actor=%s, event_type=%s, limit=%d, offset=%d",
+		repoID, parsedStart, parsedEnd, actor, eventType, limit, offset)
+
 	// Query audit logs
 	result, err := querier.QueryAuditLogs(ctx, repoID, opts)
 	if err != nil {
 		log.Fatalf("error: failed to query audit logs: %v", err)
 	}
+
+	log.Printf("Query completed: returned %d records (total count: %d)", len(result.Records), result.TotalCount)
 
 	// Output results
 	if *outputFormat == "json" {

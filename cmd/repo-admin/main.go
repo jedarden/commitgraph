@@ -6,24 +6,23 @@
 //
 // Usage:
 //
-//	repo-admin exclude github owner/repo "false attribution report from user@example.com"
-//	repo-admin clear github owner/repo
-//	repo-admin status github owner/repo
-//	repo-admin list
+//	repo-admin -provider github -repo owner/repo -reason "false attribution report from user@example.com"
+//	repo-admin -provider github -repo owner/repo -clear
 //
 // Every exclusion/un-exclusion action is logged to the audit log.
 package main
 
 import (
 	"context"
+	"database/sql"
 	"flag"
 	"fmt"
 	"log"
 	"os"
-	"time"
 
+	_ "github.com/lib/pq"
 	"github.com/jedarden/commitgraph/pkg/audit"
-	"github.com/jedarden/commitgraph/pkg/pg"
+	"github.com/jedarden/commitgraph/pkg/service"
 )
 
 var (
@@ -35,6 +34,12 @@ var (
 	dbPassword = flag.String("db-password", "", "PostgreSQL password (required, use env var in production)")
 	sslMode    = flag.String("sslmode", "require", "PostgreSQL SSL mode")
 
+	// Operation flags
+	provider = flag.String("provider", "", "Repository provider (required, e.g., 'github')")
+	repo     = flag.String("repo", "", "Repository full name in owner/repo format (required)")
+	reason   = flag.String("reason", "", "Reason for exclusion (required when setting, ignored when clearing)")
+	clear    = flag.Bool("clear", false, "Clear exclusion instead of setting it")
+
 	// Operator flag (for audit logging)
 	operator = flag.String("operator", "", "Operator performing this action (required for audit)")
 )
@@ -43,11 +48,7 @@ func main() {
 	flag.Usage = usage
 	flag.Parse()
 
-	if flag.NArg() < 1 {
-		log.Fatal("error: command required (exclude, clear, status, list)")
-	}
-
-	// Validate required flags
+	// Validate required connection flags
 	if *dbHost == "" {
 		log.Fatal("error: -db-host is required")
 	}
@@ -57,142 +58,93 @@ func main() {
 	if *dbPassword == "" {
 		log.Fatal("error: -db-password is required")
 	}
+
+	// Validate required operation flags
+	if *provider == "" {
+		log.Fatal("error: -provider is required")
+	}
+	if *repo == "" {
+		log.Fatal("error: -repo is required")
+	}
+
+	// Validate operator flag (required for audit logging)
 	if *operator == "" {
 		log.Fatal("error: -operator is required (for audit logging)")
 	}
 
+	// Validate reason flag (required when setting, not when clearing)
+	if !*clear && *reason == "" {
+		log.Fatal("error: -reason is required when setting an exclusion")
+	}
+
 	ctx := context.Background()
 
-	// Connect to database (would use database/sql in real implementation)
-	// For now, this is a placeholder that demonstrates the structure
-	excluder := pg.NewRepoExcluder(nil /* real DB connection */)
+	// Connect to database
+	connStr := fmt.Sprintf("host=%s port=%s dbname=%s user=%s password=%s sslmode=%s",
+		*dbHost, *dbPort, *dbName, *dbUser, *dbPassword, *sslMode)
 
-	command := flag.Arg(0)
+	db, err := sql.Open("postgres", connStr)
+	if err != nil {
+		log.Fatalf("error: failed to connect to PostgreSQL: %v\n", err)
+	}
+	defer db.Close()
 
-	switch command {
-	case "exclude":
-		if flag.NArg() != 4 {
-			log.Fatalf("usage: repo-admin exclude <provider> <repo-full-name> <reason>\n")
-		}
-		doExclude(ctx, excluder, flag.Arg(1), flag.Arg(2), flag.Arg(3))
+	// Verify connection works
+	if err := db.Ping(); err != nil {
+		log.Fatalf("error: PostgreSQL ping failed: %v\n", err)
+	}
 
-	case "clear":
-		if flag.NArg() != 3 {
-			log.Fatalf("usage: repo-admin clear <provider> <repo-full-name>\n")
-		}
-		doClear(ctx, excluder, flag.Arg(1), flag.Arg(2))
+	// Wrap DB for use with service layer
+	sqlDB := service.NewSQLDB(db)
 
-	case "status":
-		if flag.NArg() != 3 {
-			log.Fatalf("usage: repo-admin status <provider> <repo-full-name>\n")
-		}
-		doStatus(ctx, excluder, flag.Arg(1), flag.Arg(2))
-
-	case "list":
-		if flag.NArg() != 1 {
-			log.Fatalf("usage: repo-admin list\n")
-		}
-		doList(ctx, excluder)
-
-	default:
-		log.Fatalf("error: unknown command %q\n", command)
+	if *clear {
+		doClear(ctx, sqlDB)
+	} else {
+		doExclude(ctx, sqlDB)
 	}
 }
 
-func doExclude(ctx context.Context, excluder *pg.RepoExcluder, provider, repoFullName, reason string) {
-	now := time.Now()
-	req := pg.ExclusionRequest{
-		Provider:       provider,
-		RepoFullName:   repoFullName,
-		ExcludedAt:     &now,
-		ExcludedReason: reason,
-		Operator:       *operator,
-	}
+func doExclude(ctx context.Context, db *service.SQLDB) {
+	log.Printf("Setting exclusion for %s/%s...\n", *provider, *repo)
 
-	rows, err := excluder.ApplyExclusion(ctx, req)
+	err := service.SetRepoExclusion(ctx, db, *provider, *repo, *reason)
 	if err != nil {
-		log.Fatalf("error: %v\n", err)
+		log.Fatalf("error: failed to set exclusion: %v\n", err)
 	}
 
-	if rows == 0 {
-		log.Printf("warning: repo %s/%s not found in database\n", provider, repoFullName)
-	} else {
-		log.Printf("excluded %s/%s (reason: %s)\n", provider, repoFullName, reason)
-	}
-
-	// Audit log entry (q-threat-exclusion-audit-log)
-	auditLog("exclude", provider, repoFullName, reason, rows)
-}
-
-func doClear(ctx context.Context, excluder *pg.RepoExcluder, provider, repoFullName string) {
-	req := pg.ExclusionRequest{
-		Provider:     provider,
-		RepoFullName: repoFullName,
-		ExcludedAt:   nil, // NULL for clear
-		Operator:     *operator,
-	}
-
-	rows, err := excluder.ApplyExclusion(ctx, req)
-	if err != nil {
-		log.Fatalf("error: %v\n", err)
-	}
-
-	if rows == 0 {
-		log.Printf("warning: repo %s/%s not found in database\n", provider, repoFullName)
-	} else {
-		log.Printf("cleared exclusion for %s/%s\n", provider, repoFullName)
-	}
+	log.Printf("Successfully excluded %s/%s (reason: %s)\n", *provider, *repo, *reason)
 
 	// Audit log entry
-	auditLog("clear", provider, repoFullName, "", rows)
-}
-
-func doStatus(ctx context.Context, excluder *pg.RepoExcluder, provider, repoFullName string) {
-	excludedAt, reason, err := excluder.GetExclusion(ctx, provider, repoFullName)
-	if err != nil {
-		log.Fatalf("error: %v\n", err)
-	}
-
-	if excludedAt == nil {
-		fmt.Printf("%s/%s: not excluded\n", provider, repoFullName)
-	} else {
-		fmt.Printf("%s/%s: excluded since %s (reason: %s)\n", provider, repoFullName, excludedAt.Format(time.RFC3339), reason)
-	}
-}
-
-func doList(ctx context.Context, excluder *pg.RepoExcluder) {
-	exclusions, err := excluder.ListExclusions(ctx)
-	if err != nil {
-		log.Fatalf("error: %v\n", err)
-	}
-
-	if len(exclusions) == 0 {
-		fmt.Println("no excluded repos")
-		return
-	}
-
-	fmt.Printf("Found %d excluded repo(s):\n\n", len(exclusions))
-	for _, ex := range exclusions {
-		fmt.Printf("  %s/%s\n", ex.Provider, ex.RepoFullName)
-		fmt.Printf("    Excluded: %s\n", ex.ExcludedAt.Format(time.RFC3339))
-		fmt.Printf("    Reason:  %s\n\n", ex.ExcludedReason)
-	}
-}
-
-// auditLog writes an audit log entry for every exclusion/un-exclusion action.
-//
-// This feeds the q-threat-exclusion-audit-log, capturing who/when/why for
-// incident response and postmortem analysis.
-func auditLog(op, provider, repoFullName, reason string, rowsAffected int64) {
-	// Use the audit logger for structured logging
 	audit.LogExclusionInline(
-		op,           // operation: "exclude" or "clear"
-		provider,     // provider: e.g., "github"
-		repoFullName, // repo_full_name: e.g., "owner/repo"
-		*operator,    // operator: who performed this action
-		reason,       // reason: why (exclusion reason or empty for clear)
-		rowsAffected, // rows_affected: 1 if repo existed, 0 if not found
-		"",           // incident_id: optional (can be added via flag later)
+		"exclude",   // operation
+		*provider,   // provider
+		*repo,       // repo_full_name
+		*operator,   // operator
+		*reason,     // reason
+		1,           // rows_affected (service confirmed repo exists)
+		"",          // incident_id (optional)
+	)
+}
+
+func doClear(ctx context.Context, db *service.SQLDB) {
+	log.Printf("Clearing exclusion for %s/%s...\n", *provider, *repo)
+
+	err := service.ClearRepoExclusion(ctx, db, *provider, *repo)
+	if err != nil {
+		log.Fatalf("error: failed to clear exclusion: %v\n", err)
+	}
+
+	log.Printf("Successfully cleared exclusion for %s/%s\n", *provider, *repo)
+
+	// Audit log entry
+	audit.LogExclusionInline(
+		"clear",     // operation
+		*provider,   // provider
+		*repo,       // repo_full_name
+		*operator,   // operator
+		"",          // reason (empty for clear)
+		1,           // rows_affected (service confirmed repo exists)
+		"",          // incident_id (optional)
 	)
 }
 
@@ -204,26 +156,17 @@ threats (see plan.md "Threat model" section). It is cluster-access-gated and
 not exposed on any public surface.
 
 Usage:
-  repo-admin [flags] <command>
-
-Commands:
-  exclude <provider> <repo-full-name> <reason>
-        Apply exclusion to a repo (requires human-readable reason)
-        Example: repo-admin exclude github owner/repo "false attribution from user@example.com"
-
-  clear <provider> <repo-full-name>
-        Remove exclusion from a repo (restores contribution on next aggregation)
-        Example: repo-admin clear github owner/repo
-
-  status <provider> <repo-full-name>
-        Show current exclusion status for a repo
-        Example: repo-admin status github owner/repo
-
-  list
-        List all currently excluded repos
-        Example: repo-admin list
+  repo-admin [flags]
 
 Flags:
+  -provider string
+        Repository provider (required, e.g., "github")
+  -repo string
+        Repository full name in owner/repo format (required)
+  -reason string
+        Reason for exclusion (required when setting, ignored when clearing)
+  -clear
+        Clear exclusion instead of setting it
   -db-host string
         PostgreSQL host (required)
   -db-port string
@@ -238,6 +181,13 @@ Flags:
         PostgreSQL SSL mode (default "require")
   -operator string
         Operator performing this action (required for audit logging)
+
+Examples:
+  # Set exclusion for a repo
+  repo-admin -provider github -repo owner/repo -reason "false attribution from user@example.com"
+
+  # Clear exclusion for a repo
+  repo-admin -provider github -repo owner/repo -clear
 
 Audit:
   Every exclusion/clear action is logged with:

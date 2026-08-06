@@ -13,12 +13,17 @@ type mockDB struct {
 	shouldError  bool
 }
 
-func (m *mockDB) IngestEmailResolution(ctx context.Context, rows []ResolutionRow) error {
+func (m *mockDB) IngestEmailResolution(ctx context.Context, rows []ResolutionRow) (*IngestResult, error) {
 	m.rowsReceived = rows
 	if m.shouldError {
-		return errors.New("test database error")
+		return nil, errors.New("test database error")
 	}
-	return nil
+	// Return empty result for successful test
+	return &IngestResult{
+		Ingested:    int64(len(rows)),
+		Skipped:     0,
+		SkipDetails: make(map[SkipReason]int64),
+	}, nil
 }
 
 // TestNewIngester verifies ingester construction.

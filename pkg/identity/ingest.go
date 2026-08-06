@@ -48,10 +48,39 @@ func (r *ResolutionRow) Validate() error {
 	return nil
 }
 
-// Ingester handles bulk upsert of email resolution rows.
+// SkipReason represents why a record was skipped during ingest.
+type SkipReason string
+
+const (
+	SkipReasonConflictManual SkipReason = "conflict_manual" // Existing manual source won
+	SkipReasonConflictOlder  SkipReason = "conflict_older"  // Existing record has newer timestamp
+	SkipReasonValidation     SkipReason = "validation"      // Row failed validation
+	SkipReasonDatabase       SkipReason = "database"        // Database error during ingest
+	SkipReasonOther          SkipReason = "other"           // Other skip reasons
+)
+
+// String returns the string representation of the skip reason.
+func (r SkipReason) String() string {
+	return string(r)
+}
+
+// IngestResult describes the outcome of a bulk ingest operation.
+type IngestResult struct {
+	// Ingested is the number of rows that were written (inserted or updated).
+	Ingested int64
+	// Skipped is the number of rows that were not written due to conflict resolution.
+	Skipped int64
+	// SkipDetails provides a breakdown of skip reasons.
+	SkipDetails map[SkipReason]int64
+}
+
+// Ingester handles bulk upsert of email resolution rows with counter tracking.
 type Ingester struct {
-	db        DB
-	Processed int64 // Total number of records processed (seen)
+	db          DB
+	Processed   int64                 // Total number of records processed (seen)
+	Ingested    int64                 // Total number of records successfully written (inserted or updated)
+	Skipped     int64                 // Total number of records skipped due to conflict resolution
+	SkipDetails map[SkipReason]int64 // Breakdown of skip reasons
 }
 
 // DB is the database interface required by Ingester.
@@ -62,14 +91,18 @@ type DB interface {
 	//   - Manual source always wins
 	//   - Otherwise, the newer resolved_at wins
 	// Rows that lose the conflict check are silently skipped.
-	IngestEmailResolution(ctx context.Context, rows []ResolutionRow) error
+	// Returns IngestResult with counts of ingested and skipped rows.
+	IngestEmailResolution(ctx context.Context, rows []ResolutionRow) (*IngestResult, error)
 }
 
 // NewIngester creates a new Ingester.
 func NewIngester(db DB) *Ingester {
 	return &Ingester{
-		db:        db,
-		Processed: 0, // Initialize counter to zero
+		db:          db,
+		Processed:   0,                      // Initialize counter to zero
+		Ingested:    0,                     // Initialize counter to zero
+		Skipped:     0,                     // Initialize counter to zero
+		SkipDetails: make(map[SkipReason]int64), // Initialize empty map for skip tracking
 	}
 }
 
@@ -111,7 +144,8 @@ func (i *Ingester) IngestResolution(ctx context.Context, rows []ResolutionRow) e
 	}
 
 	// Delegate to database implementation
-	return i.db.IngestEmailResolution(ctx, rows)
+	_, err := i.db.IngestEmailResolution(ctx, rows)
+	return err
 }
 
 // GetProcessed returns the total number of records processed.

@@ -262,3 +262,15 @@
 {"bead":"cg-mci3","duration_ms":235290,"event":"complete","exit_code":0,"outcome":"success","strand":"auto","ts":"2026-08-06T06:54:05.361944462+00:00","worker":"oscar"}
 {"bead":"cg-1b7va","event":"claim","strand":"auto","ts":"2026-08-06T06:54:05.428111073+00:00","worker":"oscar"}
 {"adapter":"claude-code-glm-4.7","bead":"cg-1b7va","event":"dispatch","model":"glm-4.7","strand":"auto","ts":"2026-08-06T06:54:05.431318115+00:00","worker":"oscar"}
+{"bead":"cg-31nou","duration_ms":299619,"event":"complete","exit_code":0,"outcome":"success","strand":"auto","ts":"2026-08-06T08:40:49.392946488+00:00","worker":"november"}
+{"bead":"cg-5im9y","event":"claim","strand":"auto","ts":"2026-08-06T08:40:49.452146336+00:00","worker":"november"}
+{"adapter":"claude-code-glm-4.7","bead":"cg-5im9y","event":"dispatch","model":"glm-4.7","strand":"auto","ts":"2026-08-06T08:40:49.455839075+00:00","worker":"november"}
+{"bead":"cg-519b5","duration_ms":228393,"event":"fail","exit_code":1,"outcome":"failure","strand":"auto","ts":"2026-08-06T08:40:59.950156970+00:00","worker":"oscar"}
+{"bead":"cg-519b5","event":"claim","strand":"auto","ts":"2026-08-06T08:40:59.995397584+00:00","worker":"oscar"}
+{"adapter":"claude-code-glm-4.7","bead":"cg-519b5","event":"dispatch","model":"glm-4.7","strand":"auto","ts":"2026-08-06T08:40:59.998862570+00:00","worker":"oscar"}
+{"bead":"cg-1inj4","duration_ms":161852,"event":"complete","exit_code":0,"outcome":"success","strand":"auto","ts":"2026-08-06T08:41:58.011132208+00:00","worker":"mike"}
+{"bead":"cg-1gtzj","event":"claim","strand":"auto","ts":"2026-08-06T08:41:58.103674420+00:00","worker":"mike"}
+{"adapter":"claude-code-glm-4.7","bead":"cg-1gtzj","event":"dispatch","model":"glm-4.7","strand":"auto","ts":"2026-08-06T08:41:58.107081684+00:00","worker":"mike"}
+{"bead":"cg-11rzm","duration_ms":259306,"event":"fail","exit_code":1,"outcome":"failure","strand":"auto","ts":"2026-08-06T08:42:27.218517090+00:00","worker":"papa"}
+{"bead":"cg-11rzm","event":"claim","strand":"auto","ts":"2026-08-06T08:43:05.889286342+00:00","worker":"papa"}
+{"adapter":"claude-code-glm-4.7","bead":"cg-11rzm","event":"dispatch","model":"glm-4.7","strand":"auto","ts":"2026-08-06T08:43:05.892134369+00:00","worker":"papa"}

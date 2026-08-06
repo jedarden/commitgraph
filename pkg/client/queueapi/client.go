@@ -27,6 +27,12 @@ type Client struct {
 // DefaultMaxRetries is the maximum number of retry attempts for ingest endpoint failures.
 const DefaultMaxRetries = 4
 
+// SetLogger sets a custom ingest logger for the client.
+// If not set, a default logger writing to stderr is used.
+func (c *Client) SetLogger(logger *ingestlog.Logger) {
+	c.logger = logger
+}
+
 // NewClient creates a new queue-api client.
 //
 // Parameters:
@@ -41,6 +47,7 @@ func NewClient(baseURL, authToken string) *Client {
 		httpClient: &http.Client{Timeout: 15 * time.Second},
 		authToken:  authToken,
 		maxRetries: DefaultMaxRetries,
+		logger:     ingestlog.NewLogger(),
 	}
 }
 
@@ -91,13 +98,36 @@ func (c *Client) PostResolution(ctx context.Context, email, githubUsername strin
 	}
 
 	var lastErr error
+	var lastStatusCode int
+	var lastResponseBody string
 	backoffSequence := []time.Duration{100, 400, 900, 1600} // Exponential backoff: ~3 seconds total
+	startTime := time.Now()
 
 	for attempt := 0; attempt <= c.maxRetries; attempt++ {
 		if attempt > 0 {
-			// Log retry attempt with full context
-			log.Printf("[QUEUE-INGEST-RETRY] email=%s github_username=%s attempt=%d/%d error=%q",
-				email, githubUsername, attempt, c.maxRetries, lastErr)
+			// Log retry attempt with full structured context
+			backoff := backoffSequence[attempt-1]
+			totalDurationMs := time.Since(startTime).Milliseconds()
+
+			// Create structured event for this retry
+			event := ingestlog.EventFromError(
+				email,
+				githubUsername,
+				fmt.Sprintf("%s/email-resolution/resolve", c.baseURL),
+				lastErr,
+				0, // statusCode (not available in retry case before request)
+				"", // responseBody (not available for request creation failures)
+				attempt,
+				c.maxRetries,
+				int(backoff.Milliseconds()),
+				totalDurationMs,
+			)
+
+			if err := c.logger.LogRetry(event); err != nil {
+				// Fallback to basic log if structured logging fails
+				log.Printf("[QUEUE-INGEST-RETRY] email=%s github_username=%s attempt=%d/%d error=%q (structured logging failed: %v)",
+					email, githubUsername, attempt, c.maxRetries, lastErr, err)
+			}
 
 			// Check if context is cancelled before sleeping
 			select {
@@ -107,7 +137,6 @@ func (c *Client) PostResolution(ctx context.Context, email, githubUsername strin
 			}
 
 			// Sleep for backoff duration before retry
-			backoff := backoffSequence[attempt-1]
 			time.Sleep(backoff)
 		}
 
@@ -142,6 +171,11 @@ func (c *Client) PostResolution(ctx context.Context, email, githubUsername strin
 		respBody := resp.Body
 		defer respBody.Close()
 
+		// Read response body for error logging
+		bodyBytes, _ := io.ReadAll(respBody)
+		lastResponseBody = string(bodyBytes)
+		lastStatusCode = resp.StatusCode
+
 		// Check status code
 		if resp.StatusCode == http.StatusOK {
 			return nil // Success
@@ -161,8 +195,25 @@ func (c *Client) PostResolution(ctx context.Context, email, githubUsername strin
 	}
 
 	// All retries exhausted - log structured failure
-	log.Printf("[QUEUE-INGEST-FAILURE] email=%s github_username=%s error=%q",
-		email, githubUsername, lastErr)
+	totalDurationMs := time.Since(startTime).Milliseconds()
+	event := ingestlog.EventFromError(
+		email,
+		githubUsername,
+		fmt.Sprintf("%s/email-resolution/resolve", c.baseURL),
+		lastErr,
+		lastStatusCode,
+		lastResponseBody,
+		c.maxRetries, // This was the final attempt
+		c.maxRetries,
+		0, // No retry delay on final failure
+		totalDurationMs,
+	)
+
+	if err := c.logger.LogFailure(event); err != nil {
+		// Fallback to basic log if structured logging fails
+		log.Printf("[QUEUE-INGEST-FAILURE] email=%s github_username=%s error=%q (structured logging failed: %v)",
+			email, githubUsername, lastErr, err)
+	}
 
 	return fmt.Errorf("post resolution failed after %d attempts: %w", c.maxRetries+1, lastErr)
 }

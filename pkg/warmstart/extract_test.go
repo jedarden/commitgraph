@@ -188,6 +188,55 @@ func TestParseTarball_MissingPackFiles(t *testing.T) {
 	}
 }
 
+func TestParseTarball_MissingPackFileMember(t *testing.T) {
+	// Test validation that requires at least one .pack file
+	// This tarball has .idx and .promisor files but NO .pack file
+	configData := []byte(`{
+		"core.repositoryformatversion": "1",
+		"remote.origin.promisor": "true",
+		"remote.origin.partialclonefilter": "blob:none"
+	}`)
+	refData := []byte("refs/heads/main abc123")
+	idxData := []byte("test idx data")
+	promisorData := []byte("test promisor data")
+
+	members := []TarballMember{
+		{Name: "objects/pack/pack-123.idx", Data: idxData},
+		{Name: "objects/pack/pack-123.promisor", Data: promisorData},
+		{Name: "config.json", Data: configData},
+		{Name: "ref", Data: refData},
+	}
+
+	tarball := createTestTarball(t, members)
+
+	_, err := ParseTarball(tarball)
+	if err == nil {
+		t.Fatal("expected error for missing .pack file, got nil")
+	}
+
+	// Verify it's a MissingMember error with ".pack" member name
+	var missingErr *Error
+	if !errors.As(err, &missingErr) {
+		t.Fatalf("expected *Error type, got %T: %v", err, err)
+	}
+
+	if missingErr.Kind != MissingMember {
+		t.Errorf("expected MissingMember error kind, got %v", missingErr.Kind)
+	}
+
+	if missingErr.MemberName != ".pack" {
+		t.Errorf("expected member name '.pack', got %s", missingErr.MemberName)
+	}
+
+	// Verify error message mentions .pack
+	errMsg := missingErr.Error()
+	if !strings.Contains(errMsg, ".pack") {
+		t.Errorf("error message should mention '.pack', got: %s", errMsg)
+	}
+
+	t.Logf("Successfully detected missing .pack file: %v", missingErr)
+}
+
 func TestParseTarball_InvalidConfig(t *testing.T) {
 	configData := []byte("invalid json")
 	refData := []byte("refs/heads/main abc123")

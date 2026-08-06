@@ -192,6 +192,18 @@ func ParseTarball(data []byte) (*WarmStartSnapshot, error) {
 		return nil, ErrMissingPackFiles
 	}
 
+	// Validate that at least one .pack file is present
+	foundPack := false
+	for _, pf := range snapshot.PackFiles {
+		if strings.HasSuffix(pf.Name, ".pack") {
+			foundPack = true
+			break
+		}
+	}
+	if !foundPack {
+		return nil, NewMissingMemberError(".pack")
+	}
+
 	// Parse config
 	if err := json.Unmarshal(configData, &snapshot.Config); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidConfig, err)

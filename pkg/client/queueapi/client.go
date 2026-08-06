@@ -7,8 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
-	"runtime/debug"
 	"strings"
 	"time"
 

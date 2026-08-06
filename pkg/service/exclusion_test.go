@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	_ "github.com/lib/pq" // PostgreSQL driver
 )
 
 // mockRow is a mock implementation of a row scanner for testing.
@@ -1391,6 +1393,409 @@ func TestClearRepoExclusion_WithSystemActor(t *testing.T) {
 // (e.g., race conditions, deadlocks) should be tested in integration tests with an
 // actual database connection. The transaction tests above verify that rollback is called
 // appropriately on errors, which is the service-level responsibility.
+
+// ============================================================================
+// Integration Tests (require real database)
+// ============================================================================
+
+// setupIntegrationTestDB creates a test database connection if TEST_DB_URL is set.
+// Returns the database connection and a cleanup function, or skips the test.
+func setupIntegrationTestDB(t *testing.T) (*sql.DB, func()) {
+	t.Helper()
+
+	testDBURL := "postgres://commitgraph:commitgraph@localhost:5432/commitgraph_test?sslmode=disable"
+
+	// Try to connect to the test database
+	db, err := sql.Open("postgres", testDBURL)
+	if err != nil {
+		t.Skipf("Skipping integration test: cannot open test database: %v", err)
+		return nil, nil
+	}
+
+	// Test the connection
+	ctx := context.Background()
+	if err := db.PingContext(ctx); err != nil {
+		db.Close()
+		t.Skipf("Skipping integration test: cannot connect to test database: %v", err)
+		return nil, nil
+	}
+
+	// Create the required tables for testing
+	queries := []string{
+		`CREATE TABLE IF NOT EXISTS repos (
+			repo_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+			provider TEXT NOT NULL,
+			repo_full_name TEXT NOT NULL,
+			excluded_at TIMESTAMPTZ,
+			excluded_reason TEXT,
+			UNIQUE (provider, repo_full_name)
+		)`,
+		`CREATE TABLE IF NOT EXISTS exclusion_audit_log (
+			id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+			repo_id BIGINT NOT NULL REFERENCES repos(repo_id) ON DELETE CASCADE,
+			actor TEXT NOT NULL,
+			timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			event_type TEXT NOT NULL,
+			old_excluded_at TIMESTAMPTZ,
+			old_excluded_reason TEXT,
+			new_excluded_at TIMESTAMPTZ,
+			new_excluded_reason TEXT
+		)`,
+		`CREATE INDEX IF NOT EXISTS exclusion_audit_log_timestamp_idx ON exclusion_audit_log (timestamp DESC)`,
+		`CREATE INDEX IF NOT EXISTS exclusion_audit_log_repo_idx ON exclusion_audit_log (repo_id, timestamp DESC)`,
+	}
+
+	for _, q := range queries {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			db.Close()
+			t.Fatalf("Failed to create test table: %v", err)
+			return nil, nil
+		}
+	}
+
+	// Return cleanup function
+	cleanup := func() {
+		// Drop all test data
+		db.ExecContext(ctx, `DROP TABLE IF EXISTS exclusion_audit_log`)
+		db.ExecContext(ctx, `DROP TABLE IF EXISTS repos`)
+		db.Close()
+	}
+
+	return db, cleanup
+}
+
+// createTestRepo creates a test repository in the database and returns its repo_id.
+func createTestRepo(ctx context.Context, t *testing.T, db *sql.DB, provider, repoFullName string) int64 {
+	t.Helper()
+
+	query := `INSERT INTO repos (provider, repo_full_name) VALUES ($1, $2) RETURNING repo_id`
+	var repoID int64
+	err := db.QueryRowContext(ctx, query, provider, repoFullName).Scan(&repoID)
+	if err != nil {
+		t.Fatalf("Failed to create test repo: %v", err)
+	}
+	return repoID
+}
+
+// getAuditRecordCount returns the number of audit records for a specific repo_id.
+func getAuditRecordCount(ctx context.Context, t *testing.T, db *sql.DB, repoID int64) int {
+	t.Helper()
+
+	var count int
+	err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM exclusion_audit_log WHERE repo_id = $1`, repoID).Scan(&count)
+	if err != nil {
+		t.Fatalf("Failed to count audit records: %v", err)
+	}
+	return count
+}
+
+// getLatestAuditRecord retrieves the most recent audit record for a repo_id.
+func getLatestAuditRecord(ctx context.Context, t *testing.T, db *sql.DB, repoID int64) map[string]interface{} {
+	t.Helper()
+
+	query := `
+		SELECT id, repo_id, actor, event_type,
+		       old_excluded_at, old_excluded_reason,
+		       new_excluded_at, new_excluded_reason
+		FROM exclusion_audit_log
+		WHERE repo_id = $1
+		ORDER BY timestamp DESC
+		LIMIT 1
+	`
+
+	var id int64
+	var repoIDVal int64
+	var actor string
+	var eventType string
+	var oldExcludedAt, newExcludedAt sql.NullTime
+	var oldExcludedReason, newExcludedReason sql.NullString
+
+	err := db.QueryRowContext(ctx, query, repoID).Scan(
+		&id, &repoIDVal, &actor, &eventType,
+		&oldExcludedAt, &oldExcludedReason,
+		&newExcludedAt, &newExcludedReason,
+	)
+	if err != nil {
+		t.Fatalf("Failed to get latest audit record: %v", err)
+	}
+
+	result := map[string]interface{}{
+		"id":                 id,
+		"repo_id":            repoIDVal,
+		"actor":              actor,
+		"event_type":         eventType,
+		"old_excluded_at":    oldExcludedAt,
+		"old_excluded_reason": oldExcludedReason,
+		"new_excluded_at":    newExcludedAt,
+		"new_excluded_reason": newExcludedReason,
+	}
+
+	return result
+}
+
+// TestSetRepoExclusionRecordsAudit is an integration test that verifies
+// SetRepoExclusion creates a correct audit record in exclusion_audit_log.
+func TestSetRepoExclusionRecordsAudit(t *testing.T) {
+	db, cleanup := setupIntegrationTestDB(t)
+	if cleanup == nil {
+		return // Skipped
+	}
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Create a test repository
+	provider := "github"
+	repoFullName := "test-audit-exclusion/repo"
+	repoID := createTestRepo(ctx, t, db, provider, repoFullName)
+
+	// Verify no audit records exist initially
+	initialCount := getAuditRecordCount(ctx, t, db, repoID)
+	if initialCount != 0 {
+		t.Errorf("Expected 0 audit records initially, got %d", initialCount)
+	}
+
+	// Call SetRepoExclusionWithActor with a specific actor
+	actor := "test-admin"
+	reason := "test exclusion reason"
+	sqlDB := NewSQLDB(db)
+	err := SetRepoExclusionWithActor(ctx, sqlDB, provider, repoFullName, reason, actor)
+	if err != nil {
+		t.Fatalf("SetRepoExclusionWithActor failed: %v", err)
+	}
+
+	// Verify exactly 1 new audit record was created
+	newCount := getAuditRecordCount(ctx, t, db, repoID)
+	if newCount != 1 {
+		t.Errorf("Expected 1 audit record after SetRepoExclusion, got %d", newCount)
+	}
+
+	// Verify the audit record contents
+	record := getLatestAuditRecord(ctx, t, db, repoID)
+
+	// Check required fields
+	if record["repo_id"].(int64) != repoID {
+		t.Errorf("Expected repo_id %d, got %d", repoID, int(record["repo_id"].(int64)))
+	}
+	if record["actor"].(string) != actor {
+		t.Errorf("Expected actor '%s', got '%s'", actor, record["actor"].(string))
+	}
+	if record["event_type"].(string) != "exclude" {
+		t.Errorf("Expected event_type 'exclude', got '%s'", record["event_type"].(string))
+	}
+
+	// For exclude events: old values should be NULL, new values should be set
+	if record["old_excluded_at"].(sql.NullTime).Valid {
+		t.Errorf("Expected old_excluded_at to be NULL for exclude event, got %v", record["old_excluded_at"])
+	}
+	if record["old_excluded_reason"].(sql.NullString).Valid {
+		t.Errorf("Expected old_excluded_reason to be NULL for exclude event, got %v", record["old_excluded_reason"])
+	}
+	if !record["new_excluded_at"].(sql.NullTime).Valid {
+		t.Errorf("Expected new_excluded_at to be set for exclude event, got NULL")
+	}
+	if !record["new_excluded_reason"].(sql.NullString).Valid {
+		t.Errorf("Expected new_excluded_reason to be set for exclude event, got NULL")
+	}
+	if record["new_excluded_reason"].(sql.NullString).String != reason {
+		t.Errorf("Expected new_excluded_reason '%s', got '%s'", reason, record["new_excluded_reason"].(sql.NullString).String)
+	}
+}
+
+// TestClearRepoExclusionRecordsAudit is an integration test that verifies
+// ClearRepoExclusion creates a correct audit record in exclusion_audit_log.
+func TestClearRepoExclusionRecordsAudit(t *testing.T) {
+	db, cleanup := setupIntegrationTestDB(t)
+	if cleanup == nil {
+		return // Skipped
+	}
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Create a test repository that is already excluded
+	provider := "github"
+	repoFullName := "test-audit-unexclusion/repo"
+	repoID := createTestRepo(ctx, t, db, provider, repoFullName)
+
+	// First, exclude the repo
+	sqlDB := NewSQLDB(db)
+	err := SetRepoExclusionWithActor(ctx, sqlDB, provider, repoFullName, "initial exclusion", "system")
+	if err != nil {
+		t.Fatalf("Initial SetRepoExclusionWithActor failed: %v", err)
+	}
+
+	// Verify we have 1 audit record from the exclusion
+	countAfterExclude := getAuditRecordCount(ctx, t, db, repoID)
+	if countAfterExclude != 1 {
+		t.Errorf("Expected 1 audit record after initial exclusion, got %d", countAfterExclude)
+	}
+
+	// Now call ClearRepoExclusionWithActor
+	actor := "test-admin"
+	err = ClearRepoExclusionWithActor(ctx, sqlDB, provider, repoFullName, actor)
+	if err != nil {
+		t.Fatalf("ClearRepoExclusionWithActor failed: %v", err)
+	}
+
+	// Verify exactly 2 audit records exist (exclude + unexclude)
+	finalCount := getAuditRecordCount(ctx, t, db, repoID)
+	if finalCount != 2 {
+		t.Errorf("Expected 2 audit records after ClearRepoExclusion, got %d", finalCount)
+	}
+
+	// Verify the latest audit record (unexclude event)
+	record := getLatestAuditRecord(ctx, t, db, repoID)
+
+	// Check required fields
+	if record["repo_id"].(int64) != repoID {
+		t.Errorf("Expected repo_id %d, got %d", repoID, int(record["repo_id"].(int64)))
+	}
+	if record["actor"].(string) != actor {
+		t.Errorf("Expected actor '%s', got '%s'", actor, record["actor"].(string))
+	}
+	if record["event_type"].(string) != "unexclude" {
+		t.Errorf("Expected event_type 'unexclude', got '%s'", record["event_type"].(string))
+	}
+
+	// For unexclude events: old values should be set, new values should be NULL
+	if !record["old_excluded_at"].(sql.NullTime).Valid {
+		t.Errorf("Expected old_excluded_at to be set for unexclude event, got NULL")
+	}
+	if !record["old_excluded_reason"].(sql.NullString).Valid {
+		t.Errorf("Expected old_excluded_reason to be set for unexclude event, got NULL")
+	}
+	if record["old_excluded_reason"].(sql.NullString).String != "initial exclusion" {
+		t.Errorf("Expected old_excluded_reason 'initial exclusion', got '%s'", record["old_excluded_reason"].(sql.NullString).String)
+	}
+	if record["new_excluded_at"].(sql.NullTime).Valid {
+		t.Errorf("Expected new_excluded_at to be NULL for unexclude event, got %v", record["new_excluded_at"])
+	}
+	if record["new_excluded_reason"].(sql.NullString).Valid {
+		t.Errorf("Expected new_excluded_reason to be NULL for unexclude event, got %v", record["new_excluded_reason"])
+	}
+}
+
+// TestSetRepoExclusionRecordsAudit_ReExclude verifies that re-excluding
+// an already-excluded repo captures the old exclusion state correctly.
+func TestSetRepoExclusionRecordsAudit_ReExclude(t *testing.T) {
+	db, cleanup := setupIntegrationTestDB(t)
+	if cleanup == nil {
+		return // Skipped
+	}
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Create a test repository
+	provider := "github"
+	repoFullName := "test-reexclude/repo"
+	repoID := createTestRepo(ctx, t, db, provider, repoFullName)
+
+	sqlDB := NewSQLDB(db)
+
+	// First exclusion
+	err := SetRepoExclusionWithActor(ctx, sqlDB, provider, repoFullName, "first exclusion", "admin1")
+	if err != nil {
+		t.Fatalf("First SetRepoExclusionWithActor failed: %v", err)
+	}
+
+	// Re-exclusion (update the exclusion with a new reason)
+	err = SetRepoExclusionWithActor(ctx, sqlDB, provider, repoFullName, "second exclusion", "admin2")
+	if err != nil {
+		t.Fatalf("Second SetRepoExclusionWithActor failed: %v", err)
+	}
+
+	// Should have 2 audit records
+	count := getAuditRecordCount(ctx, t, db, repoID)
+	if count != 2 {
+		t.Errorf("Expected 2 audit records after re-exclusion, got %d", count)
+	}
+
+	// Verify the latest record (second exclusion)
+	record := getLatestAuditRecord(ctx, t, db, repoID)
+
+	if record["actor"].(string) != "admin2" {
+		t.Errorf("Expected actor 'admin2', got '%s'", record["actor"].(string))
+	}
+	if record["event_type"].(string) != "exclude" {
+		t.Errorf("Expected event_type 'exclude', got '%s'", record["event_type"].(string))
+	}
+	// Old values should be set (capturing the first exclusion)
+	if !record["old_excluded_at"].(sql.NullTime).Valid {
+		t.Errorf("Expected old_excluded_at to be set for re-exclusion, got NULL")
+	}
+	if !record["old_excluded_reason"].(sql.NullString).Valid {
+		t.Errorf("Expected old_excluded_reason to be set for re-exclusion, got NULL")
+	}
+	if record["old_excluded_reason"].(sql.NullString).String != "first exclusion" {
+		t.Errorf("Expected old_excluded_reason 'first exclusion', got '%s'", record["old_excluded_reason"].(sql.NullString).String)
+	}
+	// New values should be set (the second exclusion)
+	if !record["new_excluded_at"].(sql.NullTime).Valid {
+		t.Errorf("Expected new_excluded_at to be set for re-exclusion, got NULL")
+	}
+	if !record["new_excluded_reason"].(sql.NullString).Valid {
+		t.Errorf("Expected new_excluded_reason to be set for re-exclusion, got NULL")
+	}
+	if record["new_excluded_reason"].(sql.NullString).String != "second exclusion" {
+		t.Errorf("Expected new_excluded_reason 'second exclusion', got '%s'", record["new_excluded_reason"].(sql.NullString).String)
+	}
+}
+
+// TestClearRepoExclusionRecordsAudit_NeverExcluded verifies that clearing
+// exclusion from a never-excluded repo still creates an audit record.
+func TestClearRepoExclusionRecordsAudit_NeverExcluded(t *testing.T) {
+	db, cleanup := setupIntegrationTestDB(t)
+	if cleanup == nil {
+		return // Skipped
+	}
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Create a test repository (never excluded)
+	provider := "github"
+	repoFullName := "test-never-excluded/repo"
+	repoID := createTestRepo(ctx, t, db, provider, repoFullName)
+
+	// Clear exclusion on a repo that was never excluded
+	sqlDB := NewSQLDB(db)
+	actor := "admin"
+	err := ClearRepoExclusionWithActor(ctx, sqlDB, provider, repoFullName, actor)
+	if err != nil {
+		t.Fatalf("ClearRepoExclusionWithActor failed: %v", err)
+	}
+
+	// Should have 1 audit record
+	count := getAuditRecordCount(ctx, t, db, repoID)
+	if count != 1 {
+		t.Errorf("Expected 1 audit record after clearing never-excluded repo, got %d", count)
+	}
+
+	// Verify the audit record
+	record := getLatestAuditRecord(ctx, t, db, repoID)
+
+	if record["actor"].(string) != actor {
+		t.Errorf("Expected actor '%s', got '%s'", actor, record["actor"].(string))
+	}
+	if record["event_type"].(string) != "unexclude" {
+		t.Errorf("Expected event_type 'unexclude', got '%s'", record["event_type"].(string))
+	}
+	// Both old and new should be NULL (repo was never excluded)
+	if record["old_excluded_at"].(sql.NullTime).Valid {
+		t.Errorf("Expected old_excluded_at to be NULL (never excluded), got %v", record["old_excluded_at"])
+	}
+	if record["old_excluded_reason"].(sql.NullString).Valid {
+		t.Errorf("Expected old_excluded_reason to be NULL (never excluded), got %v", record["old_excluded_reason"])
+	}
+	if record["new_excluded_at"].(sql.NullTime).Valid {
+		t.Errorf("Expected new_excluded_at to be NULL, got %v", record["new_excluded_at"])
+	}
+	if record["new_excluded_reason"].(sql.NullString).Valid {
+		t.Errorf("Expected new_excluded_reason to be NULL, got %v", record["new_excluded_reason"])
+	}
+}
 
 // TestSetRepoExclusionWithActor_AuditRecording tests that SetRepoExclusionWithActor
 // properly records the audit log with before and after states.

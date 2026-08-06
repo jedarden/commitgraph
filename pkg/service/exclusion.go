@@ -346,7 +346,9 @@ func SetRepoExclusionWithActor(ctx context.Context, db Transactioner, provider, 
 //
 // This function performs the following operations within a database transaction:
 // 1. Validates that the repo exists (using RepoExists)
-// 2. Sets excluded_at to NULL and excluded_reason to NULL
+// 2. Queries the current exclusion state (excluded_at, excluded_reason, repo_id) BEFORE updating
+// 3. Sets excluded_at to NULL and excluded_reason to NULL
+// 4. Records an audit log entry with the before and after states
 //
 // Parameters:
 //   - ctx: Context for the operation
@@ -365,6 +367,35 @@ func SetRepoExclusionWithActor(ctx context.Context, db Transactioner, provider, 
 // Note: Clearing exclusion on a repo that is not currently excluded is
 // considered a no-op and will succeed (1 row affected).
 func ClearRepoExclusion(ctx context.Context, db Transactioner, provider, repoFullName string) error {
+	return ClearRepoExclusionWithActor(ctx, db, provider, repoFullName, "system")
+}
+
+// ClearRepoExclusionWithActor clears the exclusion status for a repository with a specific actor.
+//
+// This function performs the following operations within a database transaction:
+// 1. Validates that the repo exists (using RepoExists)
+// 2. Queries the current exclusion state (excluded_at, excluded_reason, repo_id) BEFORE updating
+// 3. Sets excluded_at to NULL and excluded_reason to NULL
+// 4. Records an audit log entry with the before and after states
+//
+// Parameters:
+//   - ctx: Context for the operation
+//   - db: Database connection (will be used to create a transaction)
+//   - provider: Repository provider (e.g., "github")
+//   - repoFullName: Repository full name (e.g., "owner/repo")
+//   - actor: Who performed the action (e.g., 'admin', 'system')
+//
+// Returns:
+//   - nil on success
+//   - error if validation fails or database operation fails
+//
+// The function uses a database transaction to ensure atomicity:
+// - On success, the transaction is committed
+// - On error, the transaction is rolled back
+//
+// Note: Clearing exclusion on a repo that is not currently excluded is
+// considered a no-op and will succeed (1 row affected).
+func ClearRepoExclusionWithActor(ctx context.Context, db Transactioner, provider, repoFullName, actor string) error {
 	// Validate provider format
 	if err := validateProvider(provider); err != nil {
 		return err
@@ -390,15 +421,32 @@ func ClearRepoExclusion(ctx context.Context, db Transactioner, provider, repoFul
 	// Ensure rollback happens on error
 	defer tx.Rollback()
 
+	// Capture the current exclusion state BEFORE updating
+	// We need repo_id for the audit log, and the current excluded_at and excluded_reason
+	var repoID int64
+	var oldExcludedAt *time.Time
+	var oldExcludedReason *string
+
+	selectQuery := `
+		SELECT id, excluded_at, excluded_reason
+		FROM repos
+		WHERE provider = $1 AND repo_full_name = $2
+	`
+
+	selectRow := tx.QueryRowContext(ctx, selectQuery, provider, repoFullName)
+	if err := selectRow.Scan(&repoID, &oldExcludedAt, &oldExcludedReason); err != nil {
+		return fmt.Errorf("failed to query current repo state: %w", err)
+	}
+
 	// Update the repo to clear exclusion information
-	query := `
+	updateQuery := `
 		UPDATE repos
 		SET excluded_at = NULL,
 		    excluded_reason = NULL
 		WHERE provider = $1 AND repo_full_name = $2
 	`
 
-	result, err := tx.ExecContext(ctx, query, provider, repoFullName)
+	result, err := tx.ExecContext(ctx, updateQuery, provider, repoFullName)
 	if err != nil {
 		return fmt.Errorf("failed to clear repo exclusion: %w", err)
 	}
@@ -411,6 +459,22 @@ func ClearRepoExclusion(ctx context.Context, db Transactioner, provider, repoFul
 
 	if rowsAffected == 0 {
 		return fmt.Errorf("no rows updated - repo may have been deleted")
+	}
+
+	// Record the audit log entry with before and after states
+	// For un-exclusion, new values are NULL
+	if err := RecordExclusionAudit(
+		ctx,
+		tx,
+		repoID,
+		actor,
+		"unexclude",
+		oldExcludedAt,
+		oldExcludedReason,
+		nil, // new_excluded_at is NULL when clearing
+		nil, // new_excluded_reason is NULL when clearing
+	); err != nil {
+		return fmt.Errorf("failed to record exclusion audit: %w", err)
 	}
 
 	// Commit the transaction

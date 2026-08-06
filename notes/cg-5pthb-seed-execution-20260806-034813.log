@@ -1,0 +1,15 @@
+2026/08/06 03:48:13 Opening claude-leaderboard database: cmd/seed-author-login-cache/testdata/sample.db
+2026/08/06 03:48:13 Connecting to PostgreSQL at localhost:5432/commitgraph
+2026/08/06 03:48:13 Reading author_login_cache table...
+2026/08/06 03:48:13 Read 50 total pairs from author_login_cache
+2026/08/06 03:48:13 Filtered to 50 positive resolutions (skipped 0 negative-cache entries)
+2026/08/06 03:48:13 Ingesting 50 rows in batches of 1000...
+2026/08/06 03:48:13 Ingesting batch 1-50 of 50...
+2026/08/06 03:48:13 Warning: batch 1-50 failed: bulk upsert failed: pq: relation "email_resolution" does not exist at position 2:15 (42P01)
+2026/08/06 03:48:13 
+=== Seed Summary ===
+2026/08/06 03:48:13 Pairs read from cache:     50
+2026/08/06 03:48:13 Positive resolutions:      50
+2026/08/06 03:48:13 Negative-cache (skipped):    0
+2026/08/06 03:48:13 Rows accepted (won):        0
+2026/08/06 03:48:13 Rows rejected (lost):       50

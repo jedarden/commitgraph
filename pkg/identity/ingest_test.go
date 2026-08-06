@@ -3,6 +3,7 @@ package identity
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -11,6 +12,7 @@ import (
 type mockDB struct {
 	rowsReceived []ResolutionRow
 	shouldError  bool
+	result       *IngestResult // Allows customizing the result returned
 }
 
 func (m *mockDB) IngestEmailResolution(ctx context.Context, rows []ResolutionRow) (*IngestResult, error) {
@@ -18,7 +20,11 @@ func (m *mockDB) IngestEmailResolution(ctx context.Context, rows []ResolutionRow
 	if m.shouldError {
 		return nil, errors.New("test database error")
 	}
-	// Return empty result for successful test
+	// Use custom result if provided, otherwise default to all ingested
+	if m.result != nil {
+		return m.result, nil
+	}
+	// Return default result for successful test
 	return &IngestResult{
 		Ingested:    int64(len(rows)),
 		Skipped:     0,
@@ -486,5 +492,569 @@ func TestResolutionRow_Validate(t *testing.T) {
 				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+// TestIngester_SkipDetailsInitialization verifies SkipDetails is initialized as non-nil map.
+func TestIngester_SkipDetailsInitialization(t *testing.T) {
+	db := &mockDB{}
+	ingester := NewIngester(db)
+
+	if ingester.SkipDetails == nil {
+		t.Error("SkipDetails should be initialized as non-nil map")
+	}
+
+	if len(ingester.SkipDetails) != 0 {
+		t.Errorf("SkipDetails should be empty initially, got %d entries", len(ingester.SkipDetails))
+	}
+}
+
+// TestIngester_IngestedCounter verifies Ingested counter increments correctly.
+func TestIngester_IngestedCounter(t *testing.T) {
+	db := &mockDB{}
+	ingester := NewIngester(db)
+
+	// Initial state
+	if ingester.GetIngested() != 0 {
+		t.Errorf("expected initial ingested count to be 0, got %d", ingester.GetIngested())
+	}
+
+	now := time.Now().UTC()
+
+	// First batch - DB reports all ingested
+	rows1 := []ResolutionRow{
+		{Email: "user1@example.com", Login: "user1", Source: SourceLive, ResolvedAt: now},
+		{Email: "user2@example.com", Login: "user2", Source: SourceLive, ResolvedAt: now},
+	}
+
+	err := ingester.IngestResolution(context.Background(), rows1)
+	if err != nil {
+		t.Fatalf("first batch failed: %v", err)
+	}
+
+	// Ingested should be 2 (mock DB returns len(rows) as ingested)
+	if ingester.GetIngested() != 2 {
+		t.Errorf("expected ingested count to be 2 after first batch, got %d", ingester.GetIngested())
+	}
+
+	// Second batch with custom result
+	db.result = &IngestResult{
+		Ingested:    5,
+		Skipped:     3,
+		SkipDetails: map[SkipReason]int64{SkipReasonConflictManual: 2, SkipReasonConflictOlder: 1},
+	}
+
+	rows2 := []ResolutionRow{
+		{Email: "user3@example.com", Login: "user3", Source: SourceSeed, ResolvedAt: now},
+	}
+
+	err = ingester.IngestResolution(context.Background(), rows2)
+	if err != nil {
+		t.Fatalf("second batch failed: %v", err)
+	}
+
+	// Ingested should be 2 + 5 = 7
+	if ingester.GetIngested() != 7 {
+		t.Errorf("expected ingested count to be 7 after second batch, got %d", ingester.GetIngested())
+	}
+
+	// Processed should be 3 (2 + 1)
+	if ingester.GetProcessed() != 3 {
+		t.Errorf("expected processed count to be 3, got %d", ingester.GetProcessed())
+	}
+}
+
+// TestIngester_SkippedCounter verifies Skipped counter increments correctly.
+func TestIngester_SkippedCounter(t *testing.T) {
+	db := &mockDB{}
+	ingester := NewIngester(db)
+
+	// Initial state
+	if ingester.GetSkipped() != 0 {
+		t.Errorf("expected initial skipped count to be 0, got %d", ingester.GetSkipped())
+	}
+
+	now := time.Now().UTC()
+
+	// First batch - DB reports some skipped
+	db.result = &IngestResult{
+		Ingested:    2,
+		Skipped:     3,
+		SkipDetails: map[SkipReason]int64{
+			SkipReasonConflictManual: 1,
+			SkipReasonConflictOlder:  2,
+		},
+	}
+
+	rows := []ResolutionRow{
+		{Email: "user1@example.com", Login: "user1", Source: SourceLive, ResolvedAt: now},
+		{Email: "user2@example.com", Login: "user2", Source: SourceLive, ResolvedAt: now},
+		{Email: "user3@example.com", Login: "user3", Source: SourceLive, ResolvedAt: now},
+		{Email: "user4@example.com", Login: "user4", Source: SourceLive, ResolvedAt: now},
+		{Email: "user5@example.com", Login: "user5", Source: SourceLive, ResolvedAt: now},
+	}
+
+	err := ingester.IngestResolution(context.Background(), rows)
+	if err != nil {
+		t.Fatalf("batch failed: %v", err)
+	}
+
+	// Skipped should be 3
+	if ingester.GetSkipped() != 3 {
+		t.Errorf("expected skipped count to be 3, got %d", ingester.GetSkipped())
+	}
+
+	// Second batch with different skip counts
+	db.result = &IngestResult{
+		Ingested:    1,
+		Skipped:     4,
+		SkipDetails: map[SkipReason]int64{
+			SkipReasonConflictManual: 3,
+			SkipReasonValidation:     1,
+		},
+	}
+
+	rows2 := []ResolutionRow{
+		{Email: "user6@example.com", Login: "user6", Source: SourceSeed, ResolvedAt: now},
+	}
+
+	err = ingester.IngestResolution(context.Background(), rows2)
+	if err != nil {
+		t.Fatalf("second batch failed: %v", err)
+	}
+
+	// Skipped should be 3 + 4 = 7
+	if ingester.GetSkipped() != 7 {
+		t.Errorf("expected skipped count to be 7 after second batch, got %d", ingester.GetSkipped())
+	}
+}
+
+// TestIngester_SkipDetailsAccumulation verifies SkipDetails accumulates across multiple calls.
+func TestIngester_SkipDetailsAccumulation(t *testing.T) {
+	db := &mockDB{}
+	ingester := NewIngester(db)
+
+	now := time.Now().UTC()
+
+	// First batch
+	db.result = &IngestResult{
+		Ingested:    3,
+		Skipped:     2,
+		SkipDetails: map[SkipReason]int64{
+			SkipReasonConflictManual: 1,
+			SkipReasonConflictOlder:  1,
+		},
+	}
+
+	rows1 := []ResolutionRow{
+		{Email: "user1@example.com", Login: "user1", Source: SourceLive, ResolvedAt: now},
+	}
+
+	err := ingester.IngestResolution(context.Background(), rows1)
+	if err != nil {
+		t.Fatalf("first batch failed: %v", err)
+	}
+
+	// Verify initial SkipDetails
+	details := ingester.GetSkipDetails()
+	if len(details) != 2 {
+		t.Errorf("expected 2 skip reason categories, got %d", len(details))
+	}
+	if details[SkipReasonConflictManual] != 1 {
+		t.Errorf("expected conflict_manual count to be 1, got %d", details[SkipReasonConflictManual])
+	}
+	if details[SkipReasonConflictOlder] != 1 {
+		t.Errorf("expected conflict_older count to be 1, got %d", details[SkipReasonConflictOlder])
+	}
+
+	// Second batch - adds to existing reasons and introduces new ones
+	db.result = &IngestResult{
+		Ingested:    2,
+		Skipped:     3,
+		SkipDetails: map[SkipReason]int64{
+			SkipReasonConflictManual: 2,  // Should add to existing
+			SkipReasonValidation:     1,  // New reason
+		},
+	}
+
+	rows2 := []ResolutionRow{
+		{Email: "user2@example.com", Login: "user2", Source: SourceLive, ResolvedAt: now},
+	}
+
+	err = ingester.IngestResolution(context.Background(), rows2)
+	if err != nil {
+		t.Fatalf("second batch failed: %v", err)
+	}
+
+	// Verify accumulation
+	details = ingester.GetSkipDetails()
+	if len(details) != 3 {
+		t.Errorf("expected 3 skip reason categories, got %d", len(details))
+	}
+
+	// conflict_manual should be 1 + 2 = 3
+	if details[SkipReasonConflictManual] != 3 {
+		t.Errorf("expected conflict_manual count to be 3 (accumulated), got %d", details[SkipReasonConflictManual])
+	}
+
+	// conflict_older should remain 1
+	if details[SkipReasonConflictOlder] != 1 {
+		t.Errorf("expected conflict_older count to remain 1, got %d", details[SkipReasonConflictOlder])
+	}
+
+	// validation should be 1
+	if details[SkipReasonValidation] != 1 {
+		t.Errorf("expected validation count to be 1, got %d", details[SkipReasonValidation])
+	}
+
+	// Third batch - zero skips should not affect existing details
+	db.result = &IngestResult{
+		Ingested:    5,
+		Skipped:     0,
+		SkipDetails: map[SkipReason]int64{},
+	}
+
+	rows3 := []ResolutionRow{
+		{Email: "user3@example.com", Login: "user3", Source: SourceLive, ResolvedAt: now},
+	}
+
+	err = ingester.IngestResolution(context.Background(), rows3)
+	if err != nil {
+		t.Fatalf("third batch failed: %v", err)
+	}
+
+	// Verify no changes from zero-skip batch
+	details = ingester.GetSkipDetails()
+	if details[SkipReasonConflictManual] != 3 {
+		t.Errorf("expected conflict_manual count to remain 3, got %d", details[SkipReasonConflictManual])
+	}
+}
+
+// TestIngester_ProcessedInvariant verifies Processed = Ingested + Skipped invariant.
+func TestIngester_ProcessedInvariant(t *testing.T) {
+	now := time.Now().UTC()
+
+	testCases := []struct {
+		name     string
+		result   *IngestResult
+		rowCount int
+	}{
+		{
+			name: "all ingested",
+			result: &IngestResult{
+				Ingested:    5,
+				Skipped:     0,
+				SkipDetails: map[SkipReason]int64{},
+			},
+			rowCount: 5,
+		},
+		{
+			name: "all skipped",
+			result: &IngestResult{
+				Ingested:    0,
+				Skipped:     4,
+				SkipDetails: map[SkipReason]int64{
+					SkipReasonConflictOlder: 4,
+				},
+			},
+			rowCount: 4,
+		},
+		{
+			name: "mixed ingest and skip",
+			result: &IngestResult{
+				Ingested:    3,
+				Skipped:     2,
+				SkipDetails: map[SkipReason]int64{
+					SkipReasonConflictManual: 1,
+					SkipReasonConflictOlder:  1,
+				},
+			},
+			rowCount: 5,
+		},
+		{
+			name: "multiple skip reasons",
+			result: &IngestResult{
+				Ingested:    2,
+				Skipped:     8,
+				SkipDetails: map[SkipReason]int64{
+					SkipReasonConflictManual: 3,
+					SkipReasonConflictOlder:  2,
+					SkipReasonValidation:     2,
+					SkipReasonDatabase:       1,
+				},
+			},
+			rowCount: 10,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := &mockDB{}
+			ingester := NewIngester(db)
+
+			// Build row batch
+			rows := make([]ResolutionRow, tc.rowCount)
+			for i := 0; i < tc.rowCount; i++ {
+				rows[i] = ResolutionRow{
+					Email:      fmt.Sprintf("user%d@example.com", i),
+					Login:      fmt.Sprintf("user%d", i),
+					Source:     SourceLive,
+					ResolvedAt: now,
+				}
+			}
+
+			db.result = tc.result
+
+			err := ingester.IngestResolution(context.Background(), rows)
+			if err != nil {
+				t.Fatalf("batch failed: %v", err)
+			}
+
+			// Verify invariant: Processed = Ingested + Skipped
+			processed := ingester.GetProcessed()
+			ingested := ingester.GetIngested()
+			skipped := ingester.GetSkipped()
+
+			expectedProcessed := ingested + skipped
+			if processed != expectedProcessed {
+				t.Errorf("processed invariant violated: processed=%d, ingested=%d, skipped=%d, expected processed=%d",
+					processed, ingested, skipped, expectedProcessed)
+			}
+
+			// Also verify it matches the input row count
+			if processed != int64(tc.rowCount) {
+				t.Errorf("processed count mismatch: got %d, expected %d (row count)",
+					processed, tc.rowCount)
+			}
+
+			// Verify SkipDetails sum matches Skipped
+			skipDetailsSum := int64(0)
+			for _, count := range ingester.GetSkipDetails() {
+				skipDetailsSum += count
+			}
+			if skipDetailsSum != skipped {
+				t.Errorf("SkipDetails sum mismatch: sum=%d, skipped=%d", skipDetailsSum, skipped)
+			}
+		})
+	}
+}
+
+// TestIngester_ProcessedInvariant_MultipleBatches verifies invariant across multiple batches.
+func TestIngester_ProcessedInvariant_MultipleBatches(t *testing.T) {
+	db := &mockDB{}
+	ingester := NewIngester(db)
+
+	now := time.Now().UTC()
+
+	batches := []struct {
+		ingested int64
+		skipped  int64
+		reasons  map[SkipReason]int64
+	}{
+		{5, 0, map[SkipReason]int64{}},                                    // All ingested
+		{2, 3, map[SkipReason]int64{SkipReasonConflictManual: 3}},       // Mixed
+		{0, 4, map[SkipReason]int64{SkipReasonConflictOlder: 4}},       // All skipped
+		{3, 2, map[SkipReason]int64{SkipReasonValidation: 2}},           // Mixed with validation
+	}
+
+	totalProcessed := int64(0)
+	totalIngested := int64(0)
+	totalSkipped := int64(0)
+
+	for i, batch := range batches {
+		db.result = &IngestResult{
+			Ingested:    batch.ingested,
+			Skipped:     batch.skipped,
+			SkipDetails: batch.reasons,
+		}
+
+		rowCount := batch.ingested + batch.skipped
+		rows := make([]ResolutionRow, rowCount)
+		for j := 0; j < int(rowCount); j++ {
+			rows[j] = ResolutionRow{
+				Email:      fmt.Sprintf("batch%d_user%d@example.com", i, j),
+				Login:      fmt.Sprintf("user%d", j),
+				Source:     SourceLive,
+				ResolvedAt: now,
+			}
+		}
+
+		err := ingester.IngestResolution(context.Background(), rows)
+		if err != nil {
+			t.Fatalf("batch %d failed: %v", i, err)
+		}
+
+		totalProcessed += rowCount
+		totalIngested += batch.ingested
+		totalSkipped += batch.skipped
+
+		// Verify invariant after each batch
+		processed := ingester.GetProcessed()
+		ingested := ingester.GetIngested()
+		skipped := ingester.GetSkipped()
+
+		if processed != ingested+skipped {
+			t.Errorf("batch %d: invariant violated: processed=%d, ingested=%d, skipped=%d",
+				i, processed, ingested, skipped)
+		}
+
+		if processed != totalProcessed {
+			t.Errorf("batch %d: processed mismatch: got %d, expected %d",
+				i, processed, totalProcessed)
+		}
+	}
+
+	// Final verification
+	if ingester.GetProcessed() != totalProcessed {
+		t.Errorf("final processed mismatch: got %d, expected %d",
+			ingester.GetProcessed(), totalProcessed)
+	}
+	if ingester.GetIngested() != totalIngested {
+		t.Errorf("final ingested mismatch: got %d, expected %d",
+			ingester.GetIngested(), totalIngested)
+	}
+	if ingester.GetSkipped() != totalSkipped {
+		t.Errorf("final skipped mismatch: got %d, expected %d",
+			ingester.GetSkipped(), totalSkipped)
+	}
+}
+
+// TestIngester_GetterMethods verifies all getter methods return correct values.
+func TestIngester_GetterMethods(t *testing.T) {
+	db := &mockDB{}
+	ingester := NewIngester(db)
+
+	now := time.Now().UTC()
+
+	// Test with no data
+	if ingester.GetProcessed() != 0 {
+		t.Errorf("GetProcessed() should return 0 initially, got %d", ingester.GetProcessed())
+	}
+	if ingester.GetIngested() != 0 {
+		t.Errorf("GetIngested() should return 0 initially, got %d", ingester.GetIngested())
+	}
+	if ingester.GetSkipped() != 0 {
+		t.Errorf("GetSkipped() should return 0 initially, got %d", ingester.GetSkipped())
+	}
+	if len(ingester.GetSkipDetails()) != 0 {
+		t.Errorf("GetSkipDetails() should return empty map initially, got %d entries", len(ingester.GetSkipDetails()))
+	}
+
+	// Add data
+	db.result = &IngestResult{
+		Ingested:    10,
+		Skipped:     5,
+		SkipDetails: map[SkipReason]int64{
+			SkipReasonConflictManual: 2,
+			SkipReasonConflictOlder:  3,
+		},
+	}
+
+	rows := make([]ResolutionRow, 15)
+	for i := 0; i < 15; i++ {
+		rows[i] = ResolutionRow{
+			Email:      fmt.Sprintf("user%d@example.com", i),
+			Login:      fmt.Sprintf("user%d", i),
+			Source:     SourceLive,
+			ResolvedAt: now,
+		}
+	}
+
+	err := ingester.IngestResolution(context.Background(), rows)
+	if err != nil {
+		t.Fatalf("batch failed: %v", err)
+	}
+
+	// Verify getter methods return expected values
+	if got := ingester.GetProcessed(); got != 15 {
+		t.Errorf("GetProcessed() = %d, want 15", got)
+	}
+	if got := ingester.GetIngested(); got != 10 {
+		t.Errorf("GetIngested() = %d, want 10", got)
+	}
+	if got := ingester.GetSkipped(); got != 5 {
+		t.Errorf("GetSkipped() = %d, want 5", got)
+	}
+
+	details := ingester.GetSkipDetails()
+	if len(details) != 2 {
+		t.Errorf("GetSkipDetails() returned %d entries, want 2", len(details))
+	}
+	if details[SkipReasonConflictManual] != 2 {
+		t.Errorf("GetSkipDetails()[conflict_manual] = %d, want 2", details[SkipReasonConflictManual])
+	}
+	if details[SkipReasonConflictOlder] != 3 {
+		t.Errorf("GetSkipDetails()[conflict_older] = %d, want 3", details[SkipReasonConflictOlder])
+	}
+
+	// Verify that returned map is the actual internal map (not a copy)
+	// by modifying it and checking if changes are reflected
+	details[SkipReasonValidation] = 99
+	details2 := ingester.GetSkipDetails()
+	if details2[SkipReasonValidation] != 99 {
+		t.Error("GetSkipDetails() appears to return a copy instead of the actual map")
+	}
+}
+
+// TestIngester_AllSkipReasons verifies all skip reason types are tracked correctly.
+func TestIngester_AllSkipReasons(t *testing.T) {
+	db := &mockDB{}
+	ingester := NewIngester(db)
+
+	now := time.Now().UTC()
+
+	// Test all skip reason types
+	db.result = &IngestResult{
+		Ingested:    0,
+		Skipped:     5,
+		SkipDetails: map[SkipReason]int64{
+			SkipReasonConflictManual: 1,
+			SkipReasonConflictOlder:  1,
+			SkipReasonValidation:     1,
+			SkipReasonDatabase:       1,
+			SkipReasonOther:          1,
+		},
+	}
+
+	rows := []ResolutionRow{
+		{Email: "user@example.com", Login: "user", Source: SourceLive, ResolvedAt: now},
+	}
+
+	err := ingester.IngestResolution(context.Background(), rows)
+	if err != nil {
+		t.Fatalf("batch failed: %v", err)
+	}
+
+	details := ingester.GetSkipDetails()
+
+	// Verify all reasons are tracked
+	expectedReasons := []SkipReason{
+		SkipReasonConflictManual,
+		SkipReasonConflictOlder,
+		SkipReasonValidation,
+		SkipReasonDatabase,
+		SkipReasonOther,
+	}
+
+	for _, reason := range expectedReasons {
+		if count, exists := details[reason]; !exists {
+			t.Errorf("skip reason %q not found in SkipDetails", reason)
+		} else if count != 1 {
+			t.Errorf("skip reason %q has count %d, want 1", reason, count)
+		}
+	}
+
+	// Verify total skipped
+	if ingester.GetSkipped() != 5 {
+		t.Errorf("GetSkipped() = %d, want 5", ingester.GetSkipped())
+	}
+
+	// Verify SkipDetails sum
+	sum := int64(0)
+	for _, count := range details {
+		sum += count
+	}
+	if sum != 5 {
+		t.Errorf("SkipDetails sum = %d, want 5", sum)
 	}
 }

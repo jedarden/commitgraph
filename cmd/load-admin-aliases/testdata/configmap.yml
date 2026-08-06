@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: admin-alias-configmap
+  namespace: commitgraph
+data:
+  aliases.yml: |
+    github:
+      - source: old-johndoe
+        target: johndoe
+      - source: jane-bot
+        target: jane
+      - source: deprecated-user
+        target: current-user

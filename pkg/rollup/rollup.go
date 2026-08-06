@@ -55,22 +55,23 @@ func (qb QuarantineBounds) IsIncluded(committedAt time.Time) bool {
 
 // Commit represents a single commit for rollup computation.
 type Commit struct {
-	SHA          string    // Commit SHA
-	AuthorEmail  string    // Author email (for identity resolution)
-	AuthorName   string    // Author name
-	CommittedAt  time.Time // Commit date (UTC)
-	Message      string    // Commit message
-	Tools        []string  // Detected AI tools (empty if no AI tool detected)
+	SHA         string    // Commit SHA
+	AuthorEmail string    // Author email (for identity resolution)
+	AuthorName  string    // Author name
+	CommittedAt time.Time // Commit date (UTC)
+	Message     string    // Commit message
+	Tools       []string  // Detected AI tools (empty if no AI tool detected)
 }
 
 // RollupRow represents a single rollup aggregation row.
 type RollupRow struct {
-	UserEmail  string    // Author email (resolved to user_id later)
-	RepoID     int64     // Repository ID
-	Tool       string    // AI tool name
-	Day        time.Time // Day (UTC, midnight)
-	Count      int       // Number of commits
-	InsertTime time.Time // When this repo was last scanned
+	UserEmail string    // Author email (resolved to user_id later)
+	RepoID    int64     // Repository ID
+	Tool      string    // AI tool name
+	Day       time.Time // Day (UTC, midnight)
+	Count     int       // Number of commits
+	// InsertTime is set by database DEFAULT transaction_timestamp()
+	// and is NOT managed by application code.
 }
 
 // ComputeRollup computes (user, repo, tool, day, count) aggregations
@@ -118,13 +119,13 @@ func ComputeRollup(commits []Commit, repoID int64, bounds QuarantineBounds) []Ro
 				rollupMap[key] = existing
 			} else {
 				// Create new rollup row
+				// Note: InsertTime is set by database DEFAULT transaction_timestamp()
 				rollupMap[key] = RollupRow{
-					UserEmail:  commit.AuthorEmail,
-					RepoID:     repoID,
-					Tool:       tool,
-					Day:        day,
-					Count:      1,
-					InsertTime: time.Now().UTC(),
+					UserEmail: commit.AuthorEmail,
+					RepoID:    repoID,
+					Tool:      tool,
+					Day:       day,
+					Count:     1,
 				}
 			}
 		}

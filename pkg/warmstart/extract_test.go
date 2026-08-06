@@ -2300,6 +2300,426 @@ func TestCollectMissingRefFiles(t *testing.T) {
 	}
 }
 
+// TestCollectMissingRefFiles_NoFilesExpected tests that when no .pack files are present,
+// the function returns an empty list (no .ref files expected)
+func TestCollectMissingRefFiles_NoFilesExpected(t *testing.T) {
+	tests := []struct {
+		name        string
+		members     []TarballMember
+		expected    []string
+		description string
+	}{
+		{
+			name: "empty member list",
+			members: []TarballMember{},
+			expected: []string{},
+			description: "Empty member list returns empty missing list",
+		},
+		{
+			name: "only non-pack files",
+			members: []TarballMember{
+				{Name: "config.json", Data: []byte("{}")},
+				{Name: "ref", Data: []byte("refs/heads/main abc123")},
+				{Name: "README.md", Data: []byte("# readme")},
+			},
+			expected: []string{},
+			description: "Non-pack files only, no .ref files expected",
+		},
+		{
+			name: "only ref files no pack files",
+			members: []TarballMember{
+				{Name: "objects/pack/pack-abc.ref", Data: []byte("ref data")},
+				{Name: "objects/pack/pack-def.ref", Data: []byte("ref data")},
+			},
+			expected: []string{},
+			description: "Only .ref files present, no .pack files to check",
+		},
+		{
+			name: "idx files without pack files",
+			members: []TarballMember{
+				{Name: "objects/pack/pack-abc.idx", Data: []byte("idx data")},
+				{Name: "objects/pack/pack-def.idx", Data: []byte("idx data")},
+			},
+			expected: []string{},
+			description: "Only .idx files present, no .pack files to check",
+		},
+		{
+			name: "mixed non-pack files",
+			members: []TarballMember{
+				{Name: "config.json", Data: []byte("{}")},
+				{Name: "objects/pack/pack-abc.idx", Data: []byte("idx data")},
+				{Name: "objects/pack/pack-def.ref", Data: []byte("ref data")},
+				{Name: "metadata.json", Data: []byte("{}")},
+			},
+			expected: []string{},
+			description: "Mix of non-pack files, no .ref files expected",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := CollectMissingRefFiles(tt.members)
+
+			if len(result) != len(tt.expected) {
+				t.Errorf("CollectMissingRefFiles() returned %d items, want %d", len(result), len(tt.expected))
+				t.Logf("Got:      %v", result)
+				t.Logf("Expected: %v", tt.expected)
+				return
+			}
+
+			for i := range result {
+				if result[i] != tt.expected[i] {
+					t.Errorf("CollectMissingRefFiles()[%d] = %q, want %q", i, result[i], tt.expected[i])
+					return
+				}
+			}
+
+			t.Logf("PASS: %s", tt.description)
+		})
+	}
+}
+
+// TestCollectMissingRefFiles_AllPresent tests that when all .pack files have
+// corresponding .ref files, the function returns an empty list
+func TestCollectMissingRefFiles_AllPresent(t *testing.T) {
+	tests := []struct {
+		name        string
+		members     []TarballMember
+		expected    []string
+		description string
+	}{
+		{
+			name: "single pack with complete set",
+			members: []TarballMember{
+				{Name: "objects/pack/pack-abc.pack", Data: []byte("pack data")},
+				{Name: "objects/pack/pack-abc.ref", Data: []byte("ref data")},
+			},
+			expected: []string{},
+			description: "Single .pack file with its .ref file present",
+		},
+		{
+			name: "multiple packs with complete sets",
+			members: []TarballMember{
+				{Name: "objects/pack/pack-abc.pack", Data: []byte("pack data")},
+				{Name: "objects/pack/pack-abc.ref", Data: []byte("ref data")},
+				{Name: "objects/pack/pack-def.pack", Data: []byte("pack data")},
+				{Name: "objects/pack/pack-def.ref", Data: []byte("ref data")},
+				{Name: "objects/pack/pack-ghi.pack", Data: []byte("pack data")},
+				{Name: "objects/pack/pack-ghi.ref", Data: []byte("ref data")},
+			},
+			expected: []string{},
+			description: "Multiple .pack files all with their .ref files present",
+		},
+		{
+			name: "complete sets with additional files",
+			members: []TarballMember{
+				{Name: "objects/pack/pack-abc.pack", Data: []byte("pack data")},
+				{Name: "objects/pack/pack-abc.idx", Data: []byte("idx data")},
+				{Name: "objects/pack/pack-abc.ref", Data: []byte("ref data")},
+				{Name: "objects/pack/pack-abc.promisor", Data: []byte("promisor data")},
+				{Name: "config.json", Data: []byte("{}")},
+			},
+			expected: []string{},
+			description: "Complete pack set with additional companion and metadata files",
+		},
+		{
+			name: "pack files without standard prefix",
+			members: []TarballMember{
+				{Name: "pack-abc.pack", Data: []byte("pack data")},
+				{Name: "pack-abc.ref", Data: []byte("ref data")},
+				{Name: "pack-def.pack", Data: []byte("pack data")},
+				{Name: "pack-def.ref", Data: []byte("ref data")},
+			},
+			expected: []string{},
+			description: "Pack files without objects/pack prefix, all refs present",
+		},
+		{
+			name: "complete sets in nested directories",
+			members: []TarballMember{
+				{Name: "a/b/c/pack-one.pack", Data: []byte("pack data")},
+				{Name: "a/b/c/pack-one.ref", Data: []byte("ref data")},
+				{Name: "x/y/z/pack-two.pack", Data: []byte("pack data")},
+				{Name: "x/y/z/pack-two.ref", Data: []byte("ref data")},
+			},
+			expected: []string{},
+			description: "Pack files in nested directories with all refs present",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := CollectMissingRefFiles(tt.members)
+
+			if len(result) != len(tt.expected) {
+				t.Errorf("CollectMissingRefFiles() returned %d items, want %d", len(result), len(tt.expected))
+				t.Logf("Got:      %v", result)
+				t.Logf("Expected: %v", tt.expected)
+				return
+			}
+
+			for i := range result {
+				if result[i] != tt.expected[i] {
+					t.Errorf("CollectMissingRefFiles()[%d] = %q, want %q", i, result[i], tt.expected[i])
+					return
+				}
+			}
+
+			t.Logf("PASS: %s", tt.description)
+		})
+	}
+}
+
+// TestCollectMissingRefFiles_SomeMissing tests that when some .ref files are missing,
+// the function correctly identifies and returns the list of missing files
+func TestCollectMissingRefFiles_SomeMissing(t *testing.T) {
+	tests := []struct {
+		name        string
+		members     []TarballMember
+		expected    []string
+		description string
+	}{
+		{
+			name: "one of two packs missing ref",
+			members: []TarballMember{
+				{Name: "objects/pack/pack-abc.pack", Data: []byte("pack data")},
+				{Name: "objects/pack/pack-abc.ref", Data: []byte("ref data")},
+				{Name: "objects/pack/pack-def.pack", Data: []byte("pack data")},
+			},
+			expected: []string{"objects/pack/pack-def.ref"},
+			description: "One of two .pack files missing its .ref file",
+		},
+		{
+			name: "multiple packs multiple refs missing",
+			members: []TarballMember{
+				{Name: "objects/pack/pack-abc.pack", Data: []byte("pack data")},
+				{Name: "objects/pack/pack-def.pack", Data: []byte("pack data")},
+				{Name: "objects/pack/pack-ghi.pack", Data: []byte("pack data")},
+				{Name: "objects/pack/pack-ghi.ref", Data: []byte("ref data")},
+			},
+			expected: []string{"objects/pack/pack-abc.ref", "objects/pack/pack-def.ref"},
+			description: "Two of three .pack files missing their .ref files",
+		},
+		{
+			name: "all packs missing refs",
+			members: []TarballMember{
+				{Name: "objects/pack/pack-abc.pack", Data: []byte("pack data")},
+				{Name: "objects/pack/pack-def.pack", Data: []byte("pack data")},
+				{Name: "objects/pack/pack-ghi.pack", Data: []byte("pack data")},
+			},
+			expected: []string{"objects/pack/pack-abc.ref", "objects/pack/pack-def.ref", "objects/pack/pack-ghi.ref"},
+			description: "All .pack files missing their .ref files",
+		},
+		{
+			name: "missing ref in middle of list",
+			members: []TarballMember{
+				{Name: "objects/pack/pack-aaa.pack", Data: []byte("pack data")},
+				{Name: "objects/pack/pack-aaa.ref", Data: []byte("ref data")},
+				{Name: "objects/pack/pack-bbb.pack", Data: []byte("pack data")},
+				{Name: "objects/pack/pack-ccc.pack", Data: []byte("pack data")},
+				{Name: "objects/pack/pack-ccc.ref", Data: []byte("ref data")},
+			},
+			expected: []string{"objects/pack/pack-bbb.ref"},
+			description: "Middle .pack file missing its .ref file",
+		},
+		{
+			name: "mixed with other files present",
+			members: []TarballMember{
+				{Name: "objects/pack/pack-abc.pack", Data: []byte("pack data")},
+				{Name: "objects/pack/pack-abc.idx", Data: []byte("idx data")},
+				{Name: "objects/pack/pack-def.pack", Data: []byte("pack data")},
+				{Name: "objects/pack/pack-def.idx", Data: []byte("idx data")},
+				{Name: "objects/pack/pack-def.ref", Data: []byte("ref data")},
+				{Name: "config.json", Data: []byte("{}")},
+			},
+			expected: []string{"objects/pack/pack-abc.ref"},
+			description: "One .ref missing among mix of pack files and metadata",
+		},
+		{
+			name: "missing refs without standard prefix",
+			members: []TarballMember{
+				{Name: "pack-abc.pack", Data: []byte("pack data")},
+				{Name: "pack-abc.ref", Data: []byte("ref data")},
+				{Name: "pack-def.pack", Data: []byte("pack data")},
+				{Name: "pack-ghi.pack", Data: []byte("pack data")},
+				{Name: "pack-ghi.ref", Data: []byte("ref data")},
+			},
+			expected: []string{"pack-def.ref"},
+			description: "Pack files without objects/pack prefix, one ref missing",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := CollectMissingRefFiles(tt.members)
+
+			if len(result) != len(tt.expected) {
+				t.Errorf("CollectMissingRefFiles() returned %d items, want %d", len(result), len(tt.expected))
+				t.Logf("Got:      %v", result)
+				t.Logf("Expected: %v", tt.expected)
+				return
+			}
+
+			for i := range result {
+				if result[i] != tt.expected[i] {
+					t.Errorf("CollectMissingRefFiles()[%d] = %q, want %q", i, result[i], tt.expected[i])
+					t.Logf("Got:      %v", result)
+					t.Logf("Expected: %v", tt.expected)
+					return
+				}
+			}
+
+			t.Logf("PASS: %s", tt.description)
+		})
+	}
+}
+
+// TestCollectMissingRefFiles_EdgeCases tests edge cases and boundary conditions
+// for the CollectMissingRefFiles function
+func TestCollectMissingRefFiles_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name        string
+		members     []TarballMember
+		expected    []string
+		description string
+	}{
+		{
+			name: "pack file with special characters",
+			members: []TarballMember{
+				{Name: "objects/pack/pack-abc_123.pack", Data: []byte("pack data")},
+				{Name: "objects/pack/pack-abc_123.ref", Data: []byte("ref data")},
+				{Name: "objects/pack/pack-def.456.pack", Data: []byte("pack data")},
+			},
+			expected: []string{"objects/pack/pack-def.456.ref"},
+			description: "Pack files with special characters (underscores, dots)",
+		},
+		{
+			name: "pack file with double extension",
+			members: []TarballMember{
+				{Name: "objects/pack/pack-abc.pack.promisor", Data: []byte("promisor data")},
+			},
+			expected: []string{},
+			description: "File ending in .promisor (not .pack) is ignored as pack file",
+		},
+		{
+			name: "very long pack file names",
+			members: []TarballMember{
+				{Name: "objects/pack/pack-verylongname-1234567890abcdef.pack", Data: []byte("pack data")},
+				{Name: "objects/pack/pack-verylongname-1234567890abcdef.ref", Data: []byte("ref data")},
+				{Name: "objects/pack/pack-anotherverylongname-0987654321fedcba.pack", Data: []byte("pack data")},
+			},
+			expected: []string{"objects/pack/pack-anotherverylongname-0987654321fedcba.ref"},
+			description: "Very long pack file names handled correctly",
+		},
+		{
+			name: "pack file with hyphens only",
+			members: []TarballMember{
+				{Name: "objects/pack/pack-.pack", Data: []byte("pack data")},
+				{Name: "objects/pack/pack-.ref", Data: []byte("ref data")},
+			},
+			expected: []string{},
+			description: "Pack file ending with hyphen before extension",
+		},
+		{
+			name: "multiple dots in filename",
+			members: []TarballMember{
+				{Name: "objects/pack/pack.test.123.pack", Data: []byte("pack data")},
+				{Name: "objects/pack/pack.test.123.ref", Data: []byte("ref data")},
+				{Name: "objects/pack/pack.another.test.pack", Data: []byte("pack data")},
+			},
+			expected: []string{"objects/pack/pack.another.test.ref"},
+			description: "Pack files with multiple dots in base name",
+		},
+		{
+			name: "pack file at root level",
+			members: []TarballMember{
+				{Name: "pack-root.pack", Data: []byte("pack data")},
+				{Name: "pack-root.ref", Data: []byte("ref data")},
+				{Name: "pack-another.pack", Data: []byte("pack data")},
+			},
+			expected: []string{"pack-another.ref"},
+			description: "Pack files at root level without directory prefix",
+		},
+		{
+			name: "preserves insertion order",
+			members: []TarballMember{
+				{Name: "objects/pack/pack-001.pack", Data: []byte("pack data")},
+				{Name: "objects/pack/pack-002.pack", Data: []byte("pack data")},
+				{Name: "objects/pack/pack-003.pack", Data: []byte("pack data")},
+				{Name: "objects/pack/pack-002.ref", Data: []byte("ref data")},
+			},
+			expected: []string{"objects/pack/pack-001.ref", "objects/pack/pack-003.ref"},
+			description: "Missing files reported in pack file insertion order",
+		},
+		{
+			name: "case sensitivity in filenames",
+			members: []TarballMember{
+				{Name: "objects/pack/PACK.pack", Data: []byte("pack data")},
+				{Name: "objects/pack/pack.ref", Data: []byte("ref data")},
+			},
+			expected: []string{"objects/pack/PACK.ref"},
+			description: "Case-sensitive matching: PACK.pack doesn't match pack.ref",
+		},
+		{
+			name: "pack file without .pack extension",
+			members: []TarballMember{
+				{Name: "objects/pack/pack-abc", Data: []byte("pack data")},
+			},
+			expected: []string{},
+			description: "File without .pack extension is ignored (not a pack file)",
+		},
+		{
+			name: "duplicate pack files",
+			members: []TarballMember{
+				{Name: "objects/pack/pack-abc.pack", Data: []byte("pack data")},
+				{Name: "objects/pack/pack-abc.pack", Data: []byte("pack data")},
+			},
+			expected: []string{"objects/pack/pack-abc.ref", "objects/pack/pack-abc.ref"},
+			description: "Duplicate pack files each checked independently",
+		},
+		{
+			name: "ref file with different extension",
+			members: []TarballMember{
+				{Name: "objects/pack/pack-abc.pack", Data: []byte("pack data")},
+				{Name: "objects/pack/pack-abc.txt", Data: []byte("not a ref file")},
+			},
+			expected: []string{"objects/pack/pack-abc.ref"},
+			description: "Ref file with wrong extension still counts as missing .ref",
+		},
+		{
+			name: "empty pack name",
+			members: []TarballMember{
+				{Name: ".pack", Data: []byte("pack data")},
+			},
+			expected: []string{".ref"},
+			description: "Edge case: pack file with minimal name",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := CollectMissingRefFiles(tt.members)
+
+			if len(result) != len(tt.expected) {
+				t.Errorf("CollectMissingRefFiles() returned %d items, want %d", len(result), len(tt.expected))
+				t.Logf("Got:      %v", result)
+				t.Logf("Expected: %v", tt.expected)
+				return
+			}
+
+			for i := range result {
+				if result[i] != tt.expected[i] {
+					t.Errorf("CollectMissingRefFiles()[%d] = %q, want %q", i, result[i], tt.expected[i])
+					t.Logf("Got:      %v", result)
+					t.Logf("Expected: %v", tt.expected)
+					return
+				}
+			}
+
+			t.Logf("PASS: %s", tt.description)
+		})
+	}
+}
+
 func TestValidateRefFiles(t *testing.T) {
 	tests := []struct {
 		name        string

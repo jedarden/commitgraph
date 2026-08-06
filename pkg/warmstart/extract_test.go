@@ -89,7 +89,7 @@ func TestParseTarball_Valid(t *testing.T) {
 
 func TestParseTarball_MissingConfig(t *testing.T) {
 	members := []TarballMember{
-		{Name: "objects/pack/pack-123.pack", Data: []byte("data")},
+		{Name: "objects/pack/pack-123.pack", Data: []byte("PACK123456789")}, // 12 bytes, minimum valid header
 	}
 
 	tarball := createTestTarball(t, members)
@@ -147,7 +147,7 @@ func TestParseTarball_InvalidConfig(t *testing.T) {
 	members := []TarballMember{
 		{Name: "config.json", Data: configData},
 		{Name: "ref", Data: refData},
-		{Name: "objects/pack/pack-123.pack", Data: []byte("pack")},
+		{Name: "objects/pack/pack-123.pack", Data: []byte("PACK123456789")}, // 12 bytes, minimum valid header
 	}
 
 	tarball := createTestTarball(t, members)
@@ -172,7 +172,7 @@ func TestParseTarball_InvalidRefFormat(t *testing.T) {
 	members := []TarballMember{
 		{Name: "config.json", Data: configData},
 		{Name: "ref", Data: refData},
-		{Name: "objects/pack/pack-123.pack", Data: []byte("pack")},
+		{Name: "objects/pack/pack-123.pack", Data: []byte("PACK123456789")}, // 12 bytes, minimum valid header
 	}
 
 	tarball := createTestTarball(t, members)
@@ -256,7 +256,7 @@ func TestMaterialize_LooseRefNotPackedRefs(t *testing.T) {
 	refData := []byte("refs/heads/main abc123")
 
 	members := []TarballMember{
-		{Name: "objects/pack/pack-123.pack", Data: []byte("pack")},
+		{Name: "objects/pack/pack-123.pack", Data: []byte("PACK123456789")}, // 12 bytes, minimum valid header
 		{Name: "config.json", Data: configData},
 		{Name: "ref", Data: refData},
 	}
@@ -314,7 +314,7 @@ func TestMaterialize_GitConfigValuesSet(t *testing.T) {
 	refData := []byte("refs/heads/main abc123")
 
 	members := []TarballMember{
-		{Name: "objects/pack/pack-123.pack", Data: []byte("pack")},
+		{Name: "objects/pack/pack-123.pack", Data: []byte("PACK123456789")},
 		{Name: "config.json", Data: configData},
 		{Name: "ref", Data: refData},
 	}
@@ -376,7 +376,7 @@ func TestMaterialize_NotAGitRepo(t *testing.T) {
 	refData := []byte("refs/heads/main abc123")
 
 	members := []TarballMember{
-		{Name: "objects/pack/pack-123.pack", Data: []byte("pack")},
+		{Name: "objects/pack/pack-123.pack", Data: []byte("PACK123456789")},
 		{Name: "config.json", Data: configData},
 		{Name: "ref", Data: refData},
 	}
@@ -467,7 +467,7 @@ func TestParseTarball_TruncatedTarball(t *testing.T) {
 	refData := []byte("refs/heads/main abc123")
 
 	members := []TarballMember{
-		{Name: "objects/pack/pack-123.pack", Data: []byte("pack")},
+		{Name: "objects/pack/pack-123.pack", Data: []byte("PACK123456789")},
 		{Name: "config.json", Data: configData},
 		{Name: "ref", Data: refData},
 	}
@@ -511,7 +511,7 @@ func TestParseTarball_RefAtOriginalPath(t *testing.T) {
 	refData := []byte("abc123def456\n")
 
 	members := []TarballMember{
-		{Name: "objects/pack/pack-123.pack", Data: []byte("pack")},
+		{Name: "objects/pack/pack-123.pack", Data: []byte("PACK123456789")}, // 12 bytes, minimum valid header
 		{Name: "config.json", Data: configData},
 		{Name: "refs/heads/main", Data: refData},
 	}
@@ -544,7 +544,7 @@ func TestParseTarball_SymbolicRef(t *testing.T) {
 	refData := []byte("ref: refs/heads/main")
 
 	members := []TarballMember{
-		{Name: "objects/pack/pack-123.pack", Data: []byte("pack")},
+		{Name: "objects/pack/pack-123.pack", Data: []byte("PACK123456789")},
 		{Name: "config.json", Data: configData},
 		{Name: "HEAD", Data: refData},
 	}
@@ -577,7 +577,7 @@ func TestParseTarball_LegacyRefFormat(t *testing.T) {
 	refData := []byte("refs/heads/main abc123def456")
 
 	members := []TarballMember{
-		{Name: "objects/pack/pack-123.pack", Data: []byte("pack")},
+		{Name: "objects/pack/pack-123.pack", Data: []byte("PACK123456789")},
 		{Name: "config.json", Data: configData},
 		{Name: "ref", Data: refData},
 	}
@@ -609,7 +609,7 @@ func TestMaterialize_RefAtOriginalPath(t *testing.T) {
 	refData := []byte("abc123def456\n")
 
 	members := []TarballMember{
-		{Name: "objects/pack/pack-123.pack", Data: []byte("pack")},
+		{Name: "objects/pack/pack-123.pack", Data: []byte("PACK123456789")}, // 12 bytes, minimum valid header
 		{Name: "config.json", Data: configData},
 		{Name: "refs/heads/main", Data: refData},
 	}
@@ -670,7 +670,7 @@ func TestMaterialize_SymbolicRef(t *testing.T) {
 	refData := []byte("ref: refs/heads/main")
 
 	members := []TarballMember{
-		{Name: "objects/pack/pack-123.pack", Data: []byte("pack")},
+		{Name: "objects/pack/pack-123.pack", Data: []byte("PACK123456789")},
 		{Name: "config.json", Data: configData},
 		{Name: "HEAD", Data: refData},
 	}
@@ -720,7 +720,7 @@ func TestMaterialize_SymbolicRef(t *testing.T) {
 
 func TestParseTarball_WithPromisorAndRev(t *testing.T) {
 	// Test that .promisor and .rev files are properly extracted
-	packData := []byte("pack data")
+	packData := []byte("PACK123456789") // 12 bytes, minimum valid header
 	idxData := []byte("idx data")
 	promisorData := []byte("promisor data")
 	revData := []byte("rev data")
@@ -859,7 +859,7 @@ func TestSetGitConfigValue_ReadOnlyConfigFile(t *testing.T) {
 	refData := []byte("refs/heads/main abc123")
 
 	members := []TarballMember{
-		{Name: "objects/pack/pack-123.pack", Data: []byte("pack")},
+		{Name: "objects/pack/pack-123.pack", Data: []byte("PACK123456789")},
 		{Name: "config.json", Data: configData},
 		{Name: "ref", Data: refData},
 	}
@@ -910,7 +910,7 @@ func TestSetGitConfigValue_MissingConfigDirectory(t *testing.T) {
 	refData := []byte("refs/heads/main abc123")
 
 	members := []TarballMember{
-		{Name: "objects/pack/pack-123.pack", Data: []byte("pack")},
+		{Name: "objects/pack/pack-123.pack", Data: []byte("PACK123456789")},
 		{Name: "config.json", Data: configData},
 		{Name: "ref", Data: refData},
 	}
@@ -1192,6 +1192,66 @@ func TestParseTarball_PackFileHeaderTooSmall(t *testing.T) {
 	} else {
 		t.Errorf("expected *Error type, got %T: %v", err, err)
 	}
+}
+
+func TestParseTarball_TruncatedPackFileExactly11Bytes(t *testing.T) {
+	// Test detection of pack file that is exactly 11 bytes - just under the minimum 12 byte header size
+	// This is a boundary condition test for the minimum header size check
+	configData := []byte(`{
+			"core.repositoryformatversion": "1",
+			"remote.origin.promisor": "true",
+			"remote.origin.partialclonefilter": "blob:none"
+		}`)
+	refData := []byte("refs/heads/main abc123")
+
+	// Create pack file data that is exactly 11 bytes (1 byte under minimum)
+	// Minimum header size is 12 bytes: "PACK" (4) + version (4) + object count (4)
+	elevenBytePackData := []byte("PACK1234567") // 11 bytes - just under minimum
+
+	members := []TarballMember{
+		{Name: "objects/pack/pack-undersized.pack", Data: elevenBytePackData},
+		{Name: "config.json", Data: configData},
+		{Name: "ref", Data: refData},
+	}
+
+	tarball := createTestTarball(t, members)
+
+	_, err := ParseTarball(tarball)
+	if err == nil {
+		t.Error("expected Truncated error for 11-byte pack file, got nil")
+	}
+
+	// Verify it's a Truncated error with proper details
+	var truncErr *Error
+	if !errors.As(err, &truncErr) {
+		t.Fatalf("expected *Error type, got %T: %v", err, err)
+	}
+
+	if truncErr.Kind != Truncated {
+		t.Errorf("expected Truncated error kind, got %v", truncErr.Kind)
+	}
+	if truncErr.MemberName != "objects/pack/pack-undersized.pack" {
+		t.Errorf("expected member name 'objects/pack/pack-undersized.pack', got %s", truncErr.MemberName)
+	}
+
+	// Verify error context mentions both the actual size and minimum requirement
+	if !strings.Contains(truncErr.Context, "11 bytes") {
+		t.Errorf("expected context to mention '11 bytes', got: %s", truncErr.Context)
+	}
+	if !strings.Contains(truncErr.Context, "minimum 12 bytes") {
+		t.Errorf("expected context to mention minimum 12 bytes, got: %s", truncErr.Context)
+	}
+
+	// Verify the full error message is comprehensive
+	errMsg := truncErr.Error()
+	if !strings.Contains(errMsg, "member=objects/pack/pack-undersized.pack") {
+		t.Errorf("error message should include member name: %s", errMsg)
+	}
+	if !strings.Contains(errMsg, "truncated tarball") {
+		t.Errorf("error message should mention truncated tarball: %s", errMsg)
+	}
+
+	t.Logf("Comprehensive error message: %s", errMsg)
 }
 
 func TestTruncatedError_HasMemberName(t *testing.T) {

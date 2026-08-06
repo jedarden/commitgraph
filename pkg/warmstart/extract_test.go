@@ -76,9 +76,15 @@ func makeMockTarballWithPack(t *testing.T, packContent []byte, packName string) 
 	// Create minimal valid ref data (legacy format: "refpath SHA")
 	refData := []byte("refs/heads/main abc123")
 
-	// Build tarball members with the custom pack content
+	// Derive corresponding .idx and .ref filenames from the pack name
+	idxName := strings.TrimSuffix(packName, ".pack") + ".idx"
+	refFileName := strings.TrimSuffix(packName, ".pack") + ".ref"
+
+	// Build tarball members with the custom pack content and required companion files
 	members := []TarballMember{
 		{Name: packName, Data: packContent},
+		{Name: idxName, Data: []byte("test idx data")},
+		{Name: refFileName, Data: []byte("test ref data")},
 		{Name: "config.json", Data: configData},
 		{Name: "ref", Data: refData},
 	}
@@ -241,11 +247,15 @@ func TestParseTarball_MissingPackFileMember(t *testing.T) {
 func TestParseTarball_InvalidConfig(t *testing.T) {
 	configData := []byte("invalid json")
 	refData := []byte("refs/heads/main abc123")
+	idxData := []byte("test idx data")
+	refFileData := []byte("test ref data")
 
 	members := []TarballMember{
+		{Name: "objects/pack/pack-123.pack", Data: []byte("PACK123456789")}, // 12 bytes, minimum valid header
+		{Name: "objects/pack/pack-123.idx", Data: idxData},
+		{Name: "objects/pack/pack-123.ref", Data: refFileData},
 		{Name: "config.json", Data: configData},
 		{Name: "ref", Data: refData},
-		{Name: "objects/pack/pack-123.pack", Data: []byte("PACK123456789")}, // 12 bytes, minimum valid header
 	}
 
 	tarball := createTestTarball(t, members)
@@ -791,9 +801,13 @@ func TestMaterialize_SymbolicRef(t *testing.T) {
 
 	// Symbolic ref (e.g., for HEAD)
 	refData := []byte("ref: refs/heads/main")
+	idxData := []byte("test idx data")
+	refFileData := []byte("test ref data")
 
 	members := []TarballMember{
 		{Name: "objects/pack/pack-123.pack", Data: []byte("PACK123456789")},
+		{Name: "objects/pack/pack-123.idx", Data: idxData},
+		{Name: "objects/pack/pack-123.ref", Data: refFileData},
 		{Name: "config.json", Data: configData},
 		{Name: "HEAD", Data: refData},
 	}
@@ -982,9 +996,13 @@ func TestSetGitConfigValue_ReadOnlyConfigFile(t *testing.T) {
 			"remote.origin.partialclonefilter": "blob:none"
 		}`)
 	refData := []byte("refs/heads/main abc123")
+	idxData := []byte("test idx data")
+	refFileData := []byte("test ref data")
 
 	members := []TarballMember{
 		{Name: "objects/pack/pack-123.pack", Data: []byte("PACK123456789")},
+		{Name: "objects/pack/pack-123.idx", Data: idxData},
+		{Name: "objects/pack/pack-123.ref", Data: refFileData},
 		{Name: "config.json", Data: configData},
 		{Name: "ref", Data: refData},
 	}
@@ -1033,9 +1051,13 @@ func TestSetGitConfigValue_MissingConfigDirectory(t *testing.T) {
 			"remote.origin.partialclonefilter": "blob:none"
 		}`)
 	refData := []byte("refs/heads/main abc123")
+	idxData := []byte("test idx data")
+	refFileData := []byte("test ref data")
 
 	members := []TarballMember{
 		{Name: "objects/pack/pack-123.pack", Data: []byte("PACK123456789")},
+		{Name: "objects/pack/pack-123.idx", Data: idxData},
+		{Name: "objects/pack/pack-123.ref", Data: refFileData},
 		{Name: "config.json", Data: configData},
 		{Name: "ref", Data: refData},
 	}
@@ -1546,11 +1568,23 @@ func TestMakeMockTarballWithPack_UndersizedPack(t *testing.T) {
 				}
 
 				// Verify pack file content matches
-				if len(snapshot.PackFiles) != 1 {
-					t.Errorf("%s: expected 1 pack file, got %d", tt.description, len(snapshot.PackFiles))
+				// makeMockTarballWithPack creates complete tarballs with .pack, .idx, and .ref files
+				if len(snapshot.PackFiles) != 3 {
+					t.Errorf("%s: expected 3 pack files (.pack, .idx, .ref), got %d", tt.description, len(snapshot.PackFiles))
 				} else {
-					if !bytes.Equal(snapshot.PackFiles[0].Data, tt.packContent) {
-						t.Errorf("%s: pack content mismatch", tt.description)
+					// Find the .pack file and verify its content
+					foundPack := false
+					for _, pf := range snapshot.PackFiles {
+						if strings.HasSuffix(pf.Name, ".pack") {
+							if !bytes.Equal(pf.Data, tt.packContent) {
+								t.Errorf("%s: pack content mismatch", tt.description)
+							}
+							foundPack = true
+							break
+						}
+					}
+					if !foundPack {
+						t.Errorf("%s: .pack file not found in snapshot", tt.description)
 					}
 				}
 
@@ -1575,12 +1609,25 @@ func TestMakeMockTarballWithPack_CustomPackName(t *testing.T) {
 	}
 
 	// Verify pack file has the custom name
-	if len(snapshot.PackFiles) != 1 {
-		t.Fatalf("expected 1 pack file, got %d", len(snapshot.PackFiles))
+	// makeMockTarballWithPack creates complete tarballs with .pack, .idx, and .ref files
+	if len(snapshot.PackFiles) != 3 {
+		t.Fatalf("expected 3 pack files (.pack, .idx, .ref), got %d", len(snapshot.PackFiles))
 	}
 
-	if snapshot.PackFiles[0].Name != customPackName {
-		t.Errorf("expected pack name %s, got %s", customPackName, snapshot.PackFiles[0].Name)
+	// Find the .pack file and verify its name
+	foundPack := false
+	for _, pf := range snapshot.PackFiles {
+		if strings.HasSuffix(pf.Name, ".pack") {
+			if pf.Name != customPackName {
+				t.Errorf("expected pack name %s, got %s", customPackName, pf.Name)
+			}
+			foundPack = true
+			t.Logf("Custom pack name correctly set: %s", pf.Name)
+			break
+		}
+	}
+	if !foundPack {
+		t.Error(".pack file not found in snapshot")
 	}
 
 	t.Logf("Custom pack name correctly set: %s", snapshot.PackFiles[0].Name)
@@ -2455,3 +2502,206 @@ func TestValidateRefFiles_DirectoryDoesNotExist(t *testing.T) {
 		}
 	}
 }
+
+// TestParseTarball_MissingRefFile tests parsing a tarball with missing .ref files
+func TestParseTarball_MissingRefFile(t *testing.T) {
+		configData := []byte(`{
+			"core.repositoryformatversion": "1",
+			"remote.origin.promisor": "true",
+			"remote.origin.partialclonefilter": "blob:none"
+		}`)
+		refData := []byte("refs/heads/main abc123")
+
+		tests := []struct {
+			name         string
+			members      []TarballMember
+			errorKind    ErrorKind
+			memberName   string
+			description  string
+		}{
+			{
+				name: "single-pack-missing-ref",
+				members: []TarballMember{
+					{Name: "objects/pack/pack-123.pack", Data: []byte("PACK123456789")},
+					{Name: "objects/pack/pack-123.idx", Data: []byte("idx data")},
+					// Missing pack-123.ref
+					{Name: "config.json", Data: configData},
+					{Name: "ref", Data: refData},
+				},
+				errorKind:   MissingMember,
+				memberName:  ".ref",
+				description: "Single pack file missing its .ref file",
+			},
+			{
+				name: "multiple-packs-multiple-refs-missing",
+				members: []TarballMember{
+					{Name: "objects/pack/pack-abc.pack", Data: []byte("PACK123456789")},
+					{Name: "objects/pack/pack-abc.idx", Data: []byte("idx abc")},
+					// Missing pack-abc.ref
+					{Name: "objects/pack/pack-def.pack", Data: []byte("PACK987654321")},
+					{Name: "objects/pack/pack-def.idx", Data: []byte("idx def")},
+					// Missing pack-def.ref
+					{Name: "config.json", Data: configData},
+					{Name: "ref", Data: refData},
+				},
+				errorKind:   MissingMember,
+				memberName:  ".ref",
+				description: "Multiple pack files missing their .ref files",
+			},
+			{
+				name: "mixed-scenario-some-refs-missing",
+				members: []TarballMember{
+					{Name: "objects/pack/pack-abc.pack", Data: []byte("PACK123456789")},
+					{Name: "objects/pack/pack-abc.idx", Data: []byte("idx abc")},
+					{Name: "objects/pack/pack-abc.ref", Data: []byte("ref abc")},
+					{Name: "objects/pack/pack-def.pack", Data: []byte("PACK987654321")},
+					{Name: "objects/pack/pack-def.idx", Data: []byte("idx def")},
+					// Missing pack-def.ref
+					{Name: "objects/pack/pack-ghi.pack", Data: []byte("PACK1111122222")},
+					{Name: "objects/pack/pack-ghi.idx", Data: []byte("idx ghi")},
+					// Missing pack-ghi.ref
+					{Name: "config.json", Data: configData},
+					{Name: "ref", Data: refData},
+				},
+				errorKind:   MissingMember,
+				memberName:  ".ref",
+				description: "Mixed scenario: some pack files have .ref, some missing",
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				tarball := createTestTarball(t, tt.members)
+
+				_, err := ParseTarball(tarball)
+				if err == nil {
+					t.Fatalf("%s: expected error for missing .ref file, got nil", tt.description)
+				}
+
+				// Verify it's a MissingMember error with ".ref" member name
+				var missingErr *Error
+				if !errors.As(err, &missingErr) {
+					t.Fatalf("%s: expected *Error type, got %T: %v", tt.description, err, err)
+				}
+
+				if missingErr.Kind != tt.errorKind {
+					t.Errorf("%s: expected error kind %v, got %v", tt.description, tt.errorKind, missingErr.Kind)
+				}
+
+				if missingErr.MemberName != tt.memberName {
+					t.Errorf("%s: expected member name %q, got %q", tt.description, tt.memberName, missingErr.MemberName)
+				}
+
+				// Verify error context lists missing files
+				if len(missingErr.Context) > 0 {
+					t.Logf("%s: context shows missing files: %s", tt.description, missingErr.Context)
+				}
+
+				t.Logf("%s: correctly detected missing .ref files: %v", tt.description, missingErr)
+			})
+		}
+	}
+
+	// TestParseTarball_AllRefFilesPresent tests parsing a tarball with all .ref files present
+	func TestParseTarball_AllRefFilesPresent(t *testing.T) {
+		configData := []byte(`{
+			"core.repositoryformatversion": "1",
+			"remote.origin.promisor": "true",
+			"remote.origin.partialclonefilter": "blob:none"
+		}`)
+		refData := []byte("refs/heads/main abc123")
+
+		tests := []struct {
+			name         string
+			members      []TarballMember
+			packCount    int
+			description  string
+		}{
+			{
+				name: "single-pack-complete-set",
+				members: []TarballMember{
+					{Name: "objects/pack/pack-123.pack", Data: []byte("PACK123456789")},
+					{Name: "objects/pack/pack-123.idx", Data: []byte("idx data")},
+					{Name: "objects/pack/pack-123.ref", Data: []byte("ref data")},
+					{Name: "config.json", Data: configData},
+					{Name: "ref", Data: refData},
+				},
+				packCount:   3,
+				description: "Single pack file with complete set (.pack, .idx, .ref)",
+			},
+			{
+				name: "multiple-packs-all-complete-sets",
+				members: []TarballMember{
+					{Name: "objects/pack/pack-abc.pack", Data: []byte("PACK123456789")},
+					{Name: "objects/pack/pack-abc.idx", Data: []byte("idx abc")},
+					{Name: "objects/pack/pack-abc.ref", Data: []byte("ref abc")},
+					{Name: "objects/pack/pack-def.pack", Data: []byte("PACK987654321")},
+					{Name: "objects/pack/pack-def.idx", Data: []byte("idx def")},
+					{Name: "objects/pack/pack-def.ref", Data: []byte("ref def")},
+					{Name: "objects/pack/pack-ghi.pack", Data: []byte("PACK1111122222")},
+					{Name: "objects/pack/pack-ghi.idx", Data: []byte("idx ghi")},
+					{Name: "objects/pack/pack-ghi.ref", Data: []byte("ref ghi")},
+					{Name: "config.json", Data: configData},
+					{Name: "ref", Data: refData},
+				},
+				packCount:   9,
+				description: "Multiple pack files, all with complete sets (.pack, .idx, .ref)",
+			},
+			{
+				name: "pack-with-optional-files",
+				members: []TarballMember{
+					{Name: "objects/pack/pack-123.pack", Data: []byte("PACK123456789")},
+					{Name: "objects/pack/pack-123.idx", Data: []byte("idx data")},
+					{Name: "objects/pack/pack-123.ref", Data: []byte("ref data")},
+					{Name: "objects/pack/pack-123.promisor", Data: []byte("promisor data")},
+					{Name: "objects/pack/pack-123.rev", Data: []byte("rev data")},
+					{Name: "config.json", Data: configData},
+					{Name: "ref", Data: refData},
+				},
+				packCount:   5,
+				description: "Pack file with optional companion files (.promisor, .rev) present",
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				tarball := createTestTarball(t, tt.members)
+
+				snapshot, err := ParseTarball(tarball)
+				if err != nil {
+					t.Fatalf("%s: expected success with all .ref files present, got error: %v", tt.description, err)
+				}
+
+				// Verify all pack files were captured
+				if len(snapshot.PackFiles) != tt.packCount {
+					t.Errorf("%s: expected %d pack files, got %d", tt.description, tt.packCount, len(snapshot.PackFiles))
+				}
+
+				// Verify each .pack file has a corresponding .ref file
+				packBaseNames := make(map[string]bool)
+				for _, pf := range snapshot.PackFiles {
+					if strings.HasSuffix(pf.Name, ".pack") {
+						baseName := strings.TrimSuffix(pf.Name, ".pack")
+						packBaseNames[baseName] = true
+					}
+				}
+
+				// Check that all .ref files exist for pack files
+				for baseName := range packBaseNames {
+					refName := baseName + ".ref"
+					foundRef := false
+					for _, pf := range snapshot.PackFiles {
+						if pf.Name == refName {
+							foundRef = true
+							break
+						}
+					}
+					if !foundRef {
+						t.Errorf("%s: missing .ref file for pack base %s", tt.description, baseName)
+					}
+				}
+
+				t.Logf("%s: successfully validated all .ref files present (%d pack files)", tt.description, tt.packCount)
+			})
+		}
+	}

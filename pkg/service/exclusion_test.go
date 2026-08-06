@@ -591,3 +591,441 @@ func TestClearRepoExclusion_NoRowsAffected(t *testing.T) {
 		t.Errorf("ClearRepoExclusion() wrong error for no rows affected: %v", err)
 	}
 }
+
+// TestSetRepoExclusion_EmptyProvider tests that SetRepoExclusion validates provider is not empty.
+func TestSetRepoExclusion_EmptyProvider(t *testing.T) {
+	ctx := context.Background()
+
+	// Test with empty provider - should fail validation before trying to use db
+	err := SetRepoExclusion(ctx, nil, "", "owner/repo", "test reason")
+	if err == nil {
+		t.Errorf("SetRepoExclusion() with empty provider should return error, got nil")
+	}
+	if !strings.Contains(err.Error(), "provider cannot be empty") {
+		t.Errorf("SetRepoExclusion() wrong error message: %v", err)
+	}
+}
+
+// TestSetRepoExclusion_InvalidProviderFormat tests that SetRepoExclusion validates provider format.
+func TestSetRepoExclusion_InvalidProviderFormat(t *testing.T) {
+	ctx := context.Background()
+
+	invalidProviders := []string{
+		"GITHUB",    // uppercase
+		"Git-Hub",   // mixed case with hyphen
+		"github_",   // trailing underscore
+		"github.com", // contains dots
+		"git hub",   // contains space
+		"123!",      // contains special chars
+	}
+
+	for _, provider := range invalidProviders {
+		t.Run(provider, func(t *testing.T) {
+			err := SetRepoExclusion(ctx, nil, provider, "owner/repo", "test reason")
+			if err == nil {
+				t.Errorf("SetRepoExclusion() with invalid provider '%s' should return error, got nil", provider)
+			}
+			if !strings.Contains(err.Error(), "provider must be lowercase alphanumeric") {
+				t.Errorf("SetRepoExclusion() wrong error for invalid provider '%s': %v", provider, err)
+			}
+		})
+	}
+}
+
+// TestSetRepoExclusion_ValidProviders tests that valid providers are accepted.
+func TestSetRepoExclusion_ValidProviders(t *testing.T) {
+	ctx := context.Background()
+
+	validProviders := []string{
+		"github",
+		"gitlab",
+		"bitbucket",
+		"gitea",
+		"sourcehut",
+	}
+
+	for _, provider := range validProviders {
+		t.Run(provider, func(t *testing.T) {
+			// Create a successful transaction
+			mockTx := &mockTransactor{
+				execContextFn: func(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+					return &mockResult{rowsAffected: 1, lastInsertId: 0}, nil
+				},
+				commitFn: func() error {
+					return nil
+				},
+				rollbackFn: func() error {
+					return nil
+				},
+			}
+
+			mockDB := &mockTransactioner{
+				row: &mockRow{scanErr: nil},
+				beginTxFn: func(ctx context.Context, opts *sql.TxOptions) (Transactor, error) {
+					return mockTx, nil
+				},
+			}
+
+			err := SetRepoExclusion(ctx, mockDB, provider, "owner/repo", "test reason")
+			if err != nil {
+				t.Errorf("SetRepoExclusion() with valid provider '%s' should succeed, got error: %v", provider, err)
+			}
+		})
+	}
+}
+
+// TestSetRepoExclusion_EmptyRepoFullName tests that SetRepoExclusion validates repoFullName is not empty.
+func TestSetRepoExclusion_EmptyRepoFullName(t *testing.T) {
+	ctx := context.Background()
+
+	// Test with empty repoFullName - should fail validation before trying to use db
+	err := SetRepoExclusion(ctx, nil, "github", "", "test reason")
+	if err == nil {
+		t.Errorf("SetRepoExclusion() with empty repoFullName should return error, got nil")
+	}
+	if !strings.Contains(err.Error(), "repository full name cannot be empty") {
+		t.Errorf("SetRepoExclusion() wrong error message: %v", err)
+	}
+}
+
+// TestSetRepoExclusion_MalformedRepoFullName tests that SetRepoExclusion validates repoFullName format.
+func TestSetRepoExclusion_MalformedRepoFullName(t *testing.T) {
+	ctx := context.Background()
+
+	malformedNames := []struct {
+		name        string
+		repoFullName string
+		expectedErr string
+	}{
+		{
+			name:        "missing repo",
+			repoFullName: "owner",
+			expectedErr: "must be in 'owner/repo' format",
+		},
+		{
+			name:        "extra slash",
+			repoFullName: "owner/repo/extra",
+			expectedErr: "must be in 'owner/repo' format",
+		},
+		{
+			name:        "empty owner",
+			repoFullName: "/repo",
+			expectedErr: "repository owner cannot be empty",
+		},
+		{
+			name:        "empty repo name",
+			repoFullName: "owner/",
+			expectedErr: "repository name cannot be empty",
+		},
+		{
+			name:        "no slash",
+			repoFullName: "ownerrepo",
+			expectedErr: "must be in 'owner/repo' format",
+		},
+	}
+
+	for _, tc := range malformedNames {
+		t.Run(tc.name, func(t *testing.T) {
+			err := SetRepoExclusion(ctx, nil, "github", tc.repoFullName, "test reason")
+			if err == nil {
+				t.Errorf("SetRepoExclusion() with malformed repoFullName '%s' should return error, got nil", tc.repoFullName)
+			}
+			if !strings.Contains(err.Error(), tc.expectedErr) {
+				t.Errorf("SetRepoExclusion() wrong error for malformed repoFullName '%s': %v", tc.repoFullName, err)
+			}
+		})
+	}
+}
+
+// TestSetRepoExclusion_ValidRepoFullName tests that valid repoFullName formats are accepted.
+func TestSetRepoExclusion_ValidRepoFullName(t *testing.T) {
+	ctx := context.Background()
+
+	validNames := []string{
+		"owner/repo",
+		"user123/my-project",
+		"orgname/repo_name",
+		"test/repo123",
+	}
+
+	for _, repoFullName := range validNames {
+		t.Run(repoFullName, func(t *testing.T) {
+			// Create a successful transaction
+			mockTx := &mockTransactor{
+				execContextFn: func(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+					return &mockResult{rowsAffected: 1, lastInsertId: 0}, nil
+				},
+				commitFn: func() error {
+					return nil
+				},
+				rollbackFn: func() error {
+					return nil
+				},
+			}
+
+			mockDB := &mockTransactioner{
+				row: &mockRow{scanErr: nil},
+				beginTxFn: func(ctx context.Context, opts *sql.TxOptions) (Transactor, error) {
+					return mockTx, nil
+				},
+			}
+
+			err := SetRepoExclusion(ctx, mockDB, "github", repoFullName, "test reason")
+			if err != nil {
+				t.Errorf("SetRepoExclusion() with valid repoFullName '%s' should succeed, got error: %v", repoFullName, err)
+			}
+		})
+	}
+}
+
+// TestClearRepoExclusion_EmptyProvider tests that ClearRepoExclusion validates provider is not empty.
+func TestClearRepoExclusion_EmptyProvider(t *testing.T) {
+	ctx := context.Background()
+
+	// Test with empty provider - should fail validation before trying to use db
+	err := ClearRepoExclusion(ctx, nil, "", "owner/repo")
+	if err == nil {
+		t.Errorf("ClearRepoExclusion() with empty provider should return error, got nil")
+	}
+	if !strings.Contains(err.Error(), "provider cannot be empty") {
+		t.Errorf("ClearRepoExclusion() wrong error message: %v", err)
+	}
+}
+
+// TestClearRepoExclusion_InvalidProviderFormat tests that ClearRepoExclusion validates provider format.
+func TestClearRepoExclusion_InvalidProviderFormat(t *testing.T) {
+	ctx := context.Background()
+
+	invalidProviders := []string{
+		"GITHUB",
+		"git-hub",
+		"github.com",
+		"git hub",
+	}
+
+	for _, provider := range invalidProviders {
+		t.Run(provider, func(t *testing.T) {
+			err := ClearRepoExclusion(ctx, nil, provider, "owner/repo")
+			if err == nil {
+				t.Errorf("ClearRepoExclusion() with invalid provider '%s' should return error, got nil", provider)
+			}
+			if !strings.Contains(err.Error(), "provider must be lowercase alphanumeric") {
+				t.Errorf("ClearRepoExclusion() wrong error for invalid provider '%s': %v", provider, err)
+			}
+		})
+	}
+}
+
+// TestClearRepoExclusion_EmptyRepoFullName tests that ClearRepoExclusion validates repoFullName is not empty.
+func TestClearRepoExclusion_EmptyRepoFullName(t *testing.T) {
+	ctx := context.Background()
+
+	// Test with empty repoFullName - should fail validation before trying to use db
+	err := ClearRepoExclusion(ctx, nil, "github", "")
+	if err == nil {
+		t.Errorf("ClearRepoExclusion() with empty repoFullName should return error, got nil")
+	}
+	if !strings.Contains(err.Error(), "repository full name cannot be empty") {
+		t.Errorf("ClearRepoExclusion() wrong error message: %v", err)
+	}
+}
+
+// TestClearRepoExclusion_MalformedRepoFullName tests that ClearRepoExclusion validates repoFullName format.
+func TestClearRepoExclusion_MalformedRepoFullName(t *testing.T) {
+	ctx := context.Background()
+
+	malformedNames := []struct {
+		name        string
+		repoFullName string
+		expectedErr string
+	}{
+		{
+			name:        "missing repo",
+			repoFullName: "owner",
+			expectedErr: "must be in 'owner/repo' format",
+		},
+		{
+			name:        "extra slash",
+			repoFullName: "owner/repo/extra",
+			expectedErr: "must be in 'owner/repo' format",
+		},
+		{
+			name:        "empty owner",
+			repoFullName: "/repo",
+			expectedErr: "repository owner cannot be empty",
+		},
+		{
+			name:        "empty repo name",
+			repoFullName: "owner/",
+			expectedErr: "repository name cannot be empty",
+		},
+	}
+
+	for _, tc := range malformedNames {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ClearRepoExclusion(ctx, nil, "github", tc.repoFullName)
+			if err == nil {
+				t.Errorf("ClearRepoExclusion() with malformed repoFullName '%s' should return error, got nil", tc.repoFullName)
+			}
+			if !strings.Contains(err.Error(), tc.expectedErr) {
+				t.Errorf("ClearRepoExclusion() wrong error for malformed repoFullName '%s': %v", tc.repoFullName, err)
+			}
+		})
+	}
+}
+
+// TestSetRepoExclusion_RollbackOnError tests that SetRepoExclusion properly rolls back on error.
+func TestSetRepoExclusion_RollbackOnError(t *testing.T) {
+	ctx := context.Background()
+
+	rollbackCalled := false
+	updateError := errors.New("database update failed")
+
+	// Create a transaction that fails on ExecContext and tracks rollback
+	mockTx := &mockTransactor{
+		execContextFn: func(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+			return nil, updateError
+		},
+		commitFn: func() error {
+			return nil
+		},
+		rollbackFn: func() error {
+			rollbackCalled = true
+			return nil
+		},
+	}
+
+	mockDB := &mockTransactioner{
+		row: &mockRow{scanErr: nil},
+		beginTxFn: func(ctx context.Context, opts *sql.TxOptions) (Transactor, error) {
+			return mockTx, nil
+		},
+	}
+
+	err := SetRepoExclusion(ctx, mockDB, "github", "owner/repo", "test reason")
+	if err == nil {
+		t.Errorf("SetRepoExclusion() should return error, got nil")
+	}
+	if !rollbackCalled {
+		t.Errorf("SetRepoExclusion() should call rollback on error, but it wasn't called")
+	}
+}
+
+// TestClearRepoExclusion_RollbackOnError tests that ClearRepoExclusion properly rolls back on error.
+func TestClearRepoExclusion_RollbackOnError(t *testing.T) {
+	ctx := context.Background()
+
+	rollbackCalled := false
+	updateError := errors.New("database update failed")
+
+	// Create a transaction that fails on ExecContext and tracks rollback
+	mockTx := &mockTransactor{
+		execContextFn: func(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+			return nil, updateError
+		},
+		commitFn: func() error {
+			return nil
+		},
+		rollbackFn: func() error {
+			rollbackCalled = true
+			return nil
+		},
+	}
+
+	mockDB := &mockTransactioner{
+		row: &mockRow{scanErr: nil},
+		beginTxFn: func(ctx context.Context, opts *sql.TxOptions) (Transactor, error) {
+			return mockTx, nil
+		},
+	}
+
+	err := ClearRepoExclusion(ctx, mockDB, "github", "owner/repo")
+	if err == nil {
+		t.Errorf("ClearRepoExclusion() should return error, got nil")
+	}
+	if !rollbackCalled {
+		t.Errorf("ClearRepoExclusion() should call rollback on error, but it wasn't called")
+	}
+}
+
+// TestSetRepoExclusion_RollbackOnCommitError tests that SetRepoExclusion rolls back on commit failure.
+func TestSetRepoExclusion_RollbackOnCommitError(t *testing.T) {
+	ctx := context.Background()
+
+	rollbackCalled := false
+	commitError := errors.New("commit failed")
+
+	// Create a transaction that succeeds on update but fails on commit
+	mockTx := &mockTransactor{
+		execContextFn: func(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+			return &mockResult{rowsAffected: 1, lastInsertId: 0}, nil
+		},
+		commitFn: func() error {
+			return commitError
+		},
+		rollbackFn: func() error {
+			rollbackCalled = true
+			return nil
+		},
+	}
+
+	mockDB := &mockTransactioner{
+		row: &mockRow{scanErr: nil},
+		beginTxFn: func(ctx context.Context, opts *sql.TxOptions) (Transactor, error) {
+			return mockTx, nil
+		},
+	}
+
+	err := SetRepoExclusion(ctx, mockDB, "github", "owner/repo", "test reason")
+	if err == nil {
+		t.Errorf("SetRepoExclusion() should return error, got nil")
+	}
+	if !rollbackCalled {
+		t.Errorf("SetRepoExclusion() should call rollback on commit error, but it wasn't called")
+	}
+}
+
+// TestClearRepoExclusion_RollbackOnCommitError tests that ClearRepoExclusion rolls back on commit failure.
+func TestClearRepoExclusion_RollbackOnCommitError(t *testing.T) {
+	ctx := context.Background()
+
+	rollbackCalled := false
+	commitError := errors.New("commit failed")
+
+	// Create a transaction that succeeds on update but fails on commit
+	mockTx := &mockTransactor{
+		execContextFn: func(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+			return &mockResult{rowsAffected: 1, lastInsertId: 0}, nil
+		},
+		commitFn: func() error {
+			return commitError
+		},
+		rollbackFn: func() error {
+			rollbackCalled = true
+			return nil
+		},
+	}
+
+	mockDB := &mockTransactioner{
+		row: &mockRow{scanErr: nil},
+		beginTxFn: func(ctx context.Context, opts *sql.TxOptions) (Transactor, error) {
+			return mockTx, nil
+		},
+	}
+
+	err := ClearRepoExclusion(ctx, mockDB, "github", "owner/repo")
+	if err == nil {
+		t.Errorf("ClearRepoExclusion() should return error, got nil")
+	}
+	if !rollbackCalled {
+		t.Errorf("ClearRepoExclusion() should call rollback on commit error, but it wasn't called")
+	}
+}
+
+// Note on Concurrency Testing:
+// Comprehensive concurrent exclusion testing would require a real database to test
+// transaction isolation and locking behavior. The current mock-based testing approach
+// cannot properly simulate concurrent database operations. Database-level concurrency
+// (e.g., race conditions, deadlocks) should be tested in integration tests with an
+// actual database connection. The transaction tests above verify that rollback is called
+// appropriately on errors, which is the service-level responsibility.

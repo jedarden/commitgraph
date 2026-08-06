@@ -5,6 +5,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"regexp"
+	"strings"
 )
 
 // RowScanner is the interface for scanning row results.
@@ -138,6 +140,51 @@ func NewRepoCheckerFromDB(db *sql.DB) *RepoChecker {
 	return NewRepoChecker(&SQLQuerier{db: db})
 }
 
+// validateProvider validates the provider format.
+// Returns error if provider is empty or contains invalid characters.
+// Valid providers should be lowercase alphanumeric names (e.g., "github", "gitlab").
+func validateProvider(provider string) error {
+	if provider == "" {
+		return fmt.Errorf("provider cannot be empty")
+	}
+
+	// Provider should be lowercase alphanumeric
+	matched, err := regexp.MatchString("^[a-z0-9]+$", provider)
+	if err != nil {
+		return fmt.Errorf("failed to validate provider format: %w", err)
+	}
+	if !matched {
+		return fmt.Errorf("provider must be lowercase alphanumeric (e.g., 'github', 'gitlab'), got: %s", provider)
+	}
+
+	return nil
+}
+
+// validateRepoFullName validates the repoFullName format.
+// Returns error if repoFullName is empty or not in owner/repo format.
+// Valid format is "owner/repo" where both owner and repo are non-empty.
+func validateRepoFullName(repoFullName string) error {
+	if repoFullName == "" {
+		return fmt.Errorf("repository full name cannot be empty")
+	}
+
+	// Check for owner/repo format
+	parts := strings.Split(repoFullName, "/")
+	if len(parts) != 2 {
+		return fmt.Errorf("repository full name must be in 'owner/repo' format, got: %s", repoFullName)
+	}
+
+	owner, repo := parts[0], parts[1]
+	if owner == "" {
+		return fmt.Errorf("repository owner cannot be empty in 'owner/repo' format")
+	}
+	if repo == "" {
+		return fmt.Errorf("repository name cannot be empty in 'owner/repo' format")
+	}
+
+	return nil
+}
+
 // SetRepoExclusion sets the exclusion status for a repository.
 //
 // This function performs the following operations within a database transaction:
@@ -160,6 +207,16 @@ func NewRepoCheckerFromDB(db *sql.DB) *RepoChecker {
 // - On success, the transaction is committed
 // - On error, the transaction is rolled back
 func SetRepoExclusion(ctx context.Context, db Transactioner, provider, repoFullName, reason string) error {
+	// Validate provider format
+	if err := validateProvider(provider); err != nil {
+		return err
+	}
+
+	// Validate repoFullName format
+	if err := validateRepoFullName(repoFullName); err != nil {
+		return err
+	}
+
 	// Validate reason is not empty
 	if reason == "" {
 		return fmt.Errorf("exclusion reason cannot be empty")
@@ -234,6 +291,16 @@ func SetRepoExclusion(ctx context.Context, db Transactioner, provider, repoFullN
 // Note: Clearing exclusion on a repo that is not currently excluded is
 // considered a no-op and will succeed (1 row affected).
 func ClearRepoExclusion(ctx context.Context, db Transactioner, provider, repoFullName string) error {
+	// Validate provider format
+	if err := validateProvider(provider); err != nil {
+		return err
+	}
+
+	// Validate repoFullName format
+	if err := validateRepoFullName(repoFullName); err != nil {
+		return err
+	}
+
 	// Check if repo exists
 	checker := NewRepoChecker(db)
 	if !checker.RepoExists(ctx, provider, repoFullName) {

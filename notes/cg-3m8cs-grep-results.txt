@@ -1,0 +1,47 @@
+# Grep Results for Commit-Related Patterns in pkg/pg/
+# Search Date: 2026-08-06
+# Bead: cg-5p7dz
+
+## Pattern 1: INSERT INTO commits
+(no results found)
+
+## Pattern 2: UPSERT patterns
+pkg/pg/users.go:4:// BatchUsersUpsertQuery is a SQL query that batch upserts multiple user logins
+pkg/pg/users.go:45:const BatchUsersUpsertQuery = `
+pkg/pg/user_aliases.go:11:// AliasIngester handles user_alias upsert operations.
+pkg/pg/user_aliases.go:38:// UpsertAliases performs a bulk upsert of alias rows.
+pkg/pg/user_aliases.go:46:func (a *AliasIngester) UpsertAliases(ctx context.Context, rows []AliasRow) error {
+pkg/pg/user_aliases.go:77:	// Execute bulk upsert
+pkg/pg/user_aliases.go:80:		return fmt.Errorf("bulk upsert failed: %w", err)
+pkg/pg/identity.go:72:// IngestEmailResolution performs a bulk upsert of email resolution rows
+pkg/pg/identity.go:149:	// and categorize skip reasons before attempting the upsert
+pkg/pg/identity.go:169:				skipDetails[identity.SkipReasonConflictManual]++
+pkg/pg/identity.go:172:				skipDetails[identity.SkipReasonConflictOlder]++
+pkg/pg/identity.go:210:	// Step 4: Execute bulk upsert
+pkg/pg/identity.go:213:		return nil, fmt.Errorf("bulk upsert failed (batch size %d): %w", len(rows), err)
+pkg/pg/identity.go:219:		// Log but don't fail - the upsert worked, we just can't get stats
+
+## Pattern 3: References to "commits" (column/table references)
+pkg/pg/invariant_4_integration_test.go:59:			commits INT NOT NULL,
+pkg/pg/invariant_4_integration_test.go:100:		INSERT INTO repo_user_daily_tool (repo_id, user_id, tool, day, commits, insert_time)
+pkg/pg/invariant_4_integration_test.go:130:		INSERT INTO repo_user_daily_tool (repo_id, user_id, tool, day, commits, insert_time)
+pkg/pg/invariant_4_integration_test.go:308:			SELECT rut.repo_id, r.provider, r.repo_full_name, rut.user_id, rut.tool, rut.day, rut.commits, rut.insert_time
+
+## Pattern 4: Package-level references to commitgraph
+pkg/pg/identity.go:1:// Package pg provides PostgreSQL implementations for commitgraph.
+pkg/pg/users.go:1:// Package pg provides PostgreSQL implementations for commitgraph.
+pkg/pg/repo.go:1:// Package pg provides PostgreSQL operations for commitgraph repos.
+pkg/pg/user_aliases.go:1:// Package pg provides PostgreSQL operations for commitgraph user_aliases.
+
+## Candidate Files for Commit Operations:
+1. pkg/pg/users.go - Contains BatchUsersUpsertQuery for user operations
+2. pkg/pg/user_aliases.go - Contains UpsertAliases function for alias operations
+3. pkg/pg/identity.go - Contains IngestEmailResolution with bulk upsert logic
+4. pkg/pg/repo.go - Repository operations (potential commit storage location)
+5. pkg/pg/invariant_4_integration_test.go - Test data with commits column references
+
+## Key Findings:
+- No direct "INSERT INTO commits" statements found
+- UPSERT patterns exist for users, user_aliases, and email_resolution
+- Test files reference a "commits" column in repo_user_daily_tool table
+- No dedicated commit ingest/insert file found in pkg/pg/

@@ -3182,3 +3182,87 @@ func TestParseTarball_MissingRefFile(t *testing.T) {
 			})
 		}
 	}
+
+func TestParseTarball_RefFileCorruption(t *testing.T) {
+	// Test ParseTarball behavior when a tarball contains multiple pack files
+	// where one has a corrupted .ref file
+	// Scenario:
+	//   - pack-file1.pack has pack-file1.ref with valid content
+	//   - pack-file2.pack has pack-file2.ref with corrupted content
+	// Expected behavior: ParseTarball accepts the tarball since it only validates
+	// .ref file existence, not content (hash validation not implemented)
+
+	configData := []byte(`{
+		"core.repositoryformatversion": "1",
+		"remote.origin.promisor": "true",
+		"remote.origin.partialclonefilter": "blob:none"
+	}`)
+	refData := []byte("refs/heads/main abc123")
+
+	// Create tarball with two pack files where one has corrupted .ref data
+	// In a real scenario, .ref files contain hash data that should be validated
+	// For this test, we simulate corruption by creating a .ref file with invalid content
+	members := []TarballMember{
+		// First pack file with valid .ref file
+		{Name: "objects/pack/pack-file1.pack", Data: []byte("PACK123456789")},
+		{Name: "objects/pack/pack-file1.idx", Data: []byte("idx file1")},
+		{Name: "objects/pack/pack-file1.ref", Data: []byte("valid-hash-data-for-file1")},
+
+		// Second pack file with corrupted .ref file (invalid hash format)
+		{Name: "objects/pack/pack-file2.pack", Data: []byte("PACK987654321")},
+		{Name: "objects/pack/pack-file2.idx", Data: []byte("idx file2")},
+		{Name: "objects/pack/pack-file2.ref", Data: []byte("invalid-hash-format-corrupted")},
+
+		// Required metadata files
+		{Name: "config.json", Data: configData},
+		{Name: "ref", Data: refData},
+	}
+
+	tarball := createTestTarball(t, members)
+
+	// Note: The current implementation only validates .ref file existence, not content
+	// This test documents the current behavior where ParseTarball succeeds even with
+	// "corrupted" .ref file content because hash validation is not implemented
+	snapshot, err := ParseTarball(tarball)
+	if err != nil {
+		t.Fatalf("ParseTarball failed with error: %v", err)
+	}
+
+	if snapshot == nil {
+		t.Fatal("expected non-nil snapshot")
+	}
+
+	// Verify both pack files were captured (6 total files: 3 per pack set)
+	if len(snapshot.PackFiles) != 6 {
+		t.Errorf("expected 6 pack files (3 per pack set), got %d", len(snapshot.PackFiles))
+	}
+
+	// Find the .ref files to verify they were captured
+	var file1Ref, file2Ref *TarballMember
+	for i := range snapshot.PackFiles {
+		if snapshot.PackFiles[i].Name == "objects/pack/pack-file1.ref" {
+			file1Ref = &snapshot.PackFiles[i]
+		}
+		if snapshot.PackFiles[i].Name == "objects/pack/pack-file2.ref" {
+			file2Ref = &snapshot.PackFiles[i]
+		}
+	}
+
+	if file1Ref == nil {
+		t.Error("pack-file1.ref not found in snapshot")
+	}
+	if file2Ref == nil {
+		t.Error("pack-file2.ref not found in snapshot")
+	}
+
+	// Verify the .ref file data was captured (even though one is "corrupted")
+	if file1Ref != nil && string(file1Ref.Data) != "valid-hash-data-for-file1" {
+		t.Errorf("pack-file1.ref data mismatch, got: %s", string(file1Ref.Data))
+	}
+	if file2Ref != nil && string(file2Ref.Data) != "invalid-hash-format-corrupted" {
+		t.Errorf("pack-file2.ref data mismatch, got: %s", string(file2Ref.Data))
+	}
+
+	t.Log("Current behavior: ParseTarball accepts .ref files regardless of content")
+	t.Log("Hash validation for .ref files is not implemented in the current version")
+}

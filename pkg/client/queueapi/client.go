@@ -84,6 +84,9 @@ type ResolutionRequest struct {
 //   - nil on success
 //   - error if all retry attempts are exhausted or a non-retryable error occurs
 func (c *Client) PostResolution(ctx context.Context, email, githubUsername string) error {
+	// Record that this record is entering the ingest flow
+	c.logger.RecordProcessed()
+
 	// Prepare the request with source="live" and current timestamp
 	req := ResolutionRequest{
 		Email:       email,

@@ -29,6 +29,7 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 	_ "github.com/lib/pq"
 	"github.com/jedarden/commitgraph/pkg/identity"
+	"github.com/jedarden/commitgraph/pkg/ingestlog"
 	"github.com/jedarden/commitgraph/pkg/pg"
 )
 
@@ -109,6 +110,9 @@ func main() {
 	// Create identity ingester
 	ingester := identity.NewIngester(pg.NewIdentityIngester(pg.NewSQLExecutor(postgresDB)))
 
+	// Create ingest logger for tracking records entering the flow
+	logger := ingestlog.NewLogger()
+
 	// Read all pairs from author_login_cache
 	log.Println("Reading author_login_cache table...")
 	pairs, err := readAuthorLoginCache(sqliteDB)
@@ -140,10 +144,13 @@ func main() {
 
 	// Ingest in batches
 	log.Printf("Ingesting %d rows in batches of %d...\n", len(rows), *batchSize)
-	totalAccepted, totalRejected := ingestInBatches(ctx, ingester, rows, *batchSize)
+	totalAccepted, totalRejected := ingestInBatches(ctx, ingester, logger, rows, *batchSize)
 
 	// Log summary
 	log.Println("\n=== Seed Summary ===")
+
+	// Log ingest statistics
+	logger.LogStats("Seed Ingest Statistics")
 	log.Printf("Pairs read from cache:     %d\n", len(pairs))
 	log.Printf("Positive resolutions:      %d\n", len(positivePairs))
 	log.Printf("Negative-cache (skipped):    %d\n", len(pairs)-len(positivePairs))
@@ -304,7 +311,7 @@ func filterPositiveResolutions(pairs []AuthorLoginPair) []AuthorLoginPair {
 }
 
 // ingestInBatches ingests rows in batches and tracks accepted/rejected counts.
-func ingestInBatches(ctx context.Context, ingester *identity.Ingester, rows []identity.ResolutionRow, batchSize int) (accepted, rejected int) {
+func ingestInBatches(ctx context.Context, ingester *identity.Ingester, logger *ingestlog.Logger, rows []identity.ResolutionRow, batchSize int) (accepted, rejected int) {
 	total := len(rows)
 	for i := 0; i < total; i += batchSize {
 		end := i + batchSize
@@ -313,6 +320,11 @@ func ingestInBatches(ctx context.Context, ingester *identity.Ingester, rows []id
 		}
 
 		batch := rows[i:end]
+
+		// Record each record entering the ingest flow
+		for range batch {
+			logger.RecordProcessed()
+		}
 
 		// Get current row count before ingest (to detect accepted/rejected)
 		// This is approximate - we can't easily get exact conflict results from

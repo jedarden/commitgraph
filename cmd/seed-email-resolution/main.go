@@ -30,6 +30,7 @@ import (
 	_ "github.com/lib/pq"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/jedarden/commitgraph/pkg/identity"
+	"github.com/jedarden/commitgraph/pkg/ingestlog"
 	"github.com/jedarden/commitgraph/pkg/pg"
 )
 
@@ -152,6 +153,9 @@ func main() {
 	// Create identity ingester
 	ingester := identity.NewIngester(pg.NewIdentityIngester(pg.NewSQLExecutor(postgresDB)))
 
+	// Create ingest logger for tracking records entering the flow
+	logger := ingestlog.NewLogger()
+
 	// Get baseline row count before ingest
 	var beforeCount int
 	if err := postgresDB.QueryRowContext(ctx,
@@ -176,6 +180,11 @@ func main() {
 
 		batch := allRows[i:end]
 		batchNum++
+
+		// Record each record entering the ingest flow
+		for range batch {
+			logger.RecordProcessed()
+		}
 
 		if err := ingester.IngestResolution(ctx, batch); err != nil {
 			log.Fatalf("error: failed to ingest batch %d (rows %d-%d): %v\n",
@@ -219,6 +228,9 @@ func main() {
 
 	// Log summary
 	log.Println("\n=== Seed Summary ===")
+
+	// Log ingest statistics
+	logger.LogStats("Seed Ingest Statistics")
 	log.Printf("Rows read from author_login_cache: %d\n", readCount)
 	log.Printf("Rows skipped (empty login):        %d (%.1f%%)\n", skippedEmpty, float64(skippedEmpty)/float64(readCount)*100)
 	log.Printf("Valid rows submitted:               %d\n", len(allRows))

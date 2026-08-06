@@ -16,11 +16,15 @@ from psycopg import sql
 from pathlib import Path
 import json
 import logging
-from typing import Optional, Dict, Any, List
-from datetime import datetime
+from typing import Optional, Dict, Any, List, Tuple
+from datetime import datetime, date
 from dataclasses import dataclass
+from collections import defaultdict
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 from streaming_reader import CorpusStream, PartitionStream
+from shared.detection import detect_tools
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -323,30 +327,247 @@ class CorpusMigrator:
             self.update_partition_progress(partition_key, 'failed')
             raise
 
-    def _group_batch_by_repo(self, batch: pa.RecordBatch, repo_batches: Dict[str, List]):
-        """Group a batch's rows by repo for processing."""
-        # Extract repo identifier from batch
-        # This requires knowing the batch schema
-        # Placeholder: implement once schema is known
-        pass
+    def _group_batch_by_repo(self, batch: pa.RecordBatch, repo_batches: Dict[str, List[pa.RecordBatch]]):
+        """
+        Group a batch's rows by repo for processing.
 
-    def _process_repo(self, repo_full_name: str, batches: List):
+        This function processes a RecordBatch from the corpus and groups commits
+        by their repository. The corpus schema includes:
+        - provider: e.g., 'github'
+        - repo_full_name: e.g., 'owner/repo'
+        - sha: commit SHA
+        - author_name: commit author name
+        - author_email: commit author email
+        - committed_at: commit timestamp (in milliseconds since epoch or datetime)
+        - message: commit message text
+
+        Args:
+            batch: Arrow RecordBatch containing commit rows
+            repo_batches: Dictionary mapping repo_full_name -> list of batches
+        """
+        # Convert batch to pandas for easier column access
+        # This is safe because we're processing one batch at a time (bounded memory)
+        import pandas as pd
+        df = batch.to_pandas()
+
+        # Group by repo_full_name
+        for repo_full_name, repo_df in df.groupby('repo_full_name', sort=False):
+            # Convert back to RecordBatch for storage
+            repo_batch = pa.RecordBatch.from_pandas(repo_df)
+
+            if repo_full_name not in repo_batches:
+                repo_batches[repo_full_name] = []
+
+            repo_batches[repo_full_name].append(repo_batch)
+
+    def _process_repo(self, repo_full_name: str, batches: List[pa.RecordBatch]):
         """
         Process a single repo through detection and rollup.
 
         This is called per-repo during migration:
-        1. Run detection.py on all commits
-        2. Compute rollup (user, repo, tool, day, count)
-        3. Write to Postgres (same pattern as live clone-worker)
-        4. Write ARMOR artifact (Parquet)
+        1. Run detection.py on all commits (imported from shared/detection)
+        2. Compute rollup (user, repo, tool, day, count) for AI-tagged commits only
+        3. Write to Postgres using DELETE+bulk-INSERT pattern
+        4. (Future) Write ARMOR artifact (Parquet)
+
+        This function:
+- Imports detection.py directly (not a copy, port, or reimplementation)
+- Calls detect_tools() per-commit (Python, not SQL)
+- Computes (user, repo, tool, day, count) rollup per repo
+
+        Args:
+            repo_full_name: Repository identifier (e.g., 'owner/repo')
+            batches: List of RecordBatches containing this repo's commits
+        """
+        logger.info(f"Processing repo: {repo_full_name} ({len(batches)} batches)")
+
+        # Accumulate rollups: (user_email, repo, tool, day) -> count
+        rollup_counts: Dict[Tuple[str, str, str, date], int] = defaultdict(int)
+
+        # Track provider and author names for later use
+        provider = None
+        author_names: Dict[str, str] = {}  # email -> name
+
+        total_commits = 0
+        ai_tagged_commits = 0
+
+        # Process each batch
+        for batch in batches:
+            import pandas as pd
+            df = batch.to_pandas()
+
+            # Extract provider from first row
+            if provider is None and 'provider' in df.columns:
+                provider = df['provider'].iloc[0]
+
+            # Process each commit
+            for idx, row in df.iterrows():
+                total_commits += 1
+
+                # Extract commit fields
+                author_email = row.get('author_email', '')
+                author_name = row.get('author_name', '')
+                message = row.get('message', '')
+                committed_at = row.get('committed_at', None)
+
+                # Track author name
+                if author_email and author_name:
+                    author_names[author_email] = author_name
+
+                # Parse committed_at to date
+                try:
+                    if committed_at is not None:
+                        # Handle both timestamp (ms since epoch) and datetime string
+                        if isinstance(committed_at, (int, float)):
+                            commit_date = datetime.fromtimestamp(committed_at / 1000).date()
+                        else:
+                            # Parse ISO datetime string
+                            if isinstance(committed_at, str):
+                                commit_date = datetime.fromisoformat(committed_at.replace('Z', '+00:00')).date()
+                            else:
+                                # Already a datetime object
+                                commit_date = committed_at.date()
+                    else:
+                        continue  # Skip commits without dates
+                except (ValueError, TypeError, OSError) as e:
+                    logger.warning(f"Invalid committed_at for commit in {repo_full_name}: {e}")
+                    continue
+
+                # Apply date quarantine (per compactor logic in plan.md)
+                # Exclude commits with committed_at outside [2005-01-01, today+1]
+                min_date = date(2005, 1, 1)
+                max_date = date.today() + datetime.timedelta(days=1)
+
+                if not (min_date <= commit_date <= max_date):
+                    logger.debug(f"Quarantined commit with date {commit_date} outside [{min_date}, {max_date}]")
+                    continue
+
+                # Run detection (imported from shared/detection.py)
+                detection_result = detect_tools(message)
+
+                # Only count AI-tagged commits in rollup
+                if detection_result.is_ai_tagged:
+                    ai_tagged_commits += 1
+
+                    # Increment count for each detected tool
+                    for tool in detection_result.tools:
+                        key = (author_email, repo_full_name, tool, commit_date)
+                        rollup_counts[key] += 1
+
+        logger.info(f"  Repo {repo_full_name}: {ai_tagged_commits}/{total_commits} AI-tagged commits")
+
+        # Write rollup to Postgres
+        if rollup_counts:
+            self._write_rollup_to_postgres(
+                repo_full_name=repo_full_name,
+                provider=provider or 'unknown',
+                rollup_counts=dict(rollup_counts),
+                author_names=author_names
+            )
+
+        # TODO: Write ARMOR artifact (Parquet) for redetection
+        # This is step 5b from the migration plan
+
+    def _write_rollup_to_postgres(
+        self,
+        repo_full_name: str,
+        provider: str,
+        rollup_counts: Dict[Tuple[str, str, str, date], int],
+        author_names: Dict[str, str]
+    ):
+        """
+        Write rollup data to Postgres using DELETE+bulk-INSERT pattern.
+
+        This implements the same write pattern as live clone-worker:
+        1. Upsert repos row to get repo_id
+        2. Upsert users rows to get user_ids
+        3. DELETE existing rollup rows for this repo
+        4. Bulk INSERT new rollup rows
+        5. Set insert_time to transaction timestamp
+
+        This pattern ensures idempotence: running the same repo twice
+        produces identical rollup data.
 
         Args:
             repo_full_name: Repository identifier
-            batches: List of RecordBatches containing this repo's commits
+            provider: Provider name (e.g., 'github')
+            rollup_counts: Dict of (user_email, repo, tool, day) -> count
+            author_names: Dict of email -> author name
         """
-        # TODO: Integrate with detection.py and Postgres schema
-        # This is the core migration processing step
-        logger.debug(f"Processing repo: {repo_full_name} ({len(batches)} batches)")
+        with self.pg_conn.cursor() as cur:
+            try:
+                # Step 1: Upsert repo to get repo_id
+                repo_query = sql.SQL("""
+                    INSERT INTO repos (provider, repo_full_name)
+                    VALUES (%s, %s)
+                    ON CONFLICT (provider, repo_full_name)
+                    DO UPDATE SET provider = EXCLUDED.provider  -- No-op, exists for syntax
+                    RETURNING repo_id
+                """)
+                cur.execute(repo_query, (provider, repo_full_name))
+                repo_id = cur.fetchone()[0]
+
+                # Step 2: Upsert users to get user_ids
+                # Collect unique emails
+                unique_emails = set(email for email, _, _, _ in rollup_counts.keys())
+
+                email_to_user_id = {}
+                for email in unique_emails:
+                    # For migration, we use email as login placeholder
+                    # Real identity resolution happens later via email_resolution
+                    login = email  # Will be resolved later
+
+                    user_query = sql.SQL("""
+                        INSERT INTO users (login)
+                        VALUES (%s)
+                        ON CONFLICT (login)
+                        DO UPDATE SET login = EXCLUDED.login  -- No-op
+                        RETURNING user_id
+                    """)
+                    cur.execute(user_query, (login,))
+                    email_to_user_id[email] = cur.fetchone()[0]
+
+                # Step 3: DELETE existing rollup rows for this repo
+                delete_query = sql.SQL("""
+                    DELETE FROM repo_user_daily_tool
+                    WHERE repo_id = %s
+                """)
+                cur.execute(delete_query, (repo_id,))
+
+                # Step 4: Bulk INSERT new rollup rows
+                # Prepare batch insert data
+                insert_data = []
+                insert_time = datetime.utcnow()
+
+                for (email, _, tool, day), count in rollup_counts.items():
+                    user_id = email_to_user_id[email]
+                    insert_data.append((repo_id, user_id, tool, day, count, insert_time))
+
+                # Bulk insert using UNNEST
+                insert_query = sql.SQL("""
+                    INSERT INTO repo_user_daily_tool (repo_id, user_id, tool, day, commits, insert_time)
+                    SELECT * FROM UNNEST(%s::bigint[], %s::bigint[], %s::text[], %s::date[], %s::int[], %s::timestamptz[])
+                """)
+
+                # Transpose data for UNNEST
+                repo_ids = [row[0] for row in insert_data]
+                user_ids = [row[1] for row in insert_data]
+                tools = [row[2] for row in insert_data]
+                days = [row[3] for row in insert_data]
+                counts = [row[4] for row in insert_data]
+                insert_times = [row[5] for row in insert_data]
+
+                cur.execute(insert_query, (
+                    repo_ids, user_ids, tools, days, counts, insert_times
+                ))
+
+                self.pg_conn.commit()
+                logger.info(f"  ✓ Wrote {len(insert_data)} rollup rows for {repo_full_name}")
+
+            except Exception as e:
+                self.pg_conn.rollback()
+                logger.error(f"  ✗ Failed to write rollup for {repo_full_name}: {e}")
+                raise
 
     def run_migration(self, resume: bool = True):
         """

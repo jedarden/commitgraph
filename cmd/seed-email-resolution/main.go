@@ -166,6 +166,8 @@ func main() {
 
 	batchNum := 0
 	totalBatches := (len(allRows) + *batchSize - 1) / *batchSize
+	lastProgressUpdate := startTime
+
 	for i := 0; i < len(allRows); i += *batchSize {
 		end := i + *batchSize
 		if end > len(allRows) {
@@ -180,15 +182,29 @@ func main() {
 				batchNum, i, end-1, err)
 		}
 
-		if batchNum%10 == 0 {
-			log.Printf("  Progress: %d/%d batches (%d rows)...\n",
-				batchNum, totalBatches, end)
+		// Update progress every 5 batches (more frequent for full production run)
+		if batchNum%5 == 0 || batchNum == totalBatches {
+			now := time.Now()
+			batchElapsed := now.Sub(lastProgressUpdate)
+			totalElapsed := now.Sub(startTime)
+			percentComplete := float64(end) / float64(len(allRows)) * 100
+
+			// Estimate time remaining
+			avgRate := float64(end) / totalElapsed.Seconds()
+			rowsRemaining := len(allRows) - end
+			etaSeconds := float64(rowsRemaining) / avgRate
+			eta := time.Duration(etaSeconds) * time.Second
+
+			log.Printf("  Progress: %d/%d batches (%d rows, %.1f%%) | Rate: %.0f rows/sec | ETA: %v (batch took: %v)\n",
+				batchNum, totalBatches, end, percentComplete, avgRate, eta.Round(time.Second), batchElapsed.Round(time.Millisecond))
+			lastProgressUpdate = now
 		}
 	}
 
 	elapsed := time.Since(startTime)
+	rate := float64(len(allRows)) / elapsed.Seconds()
 	log.Printf("Ingest completed in %s (%.2f rows/sec)\n",
-		elapsed, float64(len(allRows))/elapsed.Seconds())
+		elapsed, rate)
 
 	// Get final row count
 	var afterCount int
@@ -199,18 +215,21 @@ func main() {
 
 	accepted := afterCount - beforeCount
 	rejected := len(allRows) - accepted
+	acceptRate := float64(accepted) / float64(len(allRows)) * 100
 
 	// Log summary
 	log.Println("\n=== Seed Summary ===")
 	log.Printf("Rows read from author_login_cache: %d\n", readCount)
-	log.Printf("Rows skipped (empty login):        %d\n", skippedEmpty)
+	log.Printf("Rows skipped (empty login):        %d (%.1f%%)\n", skippedEmpty, float64(skippedEmpty)/float64(readCount)*100)
 	log.Printf("Valid rows submitted:               %d\n", len(allRows))
 	log.Printf("email_resolution rows before:       %d\n", beforeCount)
 	log.Printf("email_resolution rows after:        %d\n", afterCount)
-	log.Printf("Rows accepted (won conflict):       %d\n", accepted)
-	log.Printf("Rows rejected (lost conflict):      %d\n", rejected)
+	log.Printf("Rows accepted (won conflict):       %d (%.1f%% of submitted)\n", accepted, acceptRate)
+	log.Printf("Rows rejected (lost conflict):      %d (%.1f%% of submitted)\n", rejected, 100-acceptRate)
 	log.Printf("Source:                            'seed'\n")
 	log.Printf("Batch size:                         %d\n", *batchSize)
+	log.Printf("Total time:                         %s\n", elapsed.Round(time.Millisecond))
+	log.Printf("Average rate:                       %.2f rows/sec\n", rate)
 }
 
 // usage prints the usage message.

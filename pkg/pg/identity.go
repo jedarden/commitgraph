@@ -127,12 +127,20 @@ func (i *IdentityIngester) IngestEmailResolution(ctx context.Context, rows []ide
 	// Execute bulk upsert
 	result, err := i.db.ExecContext(ctx, query, emails, logins, sources, resolvedAts)
 	if err != nil {
-		return fmt.Errorf("bulk upsert failed: %w", err)
+		return fmt.Errorf("bulk upsert failed (batch size %d): %w", len(rows), err)
 	}
 
-	// Log stats (optional, for observability)
-	rowsAffected, _ := result.RowsAffected()
-	_ = rowsAffected // silently ignore if we can't get the count
+	// Get row count for observability
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		// Log but don't fail - the upsert worked, we just can't get stats
+		rowsAffected = -1
+	}
+
+	// If no rows were affected, all existing rows won the conflict resolution
+	if rowsAffected == 0 && len(rows) > 0 {
+		// This is normal for re-runs - all rows were rejected due to conflict rule
+	}
 
 	return nil
 }

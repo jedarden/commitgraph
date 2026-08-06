@@ -1996,6 +1996,63 @@ func TestDebugPackFileCollection(t *testing.T) {
 	}
 }
 
+func TestParseTarball_MixedScenarios(t *testing.T) {
+	// Test ParseTarball with mixed .ref file presence
+	// Some pack files have .ref files, others don't
+	// Current behavior: ParseTarball should fail with MissingMember error
+	configData := []byte(`{
+		"core.repositoryformatversion": "1",
+		"remote.origin.promisor": "true",
+		"remote.origin.partialclonefilter": "blob:none"
+	}`)
+	refData := []byte("refs/heads/main abc123")
+
+	members := []TarballMember{
+		// pack-abc has its .ref file
+		{Name: "objects/pack/pack-abc.pack", Data: []byte("PACK123456789")},
+		{Name: "objects/pack/pack-abc.idx", Data: []byte("idx abc")},
+		{Name: "objects/pack/pack-abc.ref", Data: []byte("abc123hash")},
+		// pack-def has NO .ref file (intentionally missing)
+		{Name: "objects/pack/pack-def.pack", Data: []byte("PACK987654321")},
+		{Name: "objects/pack/pack-def.idx", Data: []byte("idx def")},
+		// pack-ghi has its .ref file
+		{Name: "objects/pack/pack-ghi.pack", Data: []byte("PACK555555555")},
+		{Name: "objects/pack/pack-ghi.idx", Data: []byte("idx ghi")},
+		{Name: "objects/pack/pack-ghi.ref", Data: []byte("ghi789hash")},
+		// Required metadata files
+		{Name: "config.json", Data: configData},
+		{Name: "ref", Data: refData},
+	}
+
+	tarball := createTestTarball(t, members)
+
+	_, err := ParseTarball(tarball)
+	if err == nil {
+		t.Fatal("expected error for tarball with missing .ref file, got nil")
+	}
+
+	// Verify it's a MissingMember error for .ref file
+	var missingErr *Error
+	if !errors.As(err, &missingErr) {
+		t.Fatalf("expected *Error type, got %T: %v", err, err)
+	}
+
+	if missingErr.Kind != MissingMember {
+		t.Errorf("expected MissingMember error kind, got %v", missingErr.Kind)
+	}
+
+	if missingErr.MemberName != ".ref" {
+		t.Errorf("expected member name '.ref', got %s", missingErr.MemberName)
+	}
+
+	// Verify error context mentions the missing file
+	if !strings.Contains(missingErr.Context, "objects/pack/pack-def.ref") {
+		t.Errorf("error context should mention missing pack-def.ref, got: %s", missingErr.Context)
+	}
+
+	t.Logf("Successfully detected missing .ref file in mixed scenario: %v", missingErr)
+}
+
 func TestRefFilenameFromPackFilename(t *testing.T) {
 	tests := []struct {
 		name        string

@@ -612,3 +612,147 @@ func LogIngestError(logger *Logger, email, githubUsername, endpointURL string, e
 
 	return nil
 }
+
+// RequestMetadata contains optional metadata for ingest requests.
+type RequestMetadata map[string]interface{}
+
+// ExtendedUserContext contains enhanced user identification information.
+type ExtendedUserContext struct {
+	UserID    string `json:"user_id"`    // User's unique identifier
+	SessionID string `json:"session_id"` // Current session identifier
+	RequestID string `json:"request_id"` // Current request identifier
+	Email     string `json:"email"`      // User's email address (optional)
+	Username  string `json:"username"`   // User's username (optional)
+}
+
+// ExtendedEndpointContext contains detailed HTTP endpoint interaction information.
+type ExtendedEndpointContext struct {
+	Endpoint     string `json:"endpoint"`              // Endpoint identifier (e.g., "github-username-resolution")
+	Method       string `json:"method"`                // HTTP method (GET, POST, etc.)
+	Path         string `json:"path"`                  // Request path
+	URL          string `json:"url"`                   // Full HTTP endpoint URL
+	StatusCode   int    `json:"status_code"`           // HTTP status code received
+	ResponseBody string `json:"response_body,omitempty"` // Response body content (if available)
+}
+
+// LogIngestErrorExtended is the enhanced logging function that accepts structured context.
+//
+// This function brings together error serialization (from cg-2iff2), context
+// capture helpers (from cg-4zz54), and the Logger to create a complete
+// ingest error logging solution with enhanced user and endpoint context.
+//
+// Parameters:
+//   - logger: The Logger instance to write the log entry (can be nil, will use default)
+//   - err: The error that occurred (error interface, can be nil for success cases)
+//   - userCtx: Extended user context containing userID, sessionID, requestID, and optional email/username
+//   - endpointCtx: Extended endpoint context containing endpoint, method, path, URL, and response details
+//   - metadata: Optional metadata map for additional context (can be nil)
+//
+// Returns:
+//   - error: Any error that occurred during logging (nil indicates success)
+//
+// The function handles logging failures gracefully by returning the error
+// to the caller while ensuring the log entry is properly formatted and written.
+//
+// Integration Points (TODO):
+//   - cg-2iff2: Error serialization and type classification
+//   - cg-4zz54: User and endpoint context capture helpers
+//   - Future: Integration with monitoring and alerting systems
+//   - Future: Integration with distributed tracing systems
+func LogIngestErrorExtended(logger *Logger, err error, userCtx ExtendedUserContext, endpointCtx ExtendedEndpointContext, metadata RequestMetadata) error {
+	// TODO: Implement logger default initialization
+	// Use default logger if none provided
+	if logger == nil {
+		logger = NewLogger()
+	}
+
+	// TODO: Validate required user context fields
+	if userCtx.UserID == "" {
+		return fmt.Errorf("user_id is required in user context")
+	}
+	if userCtx.SessionID == "" {
+		return fmt.Errorf("session_id is required in user context")
+	}
+	if userCtx.RequestID == "" {
+		return fmt.Errorf("request_id is required in user context")
+	}
+
+	// TODO: Validate required endpoint context fields
+	if endpointCtx.Endpoint == "" {
+		return fmt.Errorf("endpoint is required in endpoint context")
+	}
+	if endpointCtx.Method == "" {
+		return fmt.Errorf("method is required in endpoint context")
+	}
+	if endpointCtx.Path == "" {
+		return fmt.Errorf("path is required in endpoint context")
+	}
+
+	// TODO: Integrate with error serialization from cg-2iff2
+	// Serialize error using the error serialization helper
+	errorCtx := SerializeError(err)
+
+	// TODO: Build extended log entry with metadata integration
+	// Assemble the complete LogEntry struct with all captured context
+	entry := &LogEntry{
+		Timestamp: time.Now().UTC(),
+		EventType: "error", // Default to error type, can be extended
+		User: UserContext{
+			Email:          userCtx.Email,
+			GithubUsername: userCtx.Username,
+		},
+		Endpoint: EndpointContext{
+			URL:           endpointCtx.URL,
+			AttemptNumber: 1, // Default, can be parameterized
+			StatusCode:    endpointCtx.StatusCode,
+			ResponseBody:  endpointCtx.ResponseBody,
+		},
+		Error:           errorCtx,
+		MaxRetries:      0, // Placeholder
+		RetryDelayMs:    0, // Placeholder
+		TotalDurationMs: 0, // Placeholder
+	}
+
+	// TODO: Integrate metadata into log entry for extended context
+	// Metadata can be added to the log entry as additional context
+	if metadata != nil && len(metadata) > 0 {
+		// TODO: Serialize metadata and attach to log entry
+		// For now, we'll skip this as it requires LogEntry schema extension
+		_ = metadata // Placeholder to avoid unused variable warning
+	}
+
+	// TODO: Implement event type detection based on error and context
+	// Determine event type based on error presence and other context
+	eventType := "failure"
+	if err == nil {
+		eventType = "success"
+	}
+	entry.EventType = eventType
+
+	// TODO: Add integration point for monitoring system hooks
+	// This is where we would hook into external monitoring systems
+
+	// TODO: Add integration point for distributed tracing
+	// This is where we would integrate with OpenTelemetry or similar
+
+	// Write the log entry using the appropriate method based on event type
+	var logErr error
+	switch eventType {
+	case "retry":
+		logErr = logger.LogRetryWithEntry(entry)
+	case "failure":
+		logErr = logger.LogFailureWithEntry(entry)
+	case "success":
+		logErr = logger.LogSuccessWithEntry(entry)
+	default:
+		// Default to failure for unknown event types
+		logErr = logger.LogFailureWithEntry(entry)
+	}
+
+	// Handle logging failures gracefully - return the error to the caller
+	if logErr != nil {
+		return fmt.Errorf("failed to write ingest log entry: %w", logErr)
+	}
+
+	return nil
+}

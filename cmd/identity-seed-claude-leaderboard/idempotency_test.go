@@ -2,8 +2,36 @@
 
 // Idempotency tests for claude-leaderboard seed
 //
-// These tests verify that running the claude-leaderboard seed script multiple
-// times produces the same result (no duplicate rows, no changed timestamps).
+// These tests protect against accidental double-runs and verify conflict resolution
+// behavior when seeding email_resolution from claude-leaderboard's frozen
+// author_login_cache data.
+//
+// WHY THESE TESTS EXIST:
+// The seed script will insert 349,425 pre-resolved email→login pairs. It must be
+// idempotent because:
+//   - Operators may accidentally run it multiple times
+//   - CI may re-run after failures or partial executions
+//   - Live resolutions may occur between seed runs (workers resolving emails)
+//
+// If the seed is not idempotent, double-runs could:
+//   - Create duplicate rows (violating PRIMARY KEY constraint)
+//   - Corrupt data by overwriting newer live resolutions with stale seed data
+//   - Change timestamps, making it impossible to identify the freshest resolution
+//
+// WHAT EACH TEST VALIDATES:
+//   - TestSeedIdempotency: Verifies running the seed twice produces identical results
+//     (no duplicate rows, no changed timestamps, consistent hash)
+//   - TestSeedIdempotency_InterleavedLiveResolution: Verifies that when a live row
+//     has a newer resolved_at than the seed data, the seed respects the newer live
+//     resolution and does not overwrite it
+//   - TestIdempotencyPlaceholder: Infrastructure verification that fixtures work
+//
+// PLAN REFERENCE:
+// See docs/plan/plan.md section "claude-leaderboard seed" for the full design
+// rationale and conflict resolution rules. Specifically:
+//   - "Conflict resolution rule: only update if the seed data has a newer resolved_at"
+//   - "Every row carries a source (live/seed/manual) and a resolved_at timestamp"
+//   - "A seed that is 5-8+ weeks stale...can never beat a live resolution"
 package main
 
 import (
@@ -111,6 +139,14 @@ func seedOnce(db *sql.DB) error {
 	}
 
 	// Insert each row into email_resolution
+	//
+	// Conflict resolution rule: only update if the seed data has a newer resolved_at
+	// than the existing row. This preserves newer live resolutions and manual overrides.
+	//
+	// SQL logic:
+	// - On conflict (email already exists):
+	//   - DO UPDATE only if excluded.resolved_at > resolved_at (seed is newer)
+	//   - Otherwise DO NOTHING (preserve the existing newer row)
 	for _, row := range testData {
 		_, err := db.Exec(`
 			INSERT INTO email_resolution (email, login, source, resolved_at)
@@ -119,6 +155,7 @@ func seedOnce(db *sql.DB) error {
 				login = excluded.login,
 				source = excluded.source,
 				resolved_at = excluded.resolved_at
+			WHERE excluded.resolved_at > resolved_at
 		`, row.email, row.login, "seed", row.resolvedAt)
 		if err != nil {
 			return fmt.Errorf("failed to insert row for email %s: %w", row.email, err)

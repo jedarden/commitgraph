@@ -1,0 +1,24 @@
+# Compiled binaries
+bin/
+main
+repo-admin
+seed-author-login-cache
+seed-email-resolution
+validate-email-resolution
+
+# Test coverage
+coverage.out
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp

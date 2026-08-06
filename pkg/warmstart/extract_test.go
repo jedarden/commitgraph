@@ -1151,3 +1151,113 @@ func TestParseTarball_SizeMismatchDetection(t *testing.T) {
 		t.Logf("Got error (checksum validation may fail first): %T: %v", err, err)
 	}
 }
+
+func TestParseTarball_PackFileHeaderTooSmall(t *testing.T) {
+	// Test detection of pack file smaller than minimum header size (12 bytes)
+	configData := []byte(`{
+		"core.repositoryformatversion": "1",
+		"remote.origin.promisor": "true",
+		"remote.origin.partialclonefilter": "blob:none"
+	}`)
+	refData := []byte("refs/heads/main abc123")
+
+	// Pack file data smaller than 12 bytes (minimum for "PACK" + version + object count)
+	smallPackData := []byte("PACK")
+
+	members := []TarballMember{
+		{Name: "objects/pack/pack-small.pack", Data: smallPackData},
+		{Name: "config.json", Data: configData},
+		{Name: "ref", Data: refData},
+	}
+
+	tarball := createTestTarball(t, members)
+
+	_, err := ParseTarball(tarball)
+	if err == nil {
+		t.Error("expected error for pack file smaller than header size, got nil")
+	}
+
+	// Check it's a truncated error with member name
+	var truncErr *Error
+	if errors.As(err, &truncErr) {
+		if truncErr.Kind != Truncated {
+			t.Errorf("expected Truncated error kind, got %v", truncErr.Kind)
+		}
+		if truncErr.MemberName != "objects/pack/pack-small.pack" {
+			t.Errorf("expected member name 'objects/pack/pack-small.pack', got %s", truncErr.MemberName)
+		}
+		if !strings.Contains(truncErr.Context, "too small") {
+			t.Errorf("expected context to mention 'too small', got: %s", truncErr.Context)
+		}
+	} else {
+		t.Errorf("expected *Error type, got %T: %v", err, err)
+	}
+}
+
+func TestTruncatedError_HasMemberName(t *testing.T) {
+	// Test that truncated errors properly set the MemberName field
+	err := NewTruncatedMemberError("test.pack", "test context", 100)
+
+	if err.Kind != Truncated {
+		t.Errorf("expected Kind=Truncated, got %v", err.Kind)
+	}
+	if err.MemberName != "test.pack" {
+		t.Errorf("expected MemberName='test.pack', got %s", err.MemberName)
+	}
+	if err.Context != "test context" {
+		t.Errorf("expected Context='test context', got %s", err.Context)
+	}
+	if err.Offset != 100 {
+		t.Errorf("expected Offset=100, got %d", err.Offset)
+	}
+
+	// Verify error message includes member name
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "member=test.pack") {
+		t.Errorf("error message should include member name: %s", errMsg)
+	}
+	if !strings.Contains(errMsg, "truncated tarball") {
+		t.Errorf("error message should mention truncated tarball: %s", errMsg)
+	}
+}
+
+func TestParseTarball_TruncatedErrorHasMemberName(t *testing.T) {
+	// Test that truncated errors raised during parsing include member name
+	configData := []byte(`{
+		"core.repositoryformatversion": "1",
+		"remote.origin.promisor": "true",
+		"remote.origin.partialclonefilter": "blob:none"
+	}`)
+	refData := []byte("refs/heads/main abc123")
+
+	members := []TarballMember{
+		{Name: "objects/pack/pack-123.pack", Data: []byte("pack data")},
+		{Name: "config.json", Data: configData},
+		{Name: "ref", Data: refData},
+	}
+
+	tarball := createTestTarball(t, members)
+
+	// Truncate mid-member to cause unexpected EOF
+	truncatedTarball := tarball[:len(tarball)-30]
+
+	_, err := ParseTarball(truncatedTarball)
+	if err == nil {
+		t.Fatal("expected error for truncated tarball, got nil")
+	}
+
+	// Check if error is a truncated error (may be wrapped)
+	var truncErr *Error
+	if errors.As(err, &truncErr) {
+		if truncErr.Kind == Truncated {
+			if truncErr.MemberName == "" {
+				t.Errorf("Truncated error should have MemberName set, got empty string")
+			}
+			t.Logf("Truncated error correctly includes member name: %s", truncErr.MemberName)
+		} else {
+			t.Logf("Got error kind %v (may be corruption or other)", truncErr.Kind)
+		}
+	} else {
+		t.Logf("Got error type %T: %v", err, err)
+	}
+}

@@ -154,6 +154,16 @@ func NewTruncatedError(context string, offset int64) *Error {
 	}
 }
 
+// NewTruncatedMemberError creates an Error with Kind=Truncated for a specific tarball member.
+func NewTruncatedMemberError(memberName string, context string, offset int64) *Error {
+	return &Error{
+		Kind:       Truncated,
+		MemberName: memberName,
+		Context:    context,
+		Offset:     offset,
+	}
+}
+
 // NewMissingMemberError creates an Error with Kind=MissingMember.
 func NewMissingMemberError(memberName string) *Error {
 	return &Error{

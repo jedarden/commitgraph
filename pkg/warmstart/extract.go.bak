@@ -156,10 +156,6 @@ func ParseTarball(data []byte) (*WarmStartSnapshot, error) {
 				// Handle double extensions like .pack.promisor
 				base := filepath.Base(hdr.Name)
 				if packExtensions[ext] || strings.HasSuffix(base, ".promisor") || strings.HasSuffix(base, ".rev") {
-			// Validate pack file header size (minimum 12 bytes: "PACK" + version + object count)
-			if ext == ".pack" && len(data) < 12 {
-				return nil, NewTruncatedMemberError(hdr.Name, fmt.Sprintf("pack file too small: %d bytes (minimum 12 bytes for header)", len(data)), 0)
-			}
 					snapshot.PackFiles = append(snapshot.PackFiles, TarballMember{
 						Name: hdr.Name,
 						Data: data,

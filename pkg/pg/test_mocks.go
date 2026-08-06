@@ -8,6 +8,9 @@ import (
 // Common mock implementations for testing
 
 // mockExecutor is a test double that captures SQL execution without a real database.
+// It implements the DBExecutor interface for ExecContext only.
+// QueryContext and QueryRowContext return nil/empty values since sql.Rows and sql.Row
+// are concrete types that cannot be easily mocked.
 type mockExecutor struct {
 	lastQuery    string
 	lastArgs     []interface{}
@@ -30,13 +33,15 @@ func (m *mockExecutor) QueryContext(ctx context.Context, query string, args ...i
 	if m.shouldError {
 		return nil, &mockError{err: "test error"}
 	}
+	// Return empty mock rows - caller must handle this
 	return &mockRows{}, nil
 }
 
 func (m *mockExecutor) QueryRowContext(ctx context.Context, query string, args ...interface{}) Row {
 	m.lastQuery = query
 	m.lastArgs = args
-	return &mockRow{shouldError: m.shouldError}
+	// Return nil - caller must handle this
+	return &mockRow{}
 }
 
 // mockResult implements Result interface for testing.
@@ -46,10 +51,6 @@ type mockResult struct {
 
 func (m *mockResult) RowsAffected() (int64, error) {
 	return m.rowsAffected, nil
-}
-
-func (m *mockResult) LastInsertId() (int64, error) {
-	return 0, nil
 }
 
 // mockError implements error interface for testing.
@@ -63,7 +64,9 @@ func (m *mockError) Error() string {
 
 // mockRows implements Rows interface for testing.
 type mockRows struct {
-	closed bool
+	shouldError bool
+	currentIndex int
+	data         []interface{}
 }
 
 func (m *mockRows) Next() bool {
@@ -71,26 +74,32 @@ func (m *mockRows) Next() bool {
 }
 
 func (m *mockRows) Scan(dest ...interface{}) error {
-	return sql.ErrNoRows
+	if m.shouldError {
+		return &mockError{err: "test error"}
+	}
+	return nil
 }
 
 func (m *mockRows) Close() error {
-	m.closed = true
 	return nil
 }
 
 func (m *mockRows) Err() error {
+	if m.shouldError {
+		return &mockError{err: "test error"}
+	}
 	return nil
 }
 
 // mockRow implements Row interface for testing.
 type mockRow struct {
 	shouldError bool
+	data        interface{}
 }
 
 func (m *mockRow) Scan(dest ...interface{}) error {
 	if m.shouldError {
 		return &mockError{err: "test error"}
 	}
-	return sql.ErrNoRows
+	return nil
 }

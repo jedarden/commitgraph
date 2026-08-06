@@ -1,10 +1,7 @@
 package pg
 
 import (
-	"context"
-	"database/sql"
 	"testing"
-	"time"
 )
 
 // TestInvariant4_QueryA_RollupUserIDFKIntegrity tests that query (a)
@@ -158,52 +155,9 @@ func TestInvariant4_InvalidAliasGraphExamples(t *testing.T) {
 	t.Log("   Query (c) detects: b and c are both targets and sources.")
 }
 
-// mockExecutor is a minimal mock for testing SQL structure.
-// In real CI, these queries run against an actual database fixture.
-type mockInvariantExecutor struct {
-	shouldError bool
-}
-
-func (m *mockInvariantExecutor) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
-	// In a real test, we'd execute against a test database
-	// For now, just verify the query structure
-	if m.shouldError {
-		return nil, &mockError{msg: "mock execution error"}
-	}
-	return &mockResult{}, nil
-}
-
-func (m *mockInvariantExecutor) QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
-	if m.shouldError {
-		return nil, &mockError{msg: "mock query error"}
-	}
-	// Return empty rows for structure validation
-	return nil, nil
-}
-
-type mockError struct {
-	msg string
-}
-
-func (e *mockError) Error() string {
-	return e.msg
-}
-
-type mockResult struct{}
-
-func (r *mockResult) RowsAffected() (int64, error) {
-	return 0, nil
-}
-
-func (r *mockResult) LastInsertId() (int64, error) {
-	return 0, nil
-}
 
 // TestInvariant4_QueryStructure validates that the query structure is correct.
 func TestInvariant4_QueryStructure(t *testing.T) {
-	executor := &mockExecutor{}
-	ctx := context.Background()
-
 	// Test that we can execute queries without syntax errors
 	// (In real CI, these would run against actual database)
 
@@ -216,9 +170,15 @@ func TestInvariant4_QueryStructure(t *testing.T) {
 			LEFT JOIN users u ON rut.user_id = u.user_id
 			WHERE u.user_id IS NULL
 		`
-		_, err := executor.ExecContext(ctx, queryA)
-		if err != nil {
-			t.Logf("Query structure validation (expected in mock): %v", err)
+		// Just verify the query syntax is valid by checking expected patterns
+		requiredSubstrings := []string{
+			"SELECT", "FROM repo_user_daily_tool", "LEFT JOIN users",
+			"WHERE u.user_id IS NULL",
+		}
+		for _, substr := range requiredSubstrings {
+			if !contains(queryA, substr) {
+				t.Errorf("Query A missing expected substring: %s", substr)
+			}
 		}
 	})
 
@@ -230,9 +190,14 @@ func TestInvariant4_QueryStructure(t *testing.T) {
 			LEFT JOIN users u ON ua.target_login = u.login
 			WHERE u.login IS NULL
 		`
-		_, err := executor.ExecContext(ctx, queryB)
-		if err != nil {
-			t.Logf("Query structure validation (expected in mock): %v", err)
+		requiredSubstrings := []string{
+			"SELECT", "FROM user_aliases", "LEFT JOIN users",
+			"WHERE u.login IS NULL",
+		}
+		for _, substr := range requiredSubstrings {
+			if !contains(queryB, substr) {
+				t.Errorf("Query B missing expected substring: %s", substr)
+			}
 		}
 	})
 
@@ -243,9 +208,14 @@ func TestInvariant4_QueryStructure(t *testing.T) {
 			FROM user_aliases ua1
 			JOIN user_aliases ua2 ON ua1.source_login = ua2.target_login
 		`
-		_, err := executor.ExecContext(ctx, queryC)
-		if err != nil {
-			t.Logf("Query structure validation (expected in mock): %v", err)
+		requiredSubstrings := []string{
+			"SELECT", "FROM user_aliases ua1",
+			"JOIN user_aliases ua2",
+		}
+		for _, substr := range requiredSubstrings {
+			if !contains(queryC, substr) {
+				t.Errorf("Query C missing expected substring: %s", substr)
+			}
 		}
 	})
 }

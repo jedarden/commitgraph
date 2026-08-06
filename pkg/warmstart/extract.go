@@ -127,11 +127,15 @@ func ParseTarball(data []byte) (*WarmStartSnapshot, error) {
 			foundRef = true
 			refParts := strings.TrimSpace(string(data))
 			if refParts == "" {
-				return nil, fmt.Errorf("%w: empty ref data", ErrInvalidTarball)
+				return nil, &CorruptionError {
+					Context: "empty ref data in ref file",
+				}
 			}
 			parts := strings.Fields(refParts)
 			if len(parts) != 2 {
-				return nil, fmt.Errorf("%w: invalid ref format, expected 'refpath SHA'", ErrInvalidTarball)
+				return nil, &CorruptionError {
+					Context: fmt.Sprintf("invalid ref format in ref file: expected 'refpath SHA', got '%s'", refParts),
+				}
 			}
 			snapshot.RefPath = parts[0]
 			snapshot.RefSHA = parts[1]
@@ -194,7 +198,10 @@ func Materialize(gitDir string, snapshot *WarmStartSnapshot) error {
 	// Verify target is a git directory
 	headPath := filepath.Join(gitDir, "HEAD")
 	if _, err := os.Stat(headPath); err != nil {
-		return fmt.Errorf("%w: HEAD not found at %s", ErrNotAGitRepo, headPath)
+		return &NotAGitRepoError{
+			Path:   gitDir,
+			Reason: fmt.Sprintf("HEAD not found at %s", headPath),
+		}
 	}
 
 	// Create objects/pack directory

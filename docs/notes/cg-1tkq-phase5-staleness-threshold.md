@@ -71,27 +71,35 @@ From `docs/plan/plan.md` Phase 5: *"How long the frozen public `leaderboard.json
 
 ## Implementation Reference
 
-This decision must be referenced by the `mig-phase5-staleness-alert` implementation:
+**Status: IMPLEMENTED (2026-08-06)**
 
-```python
-# Pseudocode for the staleness alert
-GOLDEN_SNAPSHOT_TIME = "2026-08-03T22:05:42Z"
-MAX_STALENESS_DAYS = 30
-REVIEW_CHECKPOINT_DAYS = 14
+The `mig-phase5-staleness-alert` implementation exists at:
+`migration/mig_phase5_staleness_alert.py`
 
-def check_staleness():
-    age_days = (current_time() - parse_timestamp(GOLDEN_SNAPSHOT_TIME)).days
-    
-    if age_days >= REVIEW_CHECKPOINT_DAYS and age_days < MAX_STALENESS_DAYS:
-        log.warning(f"Leaderboard is {age_days} days old. Review checkpoint reached.")
-        # Check: has Phase 5 restarted discovery? Has downstream layer started?
-        # If no → escalate with Options A/B
-    
-    elif age_days >= MAX_STALENESS_DAYS:
-        log.error(f"Leaderboard is {age_days} days old. Maximum staleness exceeded.")
-        # Trigger: pull frozen leaderboard.json, serve reconstruction message
-        # Alert: pipeline must publish fresh snapshot or public serving stays down
+The script:
+- Monitors staleness of the frozen leaderboard.json
+- References this decision document in its docstring and output
+- Implements all three alert levels (INFO/WARNING/CRITICAL)
+- Supports both human-readable and JSON output formats
+- Can be integrated with monitoring systems via `--exit-code-on-critical`
+
+Usage:
+```bash
+# Check current staleness status
+python3 migration/mig_phase5_staleness_alert.py
+
+# JSON output for automation
+python3 migration/mig_phase5_staleness_alert.py --format json
+
+# Exit with code 1 on CRITICAL (for monitoring integration)
+python3 migration/mig_phase5_staleness_alert.py --exit-code-on-critical
 ```
+
+The implementation correctly references this decision's:
+- Golden snapshot time: `2026-08-03T22:05:42Z`
+- Maximum staleness threshold: 30 days
+- Review checkpoint: 14 days
+- All three alert level triggers and actions
 
 ## Communication
 

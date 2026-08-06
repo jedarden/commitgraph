@@ -219,43 +219,126 @@ func Materialize(gitDir string, snapshot *WarmStartSnapshot) error {
 	}
 
 	// Write git config values
-	configFile := filepath.Join(gitDir, "config")
-	if err := writeGitConfig(configFile, &snapshot.Config); err != nil {
+	if err := writeGitConfig(gitDir, &snapshot.Config); err != nil {
 		return fmt.Errorf("failed to write git config: %w", err)
 	}
 
 	return nil
 }
 
-// writeGitConfig appends the three required promisor config values to git config.
-func writeGitConfig(configPath string, config *Config) error {
-	// Read existing config to check if we need to add sections
+// writeGitConfig sets the three required promisor config values in git config.
+// It uses git config commands to ensure the values are set correctly.
+func writeGitConfig(gitDir string, config *Config) error {
+	// Set core.repositoryformatversion
+	if err := runGitConfig(gitDir, "core.repositoryformatversion", config.CoreRepositoryFormatVersion); err != nil {
+		return fmt.Errorf("failed to set core.repositoryformatversion: %w", err)
+	}
+
+	// Set remote.origin.promisor
+	if err := runGitConfig(gitDir, "remote.origin.promisor", config.RemoteOriginPromisor); err != nil {
+		return fmt.Errorf("failed to set remote.origin.promisor: %w", err)
+	}
+
+	// Set remote.origin.partialclonefilter
+	if err := runGitConfig(gitDir, "remote.origin.partialclonefilter", config.RemoteOriginPartialCloneFilter); err != nil {
+		return fmt.Errorf("failed to set remote.origin.partialclonefilter: %w", err)
+	}
+
+	return nil
+}
+
+// runGitConfig runs git config command to set a value
+func runGitConfig(gitDir, key, value string) error {
+	// We'll directly manipulate the config file since we can't rely on git being available
+	// and we need this to work even in environments without git
+	return setGitConfigValue(filepath.Join(gitDir, "config"), key, value)
+}
+
+// setGitConfigValue sets a git config value by parsing and rewriting the config file
+func setGitConfigValue(configPath, key, value string) error {
+	// Read existing config
 	existingConfig, err := os.ReadFile(configPath)
-	if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-
-	// Parse existing config to determine what to write
-	configStr := string(existingConfig)
-
-	// Ensure core.repositoryformatversion is set
-	if !strings.Contains(configStr, "repositoryformatversion") {
-		configStr += fmt.Sprintf("\n[core]\n\trepositoryformatversion = %s\n", config.CoreRepositoryFormatVersion)
-	}
-
-	// Ensure remote.origin section exists with promisor and partialclonefilter
-	needsRemote := !strings.Contains(configStr, "[remote \"origin\"]") ||
-		!strings.Contains(configStr, "promisor") ||
-		!strings.Contains(configStr, "partialclonefilter")
-
-	if needsRemote {
-		// Add [remote "origin"] section if missing or incomplete
-		if !strings.Contains(configStr, "[remote \"origin\"]") {
-			configStr += "\n[remote \"origin\"]\n"
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return err
 		}
-		configStr += fmt.Sprintf("\tpromisor = %s\n", config.RemoteOriginPromisor)
-		configStr += fmt.Sprintf("\tpartialclonefilter = %s\n", config.RemoteOriginPartialCloneFilter)
+		// Config file doesn't exist - create minimal default config
+		existingConfig = []byte("[core]\nrepositoryformatversion = 0\n")
 	}
 
-	return os.WriteFile(configPath, []byte(configStr), 0644)
+	// Parse the config file
+	lines := strings.Split(string(existingConfig), "\n")
+	var outputLines []string
+	var inCurrentSection bool
+	valueSet := false
+
+	// Parse the key to get section and variable
+	// e.g., "core.repositoryformatversion" -> section="[core]", variable="repositoryformatversion"
+	// e.g., "remote.origin.promisor" -> section='[remote "origin"]', variable="promisor"
+	section, variable := parseConfigKey(key)
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		// Check if this is a section header
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			inCurrentSection = (trimmed == section)
+			outputLines = append(outputLines, line)
+			continue
+		}
+
+		// Check if this is the variable we want to set
+		if inCurrentSection && strings.HasPrefix(trimmed, variable+" ") {
+			// Replace this line with the new value
+			outputLines = append(outputLines, "\t"+variable+" = "+value)
+			valueSet = true
+			continue
+		}
+
+		outputLines = append(outputLines, line)
+	}
+
+	// If the value wasn't set, add it
+	if !valueSet {
+		// Check if the section exists
+		sectionExists := false
+		for _, line := range outputLines {
+			if strings.TrimSpace(line) == section {
+				sectionExists = true
+				break
+			}
+		}
+
+		if !sectionExists {
+			// Add the section and the value
+			outputLines = append(outputLines, section)
+		}
+
+		// Find the section and add the value after it
+		for i, line := range outputLines {
+			if strings.TrimSpace(line) == section {
+				// Insert the value after this line
+				outputLines = append(outputLines[:i+1], append([]string{"\t" + variable + " = " + value}, outputLines[i+1:]...)...)
+				break
+			}
+		}
+	}
+
+	return os.WriteFile(configPath, []byte(strings.Join(outputLines, "\n")), 0644)
+}
+
+// parseConfigKey parses a git config key into section and variable
+// e.g., "core.repositoryformatversion" -> "[core]", "repositoryformatversion"
+// e.g., "remote.origin.promisor" -> `[remote "origin"]`, "promisor"
+func parseConfigKey(key string) (string, string) {
+	parts := strings.Split(key, ".")
+	if len(parts) == 2 {
+		// Simple case: "core.repositoryformatversion"
+		return "[" + parts[0] + "]", parts[1]
+	}
+	if len(parts) == 3 {
+		// Remote case: "remote.origin.promisor"
+		return `[remote "` + parts[1] + `"]`, parts[2]
+	}
+	return "", ""
 }

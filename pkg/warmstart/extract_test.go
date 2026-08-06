@@ -456,3 +456,176 @@ func TestMaterialize_GitFsck(t *testing.T) {
 		t.Logf("git show-ref output (expected to fail with dummy data): %s", output)
 	}
 }
+
+func TestParseTarball_TruncatedTarball(t *testing.T) {
+	// Create a valid tarball
+	configData := []byte(`{
+		"core.repositoryformatversion": "1",
+		"remote.origin.promisor": "true",
+		"remote.origin.partialclonefilter": "blob:none"
+	}`)
+	refData := []byte("refs/heads/main abc123")
+
+	members := []TarballMember{
+		{Name: "objects/pack/pack-123.pack", Data: []byte("pack")},
+		{Name: "config.json", Data: configData},
+		{Name: "ref", Data: refData},
+	}
+
+	tarball := createTestTarball(t, members)
+
+	// Truncate the tarball to simulate corruption
+	truncatedTarball := tarball[:len(tarball)-10]
+
+	_, err := ParseTarball(truncatedTarball)
+	if err == nil {
+		t.Error("expected error for truncated tarball, got nil")
+	}
+	if !errors.Is(err, ErrInvalidTarball) {
+		t.Errorf("expected ErrInvalidTarball, got %v", err)
+	}
+}
+
+func TestParseTarball_InvalidTarHeader(t *testing.T) {
+	// Create invalid tar data that's not a valid tarball
+	invalidTarball := []byte("not a tarball at all")
+
+	_, err := ParseTarball(invalidTarball)
+	if err == nil {
+		t.Error("expected error for invalid tarball, got nil")
+	}
+	if !errors.Is(err, ErrInvalidTarball) {
+		t.Errorf("expected ErrInvalidTarball, got %v", err)
+	}
+}
+
+func TestParseTarball_WithPromisorAndRev(t *testing.T) {
+	// Test that .promisor and .rev files are properly extracted
+	packData := []byte("pack data")
+	idxData := []byte("idx data")
+	promisorData := []byte("promisor data")
+	revData := []byte("rev data")
+	configData := []byte(`{
+		"core.repositoryformatversion": "1",
+		"remote.origin.promisor": "true",
+		"remote.origin.partialclonefilter": "blob:none"
+	}`)
+	refData := []byte("refs/heads/main abc123")
+
+	members := []TarballMember{
+		{Name: "objects/pack/pack-abc.pack", Data: packData},
+		{Name: "objects/pack/pack-abc.idx", Data: idxData},
+		{Name: "objects/pack/pack-abc.promisor", Data: promisorData},
+		{Name: "objects/pack/pack-abc.rev", Data: revData},
+		{Name: "config.json", Data: configData},
+		{Name: "ref", Data: refData},
+	}
+
+	tarball := createTestTarball(t, members)
+	snapshot, err := ParseTarball(tarball)
+	if err != nil {
+		t.Fatalf("ParseTarball failed: %v", err)
+	}
+
+	// Verify all 4 pack-related files were extracted
+	if len(snapshot.PackFiles) != 4 {
+		t.Errorf("expected 4 pack files, got %d", len(snapshot.PackFiles))
+	}
+
+	// Verify each file type is present
+	foundPack := false
+	foundIdx := false
+	foundPromisor := false
+	foundRev := false
+
+	for _, pf := range snapshot.PackFiles {
+		switch {
+		case strings.HasSuffix(pf.Name, ".pack"):
+			foundPack = true
+			if !bytes.Equal(pf.Data, packData) {
+				t.Error("pack data is not byte-identical")
+			}
+		case strings.HasSuffix(pf.Name, ".idx"):
+			foundIdx = true
+			if !bytes.Equal(pf.Data, idxData) {
+				t.Error("idx data is not byte-identical")
+			}
+		case strings.HasSuffix(pf.Name, ".promisor"):
+			foundPromisor = true
+			if !bytes.Equal(pf.Data, promisorData) {
+				t.Error("promisor data is not byte-identical")
+			}
+		case strings.HasSuffix(pf.Name, ".rev"):
+			foundRev = true
+			if !bytes.Equal(pf.Data, revData) {
+				t.Error("rev data is not byte-identical")
+			}
+		}
+	}
+
+	if !foundPack {
+		t.Error(".pack file not found in snapshot")
+	}
+	if !foundIdx {
+		t.Error(".idx file not found in snapshot")
+	}
+	if !foundPromisor {
+		t.Error(".promisor file not found in snapshot")
+	}
+	if !foundRev {
+		t.Error(".rev file not found in snapshot")
+	}
+
+	// Test Materialize also handles these files correctly
+	tmpDir := t.TempDir()
+	gitDir := filepath.Join(tmpDir, "test.git")
+	if err := os.MkdirAll(gitDir, 0755); err != nil {
+		t.Fatalf("failed to create git dir: %v", err)
+	}
+
+	headPath := filepath.Join(gitDir, "HEAD")
+	if err := os.WriteFile(headPath, []byte("ref: refs/heads/main\n"), 0644); err != nil {
+		t.Fatalf("failed to write HEAD: %v", err)
+	}
+
+	if err := Materialize(gitDir, snapshot); err != nil {
+		t.Fatalf("Materialize failed: %v", err)
+	}
+
+	// Verify all files were written to the correct location
+	packPath := filepath.Join(gitDir, "objects", "pack", "pack-abc.pack")
+	writtenPackData, err := os.ReadFile(packPath)
+	if err != nil {
+		t.Fatalf("failed to read pack file: %v", err)
+	}
+	if !bytes.Equal(writtenPackData, packData) {
+		t.Error("written pack data is not byte-identical")
+	}
+
+	idxPath := filepath.Join(gitDir, "objects", "pack", "pack-abc.idx")
+	writtenIdxData, err := os.ReadFile(idxPath)
+	if err != nil {
+		t.Fatalf("failed to read idx file: %v", err)
+	}
+	if !bytes.Equal(writtenIdxData, idxData) {
+		t.Error("written idx data is not byte-identical")
+	}
+
+	promisorPath := filepath.Join(gitDir, "objects", "pack", "pack-abc.promisor")
+	writtenPromisorData, err := os.ReadFile(promisorPath)
+	if err != nil {
+		t.Fatalf("failed to read promisor file: %v", err)
+	}
+	if !bytes.Equal(writtenPromisorData, promisorData) {
+		t.Error("written promisor data is not byte-identical")
+	}
+
+	revPath := filepath.Join(gitDir, "objects", "pack", "pack-abc.rev")
+	writtenRevData, err := os.ReadFile(revPath)
+	if err != nil {
+		t.Fatalf("failed to read rev file: %v", err)
+	}
+	if !bytes.Equal(writtenRevData, revData) {
+		t.Error("written rev data is not byte-identical")
+	}
+}

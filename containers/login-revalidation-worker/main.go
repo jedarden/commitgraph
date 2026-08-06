@@ -30,28 +30,26 @@ package main
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	_ "github.com/lib/pq"
+	"github.com/jedarden/commitgraph/pkg/client/queueapi"
 )
 
 // Config holds worker configuration from environment variables.
 type Config struct {
-	QueueAPIURL           string
-	QueueAPIInternalToken string
-	GitHubToken           string
-	PostgresURL           string
-	WorkerID              string
-	ClaimBatch            int
-	IdleSleepSecs         int
-	APICallIntervalSecs   int
+	QueueAPIClient   *queueapi.Client
+	GitHubToken      string
+	PostgresURL      string
+	WorkerID         string
+	ClaimBatch       int
+	IdleSleepSecs    int
+	APICallIntervalSecs int
 }
 
 // RevalidationRow represents a row from the email_revalidation table.
@@ -75,44 +73,38 @@ type GitHubUser struct {
 	SiteAdmin bool   `json:"site_admin"`
 }
 
-// ResolutionRow represents a row to send to the identity-ingest-endpoint.
-type ResolutionRow struct {
-	Email      string    `json:"email"`
-	GithubLogin string   `json:"github_login"`
-	Provider   string   `json:"provider"`
-	WorkerID   string   `json:"worker_id"`
-	ResolvedAt string   `json:"resolved_at"` // ISO 8601 timestamp
-}
-
 func loadConfig() (*Config, error) {
 	workerID, err := os.Hostname()
 	if err != nil {
 		workerID = fmt.Sprintf("worker-%d", time.Now().Unix())
 	}
 
-	cfg := &Config{
-		QueueAPIURL:           os.Getenv("QUEUE_API_URL"),
-		QueueAPIInternalToken: os.Getenv("QUEUE_API_INTERNAL_TOKEN"),
-		GitHubToken:           os.Getenv("GITHUB_TOKEN"),
-		PostgresURL:           os.Getenv("POSTGRES_URL"),
-		WorkerID:              workerID,
-		ClaimBatch:            getEnvInt("CLAIM_BATCH", 50),
-		IdleSleepSecs:         getEnvInt("IDLE_SLEEP_SECS", 60),
-		APICallIntervalSecs:   int(getEnvFloat("API_CALL_INTERVAL_SECS", 6.0)),
-	}
-
-	if cfg.QueueAPIURL == "" {
+	queueAPIURL := os.Getenv("QUEUE_API_URL")
+	if queueAPIURL == "" {
 		return nil, fmt.Errorf("QUEUE_API_URL is required")
 	}
-	if cfg.GitHubToken == "" {
+
+	githubToken := os.Getenv("GITHUB_TOKEN")
+	if githubToken == "" {
 		return nil, fmt.Errorf("GITHUB_TOKEN is required")
 	}
-	if cfg.PostgresURL == "" {
+
+	postgresURL := os.Getenv("POSTGRES_URL")
+	if postgresURL == "" {
 		return nil, fmt.Errorf("POSTGRES_URL is required")
 	}
 
-	// Remove trailing slash from QueueAPIURL
-	cfg.QueueAPIURL = strings.TrimSuffix(cfg.QueueAPIURL, "/")
+	queueAPIToken := os.Getenv("QUEUE_API_INTERNAL_TOKEN")
+
+	cfg := &Config{
+		QueueAPIClient: queueapi.NewClient(queueAPIURL, queueAPIToken),
+		GitHubToken:    githubToken,
+		PostgresURL:    postgresURL,
+		WorkerID:       workerID,
+		ClaimBatch:     getEnvInt("CLAIM_BATCH", 50),
+		IdleSleepSecs:  getEnvInt("IDLE_SLEEP_SECS", 60),
+		APICallIntervalSecs: int(getEnvFloat("API_CALL_INTERVAL_SECS", 6.0)),
+	}
 
 	return cfg, nil
 }
@@ -156,8 +148,8 @@ func main() {
 
 	ctx := context.Background()
 
-	log.Printf("login-revalidation-worker starting id=%s queue=%s batch=%d",
-		cfg.WorkerID, cfg.QueueAPIURL, cfg.ClaimBatch)
+	log.Printf("login-revalidation-worker starting id=%s batch=%d",
+		cfg.WorkerID, cfg.ClaimBatch)
 
 	// Main worker loop
 	ticker := time.NewTicker(time.Duration(cfg.IdleSleepSecs) * time.Second)
@@ -380,46 +372,8 @@ func updateRevalidation(ctx context.Context, db *sql.DB, email, status string, n
 	return nil
 }
 
-// updateEmailResolution calls the identity-ingest-endpoint with the new login.
+// updateEmailResolution calls the queue-api client with the new login.
 func updateEmailResolution(ctx context.Context, cfg *Config, email, newLogin string) error {
-	// Call the identity-ingest-endpoint
-	// POST /email-resolution/resolve with source='live'
-	row := ResolutionRow{
-		Email:       email,
-		GithubLogin: newLogin,
-		Provider:    "github",
-		WorkerID:    cfg.WorkerID,
-		ResolvedAt:  time.Now().Format(time.RFC3339),
-	}
-
-	body, err := json.Marshal(row)
-	if err != nil {
-		return fmt.Errorf("marshal failed: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", cfg.QueueAPIURL+"/email-resolution/resolve", strings.NewReader(string(body)))
-	if err != nil {
-		return fmt.Errorf("create request failed: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	if cfg.QueueAPIInternalToken != "" {
-		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", cfg.QueueAPIInternalToken))
-	}
-
-	client := &http.Client{
-		Timeout: 15 * time.Second,
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return fmt.Errorf("unexpected status %d", resp.StatusCode)
-	}
-
-	return nil
+	// Use the queue-api client to post the resolution
+	return cfg.QueueAPIClient.PostResolution(ctx, email, newLogin)
 }

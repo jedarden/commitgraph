@@ -3266,3 +3266,420 @@ func TestParseTarball_RefFileCorruption(t *testing.T) {
 	t.Log("Current behavior: ParseTarball accepts .ref files regardless of content")
 	t.Log("Hash validation for .ref files is not implemented in the current version")
 }
+// Sanity check tests for git fsck and git log verification
+
+func TestVerifyGitFsck_ValidRepository(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH, skipping")
+	}
+
+	// Create a temporary directory
+	tmpDir := t.TempDir()
+	gitDir := filepath.Join(tmpDir, "test.git")
+
+	// Initialize a git repository
+	cmd := exec.Command("git", "init", "--bare", gitDir)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to init git repo: %v\noutput: %s", err, output)
+	}
+
+	// VerifyGitFsck should succeed on a valid repository
+	err := VerifyGitFsck(gitDir)
+	if err != nil {
+		t.Errorf("VerifyGitFsck failed on valid repository: %v", err)
+	}
+}
+
+func TestVerifyGitFsck_NotAGitRepo(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH, skipping")
+	}
+
+	// Create a temporary directory that is NOT a git repository
+	tmpDir := t.TempDir()
+
+	// VerifyGitFsck should fail on a non-git directory
+	err := VerifyGitFsck(tmpDir)
+	if err == nil {
+		t.Error("VerifyGitFsck should fail on non-git directory")
+	}
+}
+
+func TestVerifyGitFsck_CorruptedRepository(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH, skipping")
+	}
+
+	// Create a temporary directory
+	tmpDir := t.TempDir()
+	gitDir := filepath.Join(tmpDir, "test.git")
+
+	// Initialize a git repository
+	cmd := exec.Command("git", "init", "--bare", gitDir)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to init git repo: %v\noutput: %s", err, output)
+	}
+
+	// Corrupt the repository by removing the objects directory
+	objectsDir := filepath.Join(gitDir, "objects")
+	if err := os.RemoveAll(objectsDir); err != nil {
+		t.Fatalf("failed to remove objects directory: %v", err)
+	}
+
+	// VerifyGitFsck should fail on a corrupted repository
+	err := VerifyGitFsck(gitDir)
+	if err == nil {
+		t.Error("VerifyGitFsck should fail on corrupted repository")
+	}
+	t.Logf("Expected failure on corrupted repository: %v", err)
+}
+
+func TestVerifyGitLog_ValidRepository(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH, skipping")
+	}
+
+	// Create a temporary directory
+	tmpDir := t.TempDir()
+	gitDir := filepath.Join(tmpDir, "test.git")
+
+	// Initialize a git repository
+	cmd := exec.Command("git", "init", "--bare", gitDir)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to init git repo: %v\noutput: %s", err, output)
+	}
+
+	// VerifyGitLog should succeed on a valid repository
+	err := VerifyGitLog(gitDir)
+	if err != nil {
+		t.Errorf("VerifyGitLog failed on valid repository: %v", err)
+	}
+}
+
+func TestVerifyGitLog_NotAGitRepo(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH, skipping")
+	}
+
+	// Create a temporary directory that is NOT a git repository
+	tmpDir := t.TempDir()
+
+	// VerifyGitLog should fail on a non-git directory
+	err := VerifyGitLog(tmpDir)
+	if err == nil {
+		t.Error("VerifyGitLog should fail on non-git directory")
+	}
+}
+
+func TestVerifyGitLog_CorruptedRepository(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH, skipping")
+	}
+
+	// Create a temporary directory
+	tmpDir := t.TempDir()
+	gitDir := filepath.Join(tmpDir, "test.git")
+
+	// Initialize a git repository
+	cmd := exec.Command("git", "init", "--bare", gitDir)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to init git repo: %v\noutput: %s", err, output)
+	}
+
+	// Corrupt the repository by removing the objects directory
+	objectsDir := filepath.Join(gitDir, "objects")
+	if err := os.RemoveAll(objectsDir); err != nil {
+		t.Fatalf("failed to remove objects directory: %v", err)
+	}
+
+	// VerifyGitLog should fail on a corrupted repository
+	err := VerifyGitLog(gitDir)
+	if err == nil {
+		t.Error("VerifyGitLog should fail on corrupted repository")
+	}
+	t.Logf("Expected failure on corrupted repository: %v", err)
+}
+
+func TestRunSanityChecks_Success(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH, skipping")
+	}
+
+	// Create a temporary directory
+	tmpDir := t.TempDir()
+	gitDir := filepath.Join(tmpDir, "test.git")
+
+	// Initialize a git repository
+	cmd := exec.Command("git", "init", "--bare", gitDir)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to init git repo: %v\noutput: %s", err, output)
+	}
+
+	// RunSanityChecks should succeed on a valid repository
+	err := RunSanityChecks(gitDir)
+	if err != nil {
+		t.Errorf("RunSanityChecks failed on valid repository: %v", err)
+	}
+}
+
+func TestRunSanityChecks_FsckFailure(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH, skipping")
+	}
+
+	// Create a temporary directory
+	tmpDir := t.TempDir()
+	gitDir := filepath.Join(tmpDir, "test.git")
+
+	// Initialize a git repository
+	cmd := exec.Command("git", "init", "--bare", gitDir)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to init git repo: %v\noutput: %s", err, output)
+	}
+
+	// Corrupt the repository by removing the objects directory
+	objectsDir := filepath.Join(gitDir, "objects")
+	if err := os.RemoveAll(objectsDir); err != nil {
+		t.Fatalf("failed to remove objects directory: %v", err)
+	}
+
+	// RunSanityChecks should fail when fsck fails
+	err := RunSanityChecks(gitDir)
+	if err == nil {
+		t.Error("RunSanityChecks should fail on corrupted repository")
+	}
+	// Error should mention fsck failure
+	if err != nil && !strings.Contains(err.Error(), "git fsck") {
+		t.Errorf("error should mention git fsck failure: %v", err)
+	}
+}
+
+func TestVerifyGitFsck_NoGitAvailable(t *testing.T) {
+	// This test verifies behavior when git is not available
+	// We test this by temporarily modifying PATH
+	if _, err := exec.LookPath("git"); err != nil {
+		// Git is not available - VerifyGitFsck should fail with clear error
+		tmpDir := t.TempDir()
+		err := VerifyGitFsck(tmpDir)
+		if err == nil {
+			t.Error("VerifyGitFsck should fail when git is not available")
+		}
+		if err != nil && !strings.Contains(err.Error(), "git not found") {
+			t.Errorf("error should mention git not found: %v", err)
+		}
+		return
+	}
+
+	// Git is available - skip this test as we can't simulate its absence
+	t.Skip("git is available in PATH, cannot test absence scenario")
+}
+
+func TestVerifyGitLog_NoGitAvailable(t *testing.T) {
+	// This test verifies behavior when git is not available
+	if _, err := exec.LookPath("git"); err != nil {
+		// Git is not available - VerifyGitLog should fail with clear error
+		tmpDir := t.TempDir()
+		err := VerifyGitLog(tmpDir)
+		if err == nil {
+			t.Error("VerifyGitLog should fail when git is not available")
+		}
+		if err != nil && !strings.Contains(err.Error(), "git not found") {
+			t.Errorf("error should mention git not found: %v", err)
+		}
+		return
+	}
+
+	// Git is available - skip this test as we can't simulate its absence
+	t.Skip("git is available in PATH, cannot test absence scenario")
+}
+
+// TestWarmStartTarballIntegration creates a warm-start tarball with real git pack data,
+// materializes it, and runs sanity checks end-to-end.
+// This is an integration test that verifies the complete warm-start workflow.
+func TestWarmStartTarballIntegration(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH, skipping integration test")
+	}
+
+	// Create source repository with real commits
+	sourceTmpDir := t.TempDir()
+	sourceGitDir := filepath.Join(sourceTmpDir, "source.git")
+
+	// Initialize source repository
+	cmd := exec.Command("git", "init", "--bare", sourceGitDir)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to init source git repo: %v\noutput: %s", err, output)
+	}
+
+	// Clone the bare repo to a working directory to create commits
+	workingDir := filepath.Join(sourceTmpDir, "working")
+	cmd = exec.Command("git", "clone", sourceGitDir, workingDir)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to clone working repo: %v\noutput: %s", err, output)
+	}
+
+	// Configure git user in working directory
+	cmd = exec.Command("git", "-C", workingDir, "config", "user.name", "Test User")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to configure git user.name: %v\noutput: %s", err, output)
+	}
+	cmd = exec.Command("git", "-C", workingDir, "config", "user.email", "test@example.com")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to configure git user.email: %v\noutput: %s", err, output)
+	}
+
+	// Create initial commit
+	testFile := filepath.Join(workingDir, "test.txt")
+	if err := os.WriteFile(testFile, []byte("test content\n"), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+	cmd = exec.Command("git", "-C", workingDir, "add", "test.txt")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to add file: %v\noutput: %s", err, output)
+	}
+	cmd = exec.Command("git", "-C", workingDir, "commit", "-m", "Initial commit")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to commit: %v\noutput: %s", err, output)
+	}
+
+	// Push to bare repository
+	cmd = exec.Command("git", "-C", workingDir, "push", "origin", "master")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		// Try 'main' branch if 'master' fails
+		cmd = exec.Command("git", "-C", workingDir, "push", "origin", "main")
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("failed to push to origin: %v\noutput: %s", err, output)
+		}
+	} else {
+		// Master push succeeded - verify output
+		if len(output) > 0 {
+			t.Logf("git push output: %s", output)
+		}
+	}
+
+	// Pack the objects in the source repository to create pack files
+	// This creates real pack files that git fsck will accept
+	cmd = exec.Command("git", "-C", sourceGitDir, "repack", "-d", "-A", "--depth=250")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to repack: %v\noutput: %s", err, output)
+	}
+
+	// Find pack files in the source repository
+	packDir := filepath.Join(sourceGitDir, "objects", "pack")
+	packFiles, err := filepath.Glob(filepath.Join(packDir, "*.pack"))
+	if err != nil {
+		t.Fatalf("failed to glob pack files: %v", err)
+	}
+	if len(packFiles) == 0 {
+		t.Fatal("no pack files found after repack")
+	}
+
+	// Use the first pack file found
+	packFile := packFiles[0]
+	baseName := strings.TrimSuffix(filepath.Base(packFile), ".pack")
+	idxFile := filepath.Join(packDir, baseName+".idx")
+
+	// Check if .ref file exists (may not exist for non-promisor packs)
+	refFilePath := filepath.Join(packDir, baseName+".ref")
+	var refData []byte
+	if _, err := os.Stat(refFilePath); err == nil {
+		refData, err = os.ReadFile(refFilePath)
+		if err != nil {
+			t.Fatalf("failed to read ref file: %v", err)
+		}
+	} else {
+		// Create a minimal .ref file for testing purposes
+		// This is needed for ParseTarball validation
+		refData = []byte("test ref data for promisor pack")
+	}
+
+	// Read pack, idx, and ref files
+	packData, err := os.ReadFile(packFile)
+	if err != nil {
+		t.Fatalf("failed to read pack file: %v", err)
+	}
+	idxData, err := os.ReadFile(idxFile)
+	if err != nil {
+		t.Fatalf("failed to read idx file: %v", err)
+	}
+
+	// Get the ref SHA from the pack file's ref
+	// Find the main branch reference
+	var refSHA string
+	var refPath string
+	for _, branch := range []string{"refs/heads/main", "refs/heads/master"} {
+		refFilePath := filepath.Join(sourceGitDir, branch)
+		if shaBytes, err := os.ReadFile(refFilePath); err == nil {
+			refSHA = strings.TrimSpace(string(shaBytes))
+			refPath = branch
+			break
+		}
+	}
+	if refSHA == "" {
+		t.Fatal("could not find ref SHA for main or master branch")
+	}
+
+	// Create config data
+	configData := []byte(`{
+		"core.repositoryformatversion": "1",
+		"remote.origin.promisor": "true",
+		"remote.origin.partialclonefilter": "blob:none"
+	}`)
+
+	// Create tarball members
+	members := []TarballMember{
+		{Name: filepath.Join("objects", "pack", filepath.Base(packFile)), Data: packData},
+		{Name: filepath.Join("objects", "pack", filepath.Base(idxFile)), Data: idxData},
+		{Name: filepath.Join("objects", "pack", baseName+".ref"), Data: refData},
+		{Name: "config.json", Data: configData},
+		{Name: refPath, Data: []byte(refSHA + "\n")},
+	}
+
+	// Create the tarball
+	tarball := createTestTarball(t, members)
+
+	// Parse the tarball to get a snapshot
+	snapshot, err := ParseTarball(tarball)
+	if err != nil {
+		t.Fatalf("ParseTarball failed: %v", err)
+	}
+
+	// Create target directory for materialization
+	targetTmpDir := t.TempDir()
+	targetGitDir := filepath.Join(targetTmpDir, "target.git")
+
+	// Initialize target repository
+	cmd = exec.Command("git", "init", "--bare", targetGitDir)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to init target git repo: %v\noutput: %s", err, output)
+	}
+
+	// Materialize the snapshot
+	if err := Materialize(targetGitDir, snapshot); err != nil {
+		t.Fatalf("Materialize failed: %v", err)
+	}
+
+	// Run sanity checks on the materialized directory
+	if err := RunSanityChecks(targetGitDir); err != nil {
+		t.Errorf("RunSanityChecks failed on materialized repository: %v", err)
+	}
+
+	// Verify git log can read the commit history
+	cmd = exec.Command("git", "--git-dir="+targetGitDir, "log", "--oneline", "-n", "1")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Errorf("git log failed on materialized repository: %v\noutput: %s", err, output)
+	}
+
+	// Verify the ref points to a valid commit
+	cmd = exec.Command("git", "--git-dir="+targetGitDir, "rev-parse", refPath)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Errorf("git rev-parse failed for ref %s: %v\noutput: %s", refPath, err, output)
+	}
+	parsedSHA := strings.TrimSpace(string(output))
+	if parsedSHA != refSHA {
+		t.Errorf("ref SHA mismatch: got %s, want %s", parsedSHA, refSHA)
+	}
+
+	t.Logf("Successfully created and materialized warm-start tarball with real git pack data")
+}

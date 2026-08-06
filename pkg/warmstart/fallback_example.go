@@ -293,6 +293,14 @@ func CloneWithFallbackAndMetrics(
 		return fmt.Errorf("warmstart materialization error: %w", err)
 	}
 
+		// Run sanity checks on materialized repository
+		// Verify repository integrity with git fsck and git log (no network access)
+		if err := RunSanityChecks(gitDir); err != nil {
+			metrics.EmitCounter("warmstart_sanity_check_failure_total", "reason", "integrity_check_failed")
+			log.Printf("[%s] WARN: Warmstart sanity checks failed, falling back to cold clone: %v", correlationID, err)
+			return coldClone(repoURL, gitDir)
+		}
+
 	log.Printf("[%s] Warmstart succeeded, performing incremental fetch", correlationID)
 	if err := performIncrementalFetch(repoURL, gitDir); err != nil {
 		return fmt.Errorf("incremental fetch failed: %w", err)

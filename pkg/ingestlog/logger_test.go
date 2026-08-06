@@ -1344,8 +1344,9 @@ func TestLogIngestError_ContextPreservation(t *testing.T) {
 				1, // attemptNumber
 				4, // maxRetries
 				100, // retryDelayMs
-				250, // totalDurationMs
+				int64(250), // totalDurationMs
 				tt.eventType,
+				nil, // metadata
 			)
 
 			if err != nil {
@@ -1770,7 +1771,7 @@ func TestLogIngestError_EndpointContextIntegration(t *testing.T) {
 				1,  // attemptNumber
 				4,  // maxRetries
 				100, // retryDelayMs
-				250, // totalDurationMs
+				int64(250), // totalDurationMs
 				tt.eventType,
 				nil, // metadata
 			)

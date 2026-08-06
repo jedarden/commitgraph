@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -579,4 +580,127 @@ func ValidateRefFiles(packFiles []string) []string {
 	}
 
 	return missingRefFiles
+}
+
+// VerifyGitFsck runs git fsck to verify repository integrity without network access.
+//
+// This function runs 'git fsck --no-full --no-progress' to verify the integrity
+// of the repository object database. It does not require or perform any network operations.
+//
+// Parameters:
+//   - gitDir: Path to the git directory (e.g., "/path/to/repo.git")
+//
+// Returns:
+//   - error: nil if fsck passes, error with clear message if corruption detected
+//
+// Error types returned:
+//   - ErrNotAGitRepo: if gitDir is not a valid git repository
+//   - Error with Kind=CorruptPack: if git fsck detects corruption
+//
+// Example:
+//   if err := VerifyGitFsck(gitDir); err != nil {
+//       return fmt.Errorf("repository integrity check failed: %w", err)
+//   }
+func VerifyGitFsck(gitDir string) error {
+	// Check if git is available
+	if _, err := exec.LookPath("git"); err != nil {
+		return fmt.Errorf("warmstart: git not found in PATH: %w", err)
+	}
+
+	// Run git fsck with flags to avoid network access and unnecessary output
+	// --no-full: faster check without full traversal
+	// --no-progress: suppress progress output
+	cmd := exec.Command("git", "--git-dir="+gitDir, "fsck", "--no-full", "--no-progress")
+	output, err := cmd.CombinedOutput()
+
+	if err != nil {
+		outputStr := string(output)
+		// Parse git fsck output for clear error messages
+		if strings.Contains(outputStr, "corrupt") || strings.Contains(outputStr, "bad") || strings.Contains(outputStr, "missing") {
+			return NewCorruptPackError("", fmt.Sprintf("git fsck detected corruption: %s", outputStr))
+		}
+		return fmt.Errorf("%w: git fsck failed: %s", ErrNotAGitRepo, outputStr)
+	}
+
+	return nil
+}
+
+// VerifyGitLog runs git log to verify commit history is accessible without network access.
+//
+// This function runs 'git log --oneline -n 1' to verify that git can read commit
+// history. It performs only a local read operation and does not fetch from remotes.
+//
+// Parameters:
+//   - gitDir: Path to the git directory (e.g., "/path/to/repo.git")
+//
+// Returns:
+//   - error: nil if log succeeds, error if commit history is inaccessible
+//
+// Error types returned:
+//   - ErrNotAGitRepo: if gitDir is not a valid git repository
+//   - Error with Kind=CorruptPack: if git cannot read commit history due to corruption
+//
+// Example:
+//   if err := VerifyGitLog(gitDir); err != nil {
+//       return fmt.Errorf("commit history verification failed: %w", err)
+//   }
+func VerifyGitLog(gitDir string) error {
+	// Check if git is available
+	if _, err := exec.LookPath("git"); err != nil {
+		return fmt.Errorf("warmstart: git not found in PATH: %w", err)
+	}
+
+	// Run git log with minimal output to verify history is accessible
+	// --oneline: compact output
+	// -n 1: only verify one commit is accessible
+	cmd := exec.Command("git", "--git-dir="+gitDir, "log", "--oneline", "-n", "1")
+	output, err := cmd.CombinedOutput()
+
+	if err != nil {
+		outputStr := string(output)
+		// Check for common corruption indicators
+		if strings.Contains(outputStr, "corrupt") || strings.Contains(outputStr, "bad") || strings.Contains(outputStr, "object") {
+			return NewCorruptPackError("", fmt.Sprintf("git log detected corruption: %s", outputStr))
+		}
+		return fmt.Errorf("%w: git log failed: %s", ErrNotAGitRepo, outputStr)
+	}
+
+	// Verify we got some output (even if it's just showing a detached HEAD or similar)
+	if len(output) == 0 {
+		return fmt.Errorf("warmstart: git log produced no output")
+	}
+
+	return nil
+}
+
+// RunSanityChecks runs both git fsck and git log verification on a materialized directory.
+//
+// This is a convenience function that runs both sanity checks in sequence.
+// It ensures the repository is fully functional after materialization.
+//
+// Parameters:
+//   - gitDir: Path to the git directory (e.g., "/path/to/repo.git")
+//
+// Returns:
+//   - error: nil if all checks pass, first error encountered if any check fails
+//
+// Example:
+//   if err := Materialize(gitDir, snapshot); err != nil {
+//       return err
+//   }
+//   if err := RunSanityChecks(gitDir); err != nil {
+//       return fmt.Errorf("sanity checks failed: %w", err)
+//   }
+func RunSanityChecks(gitDir string) error {
+	// Run git fsck first
+	if err := VerifyGitFsck(gitDir); err != nil {
+		return fmt.Errorf("git fsck sanity check failed: %w", err)
+	}
+
+	// Run git log to verify history
+	if err := VerifyGitLog(gitDir); err != nil {
+		return fmt.Errorf("git log sanity check failed: %w", err)
+	}
+
+	return nil
 }

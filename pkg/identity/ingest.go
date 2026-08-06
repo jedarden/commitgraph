@@ -144,8 +144,16 @@ func (i *Ingester) IngestResolution(ctx context.Context, rows []ResolutionRow) e
 	}
 
 	// Delegate to database implementation
-	_, err := i.db.IngestEmailResolution(ctx, rows)
-	return err
+	result, err := i.db.IngestEmailResolution(ctx, rows)
+	if err != nil {
+		return err
+	}
+	i.Ingested += result.Ingested
+	i.Skipped += result.Skipped
+	for reason, count := range result.SkipDetails {
+		i.SkipDetails[reason] += count
+	}
+	return nil
 }
 
 // GetProcessed returns the total number of records processed.

@@ -205,7 +205,18 @@ func ParseTarball(data []byte) (*WarmStartSnapshot, error) {
 		return nil, NewMissingMemberError(".pack")
 	}
 
-	// Collect base names of all .pack files for corresponding file validation
+	// Ref validation: Ensure each .pack file has its required companion files.
+	// Git pack files require corresponding .idx (index) and .ref (reverse index) files
+	// to function correctly. Missing companion files will cause git operations to fail.
+	//
+	// Validation flow:
+	// 1. Collect all .pack file base names (e.g., "objects/pack/pack-abc123" from "objects/pack/pack-abc123.pack")
+	// 2. Verify each .pack has a corresponding .idx file (pack index, required for object lookup)
+	// 3. Verify each .pack has a corresponding .ref file (reverse index, required for partial clone promisor packs)
+	//
+	// This validation happens during ParseTarball, before Materialize, to fail fast on corrupted tarballs.
+
+	// Step 1: Collect base names of all .pack files for corresponding file validation
 	var packBaseNames []string
 	for _, pf := range snapshot.PackFiles {
 		if strings.HasSuffix(pf.Name, ".pack") {
@@ -215,7 +226,8 @@ func ParseTarball(data []byte) (*WarmStartSnapshot, error) {
 		}
 	}
 
-	// Validate that corresponding .idx files exist for each .pack file
+	// Step 2: Validate that corresponding .idx files exist for each .pack file
+	// The .idx file contains the pack index that git uses to locate objects within the .pack file
 	for _, baseName := range packBaseNames {
 		idxName := baseName + ".idx"
 		foundIdx := false
@@ -230,7 +242,9 @@ func ParseTarball(data []byte) (*WarmStartSnapshot, error) {
 		}
 	}
 
-	// Validate that corresponding .ref files exist for each .pack file
+	// Step 3: Validate that corresponding .ref files exist for each .pack file
+	// The .ref file contains the reverse index used by promisor packs for partial clone
+	// Missing .ref files will cause incremental fetch operations to fail
 	missingRefFiles := CollectMissingRefFiles(snapshot.PackFiles)
 	if len(missingRefFiles) > 0 {
 		return nil, NewMissingMemberErrorWithContext(".ref", fmt.Sprintf("missing .ref files: %s", strings.Join(missingRefFiles, ", ")))
@@ -252,6 +266,17 @@ func ParseTarball(data []byte) (*WarmStartSnapshot, error) {
 // The target directory must be an empty git repository (initialized with
 // `git init --bare` or `git init`). After materialization, the repository
 // will be ready for incremental fetch via `git fetch origin`.
+//
+// Validation approach:
+// Ref and pack file validation is performed upstream in ParseTarball, not here.
+// By the time Materialize is called, the snapshot has already been validated to
+// ensure all required companion files (.idx, .ref) exist for each .pack file.
+// This separation of concerns allows ParseTarball to fail fast on corrupted
+// input before any filesystem writes occur.
+//
+// This function focuses solely on idempotent filesystem operations: writing
+// pack files to objects/pack/, creating ref directories, and writing the ref
+// file and git config values. It assumes the snapshot is well-formed.
 func Materialize(gitDir string, snapshot *WarmStartSnapshot) error {
 	// Verify target is a git directory
 	headPath := filepath.Join(gitDir, "HEAD")

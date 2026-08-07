@@ -126,7 +126,7 @@ func (c *Client) PostResolution(ctx context.Context, email, githubUsername strin
 				totalDurationMs,
 			)
 
-			if err := c.logger.LogRetry(event); err != nil {
+			if err := c.logger.LogRetry(&event); err != nil {
 				// Fallback to basic log if structured logging fails
 				log.Printf("[QUEUE-INGEST-RETRY] email=%s github_username=%s attempt=%d/%d error=%q (structured logging failed: %v)",
 					email, githubUsername, attempt, c.maxRetries, lastErr, err)
@@ -212,7 +212,7 @@ func (c *Client) PostResolution(ctx context.Context, email, githubUsername strin
 		totalDurationMs,
 	)
 
-	if err := c.logger.LogFailure(event); err != nil {
+	if err := c.logger.LogFailure(&event); err != nil {
 		// Fallback to basic log if structured logging fails
 		log.Printf("[QUEUE-INGEST-FAILURE] email=%s github_username=%s error=%q (structured logging failed: %v)",
 			email, githubUsername, lastErr, err)

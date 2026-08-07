@@ -88,21 +88,24 @@ Once you have `(provider, repo_full_name)` and a clear reason:
 
 ```bash
 # From a pod with cluster access (or via kubectl exec)
-repo-admin exclude \
+repo-admin \
   -db-host postgres-commitgraph \
   -db-user commitgraph \
   -db-password "$DB_PASSWORD" \
   -operator "your-name-or-incident-id" \
-  github owner/repo \
-  "false attribution report from affected user <email@example.com>, incident #12345"
+  -provider github \
+  -repo owner/repo \
+  -reason "false attribution report from affected user <email@example.com>, incident #12345"
 ```
 
 **Required fields:**
 - `-operator`: who is performing this action (for audit log)
-- `reason`: human-readable justification (required - cannot be empty)
+- `-provider`, `-repo`: identify the repository (see previous section)
+- `-reason`: human-readable justification (required when setting an exclusion - cannot be empty)
 
 **Result:**
-- The tool logs `[AUDIT]` entry with who/when/why
+- The tool logs `[AUDIT]` entry to stderr with who/when/why
+- The same who/when/why is durably recorded in `exclusion_audit_log` (actor = your `-operator` value)
 - `repos.excluded_at` is set to `now()`
 - `repos.excluded_reason` is set to your provided reason
 - On next aggregation cycle (~15 min), that repo's contributions are filtered out
@@ -110,51 +113,70 @@ repo-admin exclude \
 
 ## Clearing an Exclusion
 
-If the report was mistaken or new evidence emerges:
+If the report was mistaken or new evidence emerges, use the same tool with `-clear`
+instead of `-reason`:
 
 ```bash
-repo-admin clear \
+repo-admin \
   -db-host postgres-commitgraph \
   -db-user commitgraph \
   -db-password "$DB_PASSWORD" \
   -operator "your-name-or-incident-id" \
-  github owner/repo
+  -provider github \
+  -repo owner/repo \
+  -clear
 ```
 
 **Result:**
-- `[AUDIT]` log entry records the reversal
+- `[AUDIT]` log entry (stderr and `exclusion_audit_log`) records the reversal
 - `repos.excluded_at` and `repos.excluded_reason` are set to `NULL`
 - On next aggregation cycle, the repo's contributions are restored
 - The user's rank climbs back up on next publish
 
 ## Checking Exclusion Status
 
-To see if a repo is currently excluded:
+`repo-admin` is exclude/clear only - it has no read/list subcommand. Check status
+directly against the database (see "Option B" above for cluster access):
 
 ```bash
-repo-admin status \
-  -db-host postgres-commitgraph \
-  -db-user commitgraph \
-  -db-password "$DB_PASSWORD" \
-  github owner/repo
+psql -c "
+  SELECT provider, repo_full_name, excluded_at, excluded_reason
+  FROM repos
+  WHERE provider = 'github' AND repo_full_name = 'owner/repo';
+"
 ```
 
 **Output:**
-- `not excluded` - repo is not excluded
-- `excluded since <timestamp> (reason: <text>)` - repo is excluded
+- `excluded_at` is `NULL` - repo is not excluded
+- `excluded_at` is set - repo is excluded (see `excluded_reason` for why)
 
 ## Listing All Exclusions
 
 To see all currently excluded repos:
 
 ```bash
-repo-admin list \
-  -db-host postgres-commitgraph \
-  -db-user commitgraph \
-  -db-password "$DB_PASSWORD"
+psql -c "
+  SELECT provider, repo_full_name, excluded_at, excluded_reason
+  FROM repos
+  WHERE excluded_at IS NOT NULL
+  ORDER BY excluded_at DESC;
+"
 ```
 
-**Output:** formatted list of all excluded repos with timestamps and reasons.
+To see the full history (including reversed exclusions) with who/when/why, query
+`exclusion_audit_log` instead - see the `audit-logs` CLI (`cmd/audit-logs`) or query
+directly:
+
+```bash
+psql -c "
+  SELECT r.provider, r.repo_full_name, a.actor, a.timestamp, a.event_type,
+         a.old_excluded_reason, a.new_excluded_reason
+  FROM exclusion_audit_log a
+  JOIN repos r ON r.repo_id = a.repo_id
+  ORDER BY a.timestamp DESC
+  LIMIT 50;
+"
+```
 
 ## Audit Trail
 
@@ -183,13 +205,14 @@ This log is critical for incident response and postmortem analysis.
 
 **Step 3: Apply exclusion**
 ```bash
-repo-admin exclude \
+repo-admin \
   -db-host postgres-commitgraph \
   -db-user commitgraph \
   -db-password "$DB_PASSWORD" \
   -operator "operator-on-call" \
-  github suspicious-fork/alice-code \
-  "false attribution report from alice@example.com, incident INC-2026-0805-001"
+  -provider github \
+  -repo suspicious-fork/alice-code \
+  -reason "false attribution report from alice@example.com, incident INC-2026-0805-001"
 ```
 
 **Step 4: Verify fix**

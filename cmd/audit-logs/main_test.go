@@ -311,14 +311,26 @@ func TestAuditLogsFlagCombinations(t *testing.T) {
 			outputStr := string(output)
 
 			// We expect database connection errors since we're not connecting to a real database
-			// but we should NOT get validation errors
+			// but we should NOT get validation errors.
+			//
+			// main.go produces two different wordings depending on where the
+			// failure happens: "failed to connect to PostgreSQL" from
+			// sql.Open (rare - usually a malformed DSN) and "PostgreSQL ping
+			// failed" from db.Ping() (the common case, whether the server is
+			// unreachable, refuses the connection, or - as when actually
+			// running against a live but non-SSL server - rejects the
+			// default sslmode). Both are expected/tolerated connectivity
+			// failures here, not flag-validation bugs, so both must be
+			// recognized.
+			isConnectivityError := strings.Contains(outputStr, "failed to connect") || strings.Contains(outputStr, "ping failed")
+
 			if err != nil {
-				if strings.Contains(outputStr, "error: -") && !strings.Contains(outputStr, "failed to connect") {
+				if strings.Contains(outputStr, "error: -") && !isConnectivityError {
 					t.Errorf("unexpected validation error for '%s': %s", tt.name, outputStr)
 				}
 			}
 
-			if !tt.shouldError && strings.Contains(outputStr, "error:") && !strings.Contains(outputStr, "failed to connect") {
+			if !tt.shouldError && strings.Contains(outputStr, "error:") && !isConnectivityError {
 				t.Errorf("unexpected error for '%s': %s", tt.name, outputStr)
 			}
 		})

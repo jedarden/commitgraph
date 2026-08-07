@@ -258,8 +258,7 @@ class TestAcceptanceCriteria(unittest.TestCase):
         temp_path = Path(temp_dir)
 
         try:
-            # Create diverse key set
-            temp_path.mkdir()
+            # Create diverse key set (mkdtemp() already created temp_path)
             for year, key_id, epoch in [
                 ("2024", "current-key", "2024-08"),
                 ("2023", "old-key-1", "2023-12"),

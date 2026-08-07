@@ -3,6 +3,7 @@ package audit
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -161,12 +162,11 @@ func TestLogExclusionInline(t *testing.T) {
 	LogExclusionInline("exclude", "github", "owner/repo", "test-operator", "test reason", 1, "INC-001")
 }
 
-// testLogger is a minimal logger for testing.
+// testLogger is a minimal logger for testing, matching stdLogger's interface.
 type testLogger struct {
 	writer *bytes.Buffer
 }
 
-func (t *testLogger) Println(v interface{}) {
-	t.writer.WriteString(v.(string))
-	t.writer.WriteString("\n")
+func (t *testLogger) Println(v ...interface{}) {
+	fmt.Fprintln(t.writer, v...)
 }

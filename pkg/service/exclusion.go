@@ -283,7 +283,7 @@ func SetRepoExclusionWithActor(ctx context.Context, db Transactioner, provider, 
 	var oldExcludedReason *string
 
 	selectQuery := `
-		SELECT id, excluded_at, excluded_reason
+		SELECT repo_id, excluded_at, excluded_reason
 		FROM repos
 		WHERE provider = $1 AND repo_full_name = $2
 	`
@@ -428,7 +428,7 @@ func ClearRepoExclusionWithActor(ctx context.Context, db Transactioner, provider
 	var oldExcludedReason *string
 
 	selectQuery := `
-		SELECT id, excluded_at, excluded_reason
+		SELECT repo_id, excluded_at, excluded_reason
 		FROM repos
 		WHERE provider = $1 AND repo_full_name = $2
 	`

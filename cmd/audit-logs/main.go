@@ -49,13 +49,27 @@ var (
 func main() {
 	flag.Usage = usage
 
-	// Parse all flags
-	flag.Parse()
-
-	// Handle help flags
+	// Handle help flags (checked against the raw args, before any subcommand
+	// stripping below, so "audit-logs help" and "audit-logs --help" both work).
 	if len(os.Args) > 1 && (os.Args[1] == "help" || os.Args[1] == "-h" || os.Args[1] == "--help") {
 		flag.Usage()
 		os.Exit(0)
+	}
+
+	// "query" is documented (usage text, README examples) as a leading
+	// subcommand token: `audit-logs query -repo-id 123`. flag.Parse() stops
+	// at the first non-flag argument, so without this, that exact documented
+	// invocation would silently discard every flag after "query". Accept and
+	// strip it if present so both `audit-logs query -repo-id 123` and the
+	// bare `audit-logs -repo-id 123` form work identically.
+	args := os.Args[1:]
+	if len(args) > 0 && args[0] == "query" {
+		args = args[1:]
+	}
+
+	// Parse all flags
+	if err := flag.CommandLine.Parse(args); err != nil {
+		os.Exit(2)
 	}
 
 	// Validate output format

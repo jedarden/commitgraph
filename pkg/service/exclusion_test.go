@@ -1420,7 +1420,29 @@ func setupIntegrationTestDB(t *testing.T) (*sql.DB, func()) {
 		return nil, nil
 	}
 
-	// Create the required tables for testing
+	// Create the required tables for testing.
+	//
+	// Other test files in this package (audit_query_test.go) also create an
+	// exclusion_audit_log table against the same commitgraph_test database,
+	// but never drop it and don't create a repos table at all. If those
+	// tests run first in the same `go test` process, "CREATE TABLE IF NOT
+	// EXISTS exclusion_audit_log" here becomes a no-op against their
+	// already-populated table, and the row counts this test asserts on get
+	// polluted by unrelated leftover data. Drop both tables first so this
+	// integration test gets a schema it fully owns regardless of what ran
+	// before it in the same binary.
+	dropQueries := []string{
+		`DROP TABLE IF EXISTS exclusion_audit_log`,
+		`DROP TABLE IF EXISTS repos`,
+	}
+	for _, q := range dropQueries {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			db.Close()
+			t.Fatalf("Failed to drop pre-existing test table: %v", err)
+			return nil, nil
+		}
+	}
+
 	queries := []string{
 		`CREATE TABLE IF NOT EXISTS repos (
 			repo_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

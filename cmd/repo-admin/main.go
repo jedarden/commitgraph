@@ -107,7 +107,7 @@ func main() {
 func doExclude(ctx context.Context, db *service.SQLDB) {
 	log.Printf("Setting exclusion for %s/%s...\n", *provider, *repo)
 
-	err := service.SetRepoExclusion(ctx, db, *provider, *repo, *reason)
+	err := service.SetRepoExclusionWithActor(ctx, db, *provider, *repo, *reason, *operator)
 	if err != nil {
 		log.Fatalf("error: failed to set exclusion: %v\n", err)
 	}
@@ -129,7 +129,7 @@ func doExclude(ctx context.Context, db *service.SQLDB) {
 func doClear(ctx context.Context, db *service.SQLDB) {
 	log.Printf("Clearing exclusion for %s/%s...\n", *provider, *repo)
 
-	err := service.ClearRepoExclusion(ctx, db, *provider, *repo)
+	err := service.ClearRepoExclusionWithActor(ctx, db, *provider, *repo, *operator)
 	if err != nil {
 		log.Fatalf("error: failed to clear exclusion: %v\n", err)
 	}

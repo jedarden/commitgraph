@@ -7,6 +7,8 @@ import (
 	"log"
 	"os"
 	"runtime/debug"
+	"strings"
+	"sync"
 	"time"
 )
 
@@ -109,20 +111,26 @@ type Event struct {
 	TotalDurationMs int64     `json:"total_duration_ms,omitempty"`   // Total time spent attempting
 }
 
-// LogRetry logs a retry attempt with full context.
-func (l *Logger) LogRetry(event Event) error {
+// LogRetry logs a retry attempt with full context. The EventType and
+// (if unset) Timestamp fields are populated on the caller's Event via
+// the pointer receiver.
+func (l *Logger) LogRetry(event *Event) error {
 	event.EventType = "retry"
 	return l.logEvent(event)
 }
 
-// LogFailure logs a final failure after all retries exhausted.
-func (l *Logger) LogFailure(event Event) error {
+// LogFailure logs a final failure after all retries exhausted. The EventType
+// and (if unset) Timestamp fields are populated on the caller's Event via
+// the pointer receiver.
+func (l *Logger) LogFailure(event *Event) error {
 	event.EventType = "failure"
 	return l.logEvent(event)
 }
 
-// LogSuccess logs a successful resolution (optional, for debugging).
-func (l *Logger) LogSuccess(event Event) error {
+// LogSuccess logs a successful resolution (optional, for debugging). The
+// EventType and (if unset) Timestamp fields are populated on the caller's
+// Event via the pointer receiver.
+func (l *Logger) LogSuccess(event *Event) error {
 	event.EventType = "success"
 	return l.logEvent(event)
 }
@@ -155,15 +163,20 @@ func (l *Logger) RecordSkipped(reason string) {
 	l.output.Printf("SKIP: %s | Total skipped: %d\n", reason, l.stats.TotalSkipped)
 }
 
-// RecordRetry records a retry attempt.
+// RecordRetry records a retry attempt. This counts as a record "attempted"
+// (TotalProcessed), in addition to bumping TotalRetries.
 func (l *Logger) RecordRetry(entry *LogEntry) error {
+	l.stats.TotalProcessed++
 	l.stats.TotalRetries++
 	l.stats.LastUpdateTime = time.Now().UTC()
 	return l.LogRetryWithEntry(entry)
 }
 
-// RecordFailure records a final failure after all retries exhausted.
+// RecordFailure records a final failure after all retries exhausted. This
+// counts as a record "attempted" (TotalProcessed), in addition to bumping
+// TotalFailures.
 func (l *Logger) RecordFailure(entry *LogEntry) error {
+	l.stats.TotalProcessed++
 	l.stats.TotalFailures++
 	l.stats.LastUpdateTime = time.Now().UTC()
 	return l.LogFailureWithEntry(entry)
@@ -198,6 +211,94 @@ func (l *Logger) LogStats(title string) {
 	l.output.Printf("Average rate:         %.2f records/sec\n", rate)
 }
 
+// StatsJSONRecords holds the raw record counts in a JSON stats summary.
+type StatsJSONRecords struct {
+	Processed int `json:"processed"`
+	Skipped   int `json:"skipped"`
+	Ingested  int `json:"ingested"`
+}
+
+// StatsJSONPercentages holds the derived percentages in a JSON stats summary.
+type StatsJSONPercentages struct {
+	SkippedPercent  float64 `json:"skipped_percent"`
+	IngestedPercent float64 `json:"ingested_percent"`
+}
+
+// StatsJSONPerformance holds timing/throughput information in a JSON stats summary.
+type StatsJSONPerformance struct {
+	ElapsedSeconds float64 `json:"elapsed_seconds"`
+	RatePerSec     float64 `json:"rate_per_sec"`
+}
+
+// StatsJSONRetries holds retry/failure counters in a JSON stats summary.
+type StatsJSONRetries struct {
+	TotalAttempts int `json:"total_attempts"`
+	FinalFailures int `json:"final_failures"`
+}
+
+// StatsJSON is the JSON-serializable representation of aggregate ingest statistics,
+// as produced by LogStatsJSON.
+type StatsJSON struct {
+	Timestamp   string               `json:"timestamp"`
+	Title       string               `json:"title"`
+	Records     StatsJSONRecords     `json:"records"`
+	Percentages StatsJSONPercentages `json:"percentages"`
+	Performance StatsJSONPerformance `json:"performance"`
+	Retries     StatsJSONRetries     `json:"retries"`
+}
+
+// LogStatsJSON logs the current aggregate statistics as a structured, machine-readable
+// JSON summary (as opposed to LogStats, which logs a human-readable summary).
+// Percentage and rate calculations are guarded against division by zero.
+func (l *Logger) LogStatsJSON(title string) error {
+	elapsed := l.stats.LastUpdateTime.Sub(l.stats.StartTime)
+	elapsedSeconds := elapsed.Seconds()
+
+	var ratePerSec float64
+	if elapsedSeconds > 0 {
+		ratePerSec = float64(l.stats.TotalProcessed) / elapsedSeconds
+	}
+
+	var skippedPercent, ingestedPercent float64
+	if l.stats.TotalProcessed > 0 {
+		skippedPercent = float64(l.stats.TotalSkipped) / float64(l.stats.TotalProcessed) * 100
+		ingestedPercent = float64(l.stats.TotalIngested) / float64(l.stats.TotalProcessed) * 100
+	}
+
+	summary := StatsJSON{
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Title:     title,
+		Records: StatsJSONRecords{
+			Processed: l.stats.TotalProcessed,
+			Skipped:   l.stats.TotalSkipped,
+			Ingested:  l.stats.TotalIngested,
+		},
+		Percentages: StatsJSONPercentages{
+			SkippedPercent:  skippedPercent,
+			IngestedPercent: ingestedPercent,
+		},
+		Performance: StatsJSONPerformance{
+			ElapsedSeconds: elapsedSeconds,
+			RatePerSec:     ratePerSec,
+		},
+		Retries: StatsJSONRetries{
+			TotalAttempts: l.stats.TotalRetries,
+			FinalFailures: l.stats.TotalFailures,
+		},
+	}
+
+	jsonBytes, err := json.MarshalIndent(summary, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal stats summary: %w", err)
+	}
+
+	l.output.Println("\n=== " + title + " ===")
+	l.output.Println(string(jsonBytes))
+	l.output.Println("===")
+
+	return nil
+}
+
 // BatchProgress represents progress information for batch processing.
 type BatchProgress struct {
 	BatchNum        int           // Current batch number (1-based)
@@ -229,7 +330,7 @@ func (l *Logger) LogBatchProgress(progress BatchProgress) {
 }
 
 // logEvent writes a structured log event.
-func (l *Logger) logEvent(event Event) error {
+func (l *Logger) logEvent(event *Event) error {
 	// Set timestamp if not provided
 	if event.Timestamp.IsZero() {
 		event.Timestamp = time.Now().UTC()
@@ -312,7 +413,7 @@ func LogRetryInline(email, githubUsername, endpointURL string, attemptNumber, ma
 		RetryDelayMs:   retryDelayMs,
 		TotalDurationMs: totalDurationMs,
 	}
-	if err := logger.LogRetry(event); err != nil {
+	if err := logger.LogRetry(&event); err != nil {
 		// If logging fails, at least emit to stderr with a clear error marker
 		log.Printf("ERROR: failed to write ingest retry log: %v\n", err)
 		log.Printf("ERROR: event was: retry for email=%s github_username=%s\n", email, githubUsername)
@@ -335,7 +436,7 @@ func LogFailureInline(email, githubUsername, endpointURL string, attemptNumber, 
 		Stacktrace:      stacktrace,
 		TotalDurationMs: totalDurationMs,
 	}
-	if err := logger.LogFailure(event); err != nil {
+	if err := logger.LogFailure(&event); err != nil {
 		// If logging fails, at least emit to stderr with a clear error marker
 		log.Printf("ERROR: failed to write ingest failure log: %v\n", err)
 		log.Printf("ERROR: event was: failure for email=%s github_username=%s\n", email, githubUsername)
@@ -396,7 +497,12 @@ func (l *Logger) LogErrorWithRecovery(entry *LogEntry) error {
 		err = l.LogRetryWithEntry(entry)
 	case "failure":
 		err = l.LogFailureWithEntry(entry)
+	case "success":
+		err = l.LogSuccessWithEntry(entry)
 	default:
+		// No specific event type given - still counts as a record attempted.
+		l.stats.TotalProcessed++
+		l.stats.LastUpdateTime = time.Now().UTC()
 		err = l.logEntry(entry)
 	}
 
@@ -479,22 +585,31 @@ func (l *Logger) LogStatusReport(report StatusReport) {
 
 // PeriodicReporter provides automatic periodic status reporting.
 type PeriodicReporter struct {
-	logger       *Logger
-	report       StatusReport
-	interval     time.Duration
-	stopChan     chan struct{}
-	lastReport   time.Time
-	errorBuffer  []string
-	maxErrors    int
+	logger      *Logger
+	report      *StatusReport
+	interval    time.Duration
+	stopChan    chan struct{}
+	doneChan    chan struct{}
+	lastReport  time.Time
+	errorBuffer []string
+	maxErrors   int
+
+	// mu guards report and errorBuffer, which are accessed both from the
+	// background ticker goroutine started by Start and from any goroutine
+	// calling AddError/Stop concurrently.
+	mu sync.Mutex
 }
 
-// NewPeriodicReporter creates a new periodic reporter.
-func NewPeriodicReporter(logger *Logger, report StatusReport, interval time.Duration) *PeriodicReporter {
+// NewPeriodicReporter creates a new periodic reporter. The report is held by
+// pointer so that AddError (and the periodic reports themselves) mutate the
+// same StatusReport the caller holds.
+func NewPeriodicReporter(logger *Logger, report *StatusReport, interval time.Duration) *PeriodicReporter {
 	return &PeriodicReporter{
 		logger:      logger,
 		report:      report,
 		interval:    interval,
 		stopChan:    make(chan struct{}),
+		doneChan:    make(chan struct{}),
 		lastReport:  time.Now(),
 		errorBuffer: make([]string, 0, 10),
 		maxErrors:   10,
@@ -505,27 +620,43 @@ func NewPeriodicReporter(logger *Logger, report StatusReport, interval time.Dura
 func (pr *PeriodicReporter) Start() {
 	ticker := time.NewTicker(pr.interval)
 	go func() {
+		defer close(pr.doneChan)
+		defer ticker.Stop()
 		for {
 			select {
 			case <-ticker.C:
-				pr.logger.LogStatusReport(pr.report)
+				pr.mu.Lock()
+				report := *pr.report
+				pr.mu.Unlock()
+				pr.logger.LogStatusReport(report)
+				pr.mu.Lock()
 				pr.lastReport = time.Now()
+				pr.mu.Unlock()
 			case <-pr.stopChan:
-				ticker.Stop()
 				return
 			}
 		}
 	}()
 }
 
-// Stop stops the periodic reporter and logs a final status report.
+// Stop stops the periodic reporter, waits for the background goroutine to
+// fully exit, and logs a final status report. After Stop returns, it is
+// safe for the caller to read/mutate the StatusReport passed to
+// NewPeriodicReporter without further synchronization.
 func (pr *PeriodicReporter) Stop() {
 	close(pr.stopChan)
-	pr.logger.LogStatusReport(pr.report)
+	<-pr.doneChan
+	pr.mu.Lock()
+	report := *pr.report
+	pr.mu.Unlock()
+	pr.logger.LogStatusReport(report)
 }
 
 // AddError records an error for inclusion in the next status report.
 func (pr *PeriodicReporter) AddError(errorMsg string) {
+	pr.mu.Lock()
+	defer pr.mu.Unlock()
+
 	if len(pr.errorBuffer) >= pr.maxErrors {
 		// Remove oldest error
 		pr.errorBuffer = pr.errorBuffer[1:]
@@ -642,19 +773,9 @@ func classifyError(err error, statusCode int) string {
 	return "unknown"
 }
 
-// contains checks if a string contains a substring (case-insensitive helper).
+// contains checks if a string contains a substring, case-insensitively.
 func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) && containsSubstring(s, substr))
-}
-
-// containsSubstring is a simple substring check helper.
-func containsSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
+	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
 }
 
 // LogEntryFromError creates a LogEntry from error context, extracting error details.
@@ -1183,7 +1304,7 @@ func LogIngestErrorExtended(logger *Logger, err error, userCtx ExtendedUserConte
 		logger = NewLogger()
 	}
 
-	// TODO: Validate required user context fields
+	// Validate required user context fields
 	if userCtx.UserID == "" {
 		return fmt.Errorf("user_id is required in user context")
 	}
@@ -1194,7 +1315,7 @@ func LogIngestErrorExtended(logger *Logger, err error, userCtx ExtendedUserConte
 		return fmt.Errorf("request_id is required in user context")
 	}
 
-	// TODO: Validate required endpoint context fields
+	// Validate required endpoint context fields
 	if endpointCtx.Endpoint == "" {
 		return fmt.Errorf("endpoint is required in endpoint context")
 	}
@@ -1205,16 +1326,23 @@ func LogIngestErrorExtended(logger *Logger, err error, userCtx ExtendedUserConte
 		return fmt.Errorf("path is required in endpoint context")
 	}
 
-	// TODO: Integrate with error serialization from cg-2iff2
-	// Serialize error using the error serialization helper
+	// Validate metadata keys to prevent collisions with LogEntry fields
+	if err := ValidateMetadataKeys(metadata); err != nil {
+		return fmt.Errorf("metadata validation failed: %w", err)
+	}
+
+	// Serialize error using the error serialization helper (from cg-2iff2)
 	errorCtx := SerializeError(err)
 
-	// TODO: Build extended log entry with metadata integration
-	// Assemble the complete LogEntry struct with all captured context
+	// Assemble the complete LogEntry struct with all captured context,
+	// including the extended userID/sessionID/requestID identifiers.
 	entry := &LogEntry{
 		Timestamp: time.Now().UTC(),
-		EventType: "error", // Default to error type, can be extended
+		EventType: "error", // Overwritten below based on err presence
 		User: UserContext{
+			UserID:         userCtx.UserID,
+			SessionID:      userCtx.SessionID,
+			RequestID:      userCtx.RequestID,
 			Email:          userCtx.Email,
 			GithubUsername: userCtx.Username,
 		},
@@ -1228,29 +1356,15 @@ func LogIngestErrorExtended(logger *Logger, err error, userCtx ExtendedUserConte
 		MaxRetries:      0, // Placeholder
 		RetryDelayMs:    0, // Placeholder
 		TotalDurationMs: 0, // Placeholder
+		Metadata:        metadata,
 	}
 
-	// TODO: Integrate metadata into log entry for extended context
-	// Metadata can be added to the log entry as additional context
-	if metadata != nil && len(metadata) > 0 {
-		// TODO: Serialize metadata and attach to log entry
-		// For now, we'll skip this as it requires LogEntry schema extension
-		_ = metadata // Placeholder to avoid unused variable warning
-	}
-
-	// TODO: Implement event type detection based on error and context
-	// Determine event type based on error presence and other context
+	// Determine event type based on error presence
 	eventType := "failure"
 	if err == nil {
 		eventType = "success"
 	}
 	entry.EventType = eventType
-
-	// TODO: Add integration point for monitoring system hooks
-	// This is where we would hook into external monitoring systems
-
-	// TODO: Add integration point for distributed tracing
-	// This is where we would integrate with OpenTelemetry or similar
 
 	// Write the log entry using the appropriate method based on event type
 	var logErr error

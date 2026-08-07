@@ -168,8 +168,13 @@ func simplifyTypeName(typeName string) string {
 		typeName = strings.TrimPrefix(typeName, prefix)
 	}
 
-	// For github.com paths, take only the final component
-	if idx := strings.LastIndex(typeName, "/"); idx != -1 && strings.Contains(typeName, ".") {
+	// For import-path-qualified types (e.g. github.com/user/repo/pkg.Type),
+	// drop the path down to the last path segment...
+	if idx := strings.LastIndex(typeName, "/"); idx != -1 {
+		typeName = typeName[idx+1:]
+	}
+	// ...then drop the package qualifier, leaving just the bare type name.
+	if idx := strings.LastIndex(typeName, "."); idx != -1 {
 		typeName = typeName[idx+1:]
 	}
 
@@ -230,21 +235,30 @@ func GetErrorChain(err error) []string {
 	for current != nil {
 		chain = append(chain, getErrorType(current))
 
-		// Attempt to unwrap
+		// Attempt to unwrap. Note: a `break` inside a type switch only exits
+		// the switch, not this for loop, so termination must be handled
+		// explicitly via a sentinel "did we advance current?" check.
+		next := current
 		switch wrapped := current.(type) {
 		case interface{ Unwrap() error }:
-			current = wrapped.Unwrap()
+			next = wrapped.Unwrap()
 		case interface{ Unwrap() []error }:
-			// For multiple wrapped errors, just take the first one for the chain
+			// For multiple wrapped errors, just take the first one for the chain.
 			unwrapped := wrapped.Unwrap()
 			if len(unwrapped) > 0 {
-				current = unwrapped[0]
+				next = unwrapped[0]
 			} else {
-				break
+				next = nil
 			}
 		default:
+			next = nil
+		}
+
+		if next == current {
+			// No Unwrap method and no progress made - stop to avoid an infinite loop.
 			break
 		}
+		current = next
 	}
 
 	return chain

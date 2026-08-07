@@ -54,3 +54,7 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
+
+# Python bytecode from migration/ tooling
+__pycache__/
+*.pyc

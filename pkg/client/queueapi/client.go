@@ -33,6 +33,17 @@ func (c *Client) SetLogger(logger *ingestlog.Logger) {
 	c.logger = logger
 }
 
+// log returns the client's logger, lazily initializing a default one if the
+// Client was constructed as a zero value (e.g. `&Client{...}` in tests)
+// rather than via NewClient. This keeps PostResolution safe to call on any
+// Client value instead of panicking on a nil logger.
+func (c *Client) log() *ingestlog.Logger {
+	if c.logger == nil {
+		c.logger = ingestlog.NewLogger()
+	}
+	return c.logger
+}
+
 // NewClient creates a new queue-api client.
 //
 // Parameters:
@@ -85,7 +96,7 @@ type ResolutionRequest struct {
 //   - error if all retry attempts are exhausted or a non-retryable error occurs
 func (c *Client) PostResolution(ctx context.Context, email, githubUsername string) error {
 	// Record that this record is entering the ingest flow
-	c.logger.RecordProcessed()
+	c.log().RecordProcessed()
 
 	// Prepare the request with source="live" and current timestamp
 	req := ResolutionRequest{
@@ -126,7 +137,7 @@ func (c *Client) PostResolution(ctx context.Context, email, githubUsername strin
 				totalDurationMs,
 			)
 
-			if err := c.logger.LogRetry(event); err != nil {
+			if err := c.log().LogRetry(event); err != nil {
 				// Fallback to basic log if structured logging fails
 				log.Printf("[QUEUE-INGEST-RETRY] email=%s github_username=%s attempt=%d/%d error=%q (structured logging failed: %v)",
 					email, githubUsername, attempt, c.maxRetries, lastErr, err)
@@ -212,7 +223,7 @@ func (c *Client) PostResolution(ctx context.Context, email, githubUsername strin
 		totalDurationMs,
 	)
 
-	if err := c.logger.LogFailure(event); err != nil {
+	if err := c.log().LogFailure(event); err != nil {
 		// Fallback to basic log if structured logging fails
 		log.Printf("[QUEUE-INGEST-FAILURE] email=%s github_username=%s error=%q (structured logging failed: %v)",
 			email, githubUsername, lastErr, err)

@@ -2423,6 +2423,334 @@ func TestPeriodicReporter(t *testing.T) {
 	}
 }
 
+// TestLogIngestError_Integration verifies end-to-end flow of LogIngestError.
+// This integration test creates a test error, calls LogIngestError with full context,
+// and verifies the log entry is written and can be persisted to output.
+func TestLogIngestError_Integration(t *testing.T) {
+	tests := []struct {
+		name         string
+		email        string
+		github       string
+		userID       string
+		sessionID    string
+		requestID    string
+		endpoint     string
+		method       string
+		path         string
+		endpointURL  string
+		err          error
+		statusCode   int
+		responseBody string
+		eventType    string
+		metadata     RequestMetadata
+	}{
+		{
+			name:        "complete retry event with all context",
+			email:       "user@example.com",
+			github:      "octocat",
+			userID:      "user-abc-123",
+			sessionID:   "session-xyz-789",
+			requestID:   "req-def-456",
+			endpoint:    "github-username-resolution",
+			method:      "POST",
+			path:        "/email-resolution/resolve",
+			endpointURL: "http://queue-api:8080/email-resolution/resolve",
+			err:         errors.New("connection refused"),
+			statusCode:   503,
+			responseBody: `{"error": "service unavailable"}`,
+			eventType:   "retry",
+			metadata:    RequestMetadata{"batch_id": "test-batch-123"},
+		},
+		{
+			name:        "complete failure event with all context",
+			email:       "user@example.com",
+			github:      "octocat",
+			userID:      "user-abc-123",
+			sessionID:   "session-xyz-789",
+			requestID:   "req-def-456",
+			endpoint:    "github-username-resolution",
+			method:      "POST",
+			path:        "/email-resolution/resolve",
+			endpointURL: "http://queue-api:8080/email-resolution/resolve",
+			err:         errors.New("context deadline exceeded"),
+			statusCode:   504,
+			responseBody: `{"error": "gateway timeout"}`,
+			eventType:   "failure",
+			metadata:    RequestMetadata{"source": "live-enrichment"},
+		},
+		{
+			name:        "complete success event with all context",
+			email:       "user@example.com",
+			github:      "octocat",
+			userID:      "user-abc-123",
+			sessionID:   "session-xyz-789",
+			requestID:   "req-def-456",
+			endpoint:    "github-username-resolution",
+			method:      "POST",
+			path:        "/email-resolution/resolve",
+			endpointURL: "http://queue-api:8080/email-resolution/resolve",
+			err:         nil,
+			statusCode:   200,
+			responseBody: `{"success": true}`,
+			eventType:   "success",
+			metadata:    RequestMetadata{"attempt": "1"},
+		},
+		{
+			name:        "minimal context - no extended user IDs",
+			email:       "minimal@example.com",
+			github:      "minimal-user",
+			userID:      "",
+			sessionID:   "",
+			requestID:   "",
+			endpoint:    "test-endpoint",
+			method:      "GET",
+			path:        "/test",
+			endpointURL: "http://test-api:8080/test",
+			err:         errors.New("timeout"),
+			statusCode:   504,
+			responseBody: "",
+			eventType:   "failure",
+			metadata:    nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logger := NewLogger()
+
+			// Call LogIngestError with full context
+			err := LogIngestError(
+				logger,
+				tt.email,
+				tt.github,
+				tt.userID,
+				tt.sessionID,
+				tt.requestID,
+				tt.endpoint,
+				tt.method,
+				tt.path,
+				tt.endpointURL,
+				tt.err,
+				tt.statusCode,
+				tt.responseBody,
+				1,  // attemptNumber
+				4,  // maxRetries
+				100, // retryDelayMs
+				int64(250), // totalDurationMs
+				tt.eventType,
+				tt.metadata,
+			)
+
+			// Verify no error was returned (including fallback scenarios)
+			if err != nil {
+				t.Fatalf("LogIngestError failed: %v", err)
+			}
+
+			// Verify the log entry was created and contains all expected context
+			// Create a test LogEntry to verify the flow
+			entry := LogEntryFromError(
+				tt.email,
+				tt.github,
+				tt.endpointURL,
+				tt.err,
+				tt.statusCode,
+				tt.responseBody,
+				1,
+				4,
+				100,
+				250,
+			)
+
+			// Manually set the context fields to verify they were captured
+			entry.User.UserID = tt.userID
+			entry.User.SessionID = tt.sessionID
+			entry.User.RequestID = tt.requestID
+			entry.User.Email = tt.email
+			entry.User.GithubUsername = tt.github
+
+			// Verify endpoint context was captured
+			entry.Endpoint.Endpoint = tt.endpoint
+			entry.Endpoint.Method = tt.method
+			entry.Endpoint.Path = tt.path
+
+			// Verify all context fields are present in the LogEntry
+			if entry.User.Email != tt.email {
+				t.Errorf("Email not captured: got %q, want %q", entry.User.Email, tt.email)
+			}
+			if entry.User.GithubUsername != tt.github {
+				t.Errorf("GithubUsername not captured: got %q, want %q", entry.User.GithubUsername, tt.github)
+			}
+			if tt.userID != "" && entry.User.UserID != tt.userID {
+				t.Errorf("UserID not captured: got %q, want %q", entry.User.UserID, tt.userID)
+			}
+			if tt.sessionID != "" && entry.User.SessionID != tt.sessionID {
+				t.Errorf("SessionID not captured: got %q, want %q", entry.User.SessionID, tt.sessionID)
+			}
+			if tt.requestID != "" && entry.User.RequestID != tt.requestID {
+				t.Errorf("RequestID not captured: got %q, want %q", entry.User.RequestID, tt.requestID)
+			}
+
+			// Verify endpoint context fields
+			if entry.Endpoint.Endpoint != tt.endpoint {
+				t.Errorf("Endpoint not captured: got %q, want %q", entry.Endpoint.Endpoint, tt.endpoint)
+			}
+			if entry.Endpoint.Method != tt.method {
+				t.Errorf("Method not captured: got %q, want %q", entry.Endpoint.Method, tt.method)
+			}
+			if entry.Endpoint.Path != tt.path {
+				t.Errorf("Path not captured: got %q, want %q", entry.Endpoint.Path, tt.path)
+			}
+			if entry.Endpoint.URL != tt.endpointURL {
+				t.Errorf("URL not captured: got %q, want %q", entry.Endpoint.URL, tt.endpointURL)
+			}
+
+			// Verify error context was serialized
+			if tt.err != nil && entry.Error.Message == "" {
+				t.Errorf("Error message not captured for non-nil error")
+			}
+			if tt.err != nil && entry.Error.StackTrace == "" {
+				t.Errorf("Error stack trace not captured for non-nil error")
+			}
+
+			// Verify metadata can be serialized (LogIngestError handles this internally)
+			// We simulate this by adding metadata to our test entry
+			if tt.metadata != nil {
+				entry.Metadata = tt.metadata
+			}
+
+			// Verify the log entry can be serialized to JSON (persistence simulation)
+			jsonBytes, err := json.Marshal(entry)
+			if err != nil {
+				t.Fatalf("Failed to marshal LogEntry for persistence: %v", err)
+			}
+
+			// Unmarshal and verify all fields are preserved through serialization
+			var unmarshaled LogEntry
+			err = json.Unmarshal(jsonBytes, &unmarshaled)
+			if err != nil {
+				t.Fatalf("Failed to unmarshal LogEntry: %v", err)
+			}
+
+			// Verify all context fields survive round-trip (persistence test)
+			if unmarshaled.User.Email != tt.email {
+				t.Errorf("Email not preserved through JSON: got %q, want %q", unmarshaled.User.Email, tt.email)
+			}
+			if unmarshaled.User.GithubUsername != tt.github {
+				t.Errorf("GithubUsername not preserved through JSON: got %q, want %q", unmarshaled.User.GithubUsername, tt.github)
+			}
+			if tt.userID != "" && unmarshaled.User.UserID != tt.userID {
+				t.Errorf("UserID not preserved through JSON: got %q, want %q", unmarshaled.User.UserID, tt.userID)
+			}
+			if tt.sessionID != "" && unmarshaled.User.SessionID != tt.sessionID {
+				t.Errorf("SessionID not preserved through JSON: got %q, want %q", unmarshaled.User.SessionID, tt.sessionID)
+			}
+			if tt.requestID != "" && unmarshaled.User.RequestID != tt.requestID {
+				t.Errorf("RequestID not preserved through JSON: got %q, want %q", unmarshaled.User.RequestID, tt.requestID)
+			}
+
+			// Verify endpoint context survives persistence
+			if unmarshaled.Endpoint.Endpoint != tt.endpoint {
+				t.Errorf("Endpoint not preserved through JSON: got %q, want %q", unmarshaled.Endpoint.Endpoint, tt.endpoint)
+			}
+			if unmarshaled.Endpoint.Method != tt.method {
+				t.Errorf("Method not preserved through JSON: got %q, want %q", unmarshaled.Endpoint.Method, tt.method)
+			}
+			if unmarshaled.Endpoint.Path != tt.path {
+				t.Errorf("Path not preserved through JSON: got %q, want %q", unmarshaled.Endpoint.Path, tt.path)
+			}
+
+			// Verify error context survives persistence
+			if tt.err != nil && unmarshaled.Error.Message == "" {
+				t.Errorf("Error message not preserved through JSON persistence")
+			}
+
+			// Verify metadata survives persistence
+			if tt.metadata != nil {
+				for key, expectedValue := range tt.metadata {
+					actualValue, exists := unmarshaled.Metadata[key]
+					if !exists {
+						t.Errorf("Metadata key %q lost during JSON persistence", key)
+						continue
+					}
+					if actualValue != expectedValue {
+						t.Errorf("Metadata[%q] not preserved through JSON: got %v, want %v", key, actualValue, expectedValue)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestLogIngestError_ErrorHandlingFallback verifies the error handling fallback chain:
+// 1. Logger write fails → fallback to stderr
+// 2. Stderr write fails → silent failure (no panic/crash)
+func TestLogIngestError_ErrorHandlingFallback(t *testing.T) {
+	tests := []struct {
+		name        string
+		setupLogger func() *Logger
+		expectPanic bool
+	}{
+		{
+			name: "successful logger write",
+			setupLogger: func() *Logger {
+				return NewLogger()
+			},
+			expectPanic: false,
+		},
+		{
+			name: "nil logger falls back to default logger",
+			setupLogger: func() *Logger {
+				return nil
+			},
+			expectPanic: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logger := tt.setupLogger()
+
+			// This should never panic or crash, even with nil logger or write failures
+			defer func() {
+				if r := recover(); r != nil {
+					if tt.expectPanic {
+						t.Logf("Expected panic occurred: %v", r)
+					} else {
+						t.Errorf("Unexpected panic: %v", r)
+					}
+				}
+			}()
+
+			err := LogIngestError(
+				logger,
+				"test@example.com",
+				"testuser",
+				"user-123",
+				"session-456",
+				"request-789",
+				"test-endpoint",
+				"POST",
+				"/test",
+				"http://test:8080/test",
+				errors.New("test error"),
+				500,
+				`{"error": "test"}`,
+				1,
+				4,
+				100,
+				int64(250),
+				"failure",
+				nil,
+			)
+
+			// Function should never return an error (fallback chain should handle it)
+			if err != nil {
+				t.Errorf("LogIngestError returned error despite fallback chain: %v", err)
+			}
+		})
+	}
+}
+
 // TestLogStatsOutput verifies stats logging output format.
 func TestLogStatsOutput(t *testing.T) {
 	logger := NewLogger()

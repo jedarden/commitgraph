@@ -1200,9 +1200,27 @@ func LogIngestError(logger *Logger, email, githubUsername, userID, sessionID, re
 		logErr = logger.LogRetryWithEntry(entry)
 	}
 
-	// Handle logging failures gracefully - return the error to the caller
+	// Handle logging failures gracefully with fallback chain
 	if logErr != nil {
-		return fmt.Errorf("failed to write ingest log entry: %w", logErr)
+		// Fallback 1: Try to write to stderr directly
+		// Marshal the entry to JSON for structured output
+		jsonBytes, jsonErr := json.Marshal(entry)
+		if jsonErr != nil {
+			// Fallback 2: Silent failure - don't crash the application
+			// At this point we've done our best and both the logger and JSON marshaling failed
+			return nil
+		}
+
+		// Try writing to stderr
+		_, stderrErr := fmt.Fprintf(os.Stderr, "[INGEST-LOG-FALLBACK] %s\n", string(jsonBytes))
+		if stderrErr != nil {
+			// Fallback 3: Silent failure - don't crash the application
+			// We've tried everything (logger, stderr) and both failed
+			return nil
+		}
+
+		// Successfully wrote to stderr as fallback
+		return nil
 	}
 
 	return nil

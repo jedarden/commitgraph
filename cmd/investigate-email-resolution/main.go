@@ -23,7 +23,7 @@ func main() {
 		log.Fatalf("error: PostgreSQL ping failed: %v\n", err)
 	}
 
-	fmt.Println("=== Current email_resolution Table State ===\n")
+	fmt.Println("=== Current email_resolution Table State ===")
 
 	// Get all records to understand what's in the database
 	rows, err := db.Query("SELECT email, login, source, resolved_at FROM email_resolution ORDER BY resolved_at DESC")
@@ -62,7 +62,7 @@ func main() {
 	}
 
 	// Show our test dataset records
-	fmt.Println("\n=== Test Dataset Records ===\n")
+	fmt.Println("\n=== Test Dataset Records ===")
 
 	testEmails := map[string]bool{
 		"bot@quantifieduncertainty.org":    true,
@@ -99,7 +99,7 @@ func main() {
 	fmt.Printf("\nTest records found: %d/%d\n", testRecordsFound, len(testEmails))
 
 	// Show non-test records
-	fmt.Println("\n=== Other Records (Not in Test Dataset) ===\n")
+	fmt.Println("\n=== Other Records (Not in Test Dataset) ===")
 	otherCount := 0
 	for _, r := range allRecords {
 		if !testEmails[r.Email] {

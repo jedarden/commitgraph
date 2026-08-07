@@ -66,7 +66,7 @@ func main() {
 		log.Fatalf("error: PostgreSQL ping failed: %v\n", err)
 	}
 
-	log.Println("\n=== Email Resolution Data Integrity Verification ===\n")
+	log.Println("\n=== Email Resolution Data Integrity Verification ===")
 
 	// 1. Get total record count and source distribution
 	log.Println("1. Checking record counts and source distribution...")

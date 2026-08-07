@@ -175,3 +175,20 @@ func (i *Ingester) GetSkipped() int64 {
 func (i *Ingester) GetSkipDetails() map[SkipReason]int64 {
 	return i.SkipDetails
 }
+
+// GetSummary returns a machine-readable, JSON-marshalable snapshot of the
+// ingester's counters, suitable for logging at the end of an ingest run.
+// Keys: "processed", "ingested", "skipped" (int64), "skip_details"
+// (map[string]int64 keyed by skip reason string).
+func (i *Ingester) GetSummary() map[string]interface{} {
+	skipDetails := make(map[string]int64, len(i.SkipDetails))
+	for reason, count := range i.SkipDetails {
+		skipDetails[reason.String()] = count
+	}
+	return map[string]interface{}{
+		"processed":    i.Processed,
+		"ingested":     i.Ingested,
+		"skipped":      i.Skipped,
+		"skip_details": skipDetails,
+	}
+}

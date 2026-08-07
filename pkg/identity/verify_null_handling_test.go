@@ -357,7 +357,7 @@ func TestConflictResolutionWithDuplicatePairs(t *testing.T) {
 
 // Example: With real PostgreSQL connection
 // This shows how to run the actual test with a live database
-func ExampleTestWithRealDatabase() {
+func Example() {
 	// This would require a real PostgreSQL connection:
 	// dbHost := os.Getenv("PGHOST")
 	// dbUser := os.Getenv("PGUSER")

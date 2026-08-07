@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS repo_user_daily_tool (
   tool        TEXT   NOT NULL,        -- plain TEXT, not enum — catalog grows
   day         DATE   NOT NULL,
   commits     INT    NOT NULL,
-  insert_time TIMESTAMPTZ NOT NULL
+  insert_time TIMESTAMPTZ NOT NULL,
   PRIMARY KEY (repo_id, user_id, tool, day)
 );
 CREATE INDEX IF NOT EXISTS repo_user_daily_tool_user_tool_day_idx ON repo_user_daily_tool (user_id, tool, day);

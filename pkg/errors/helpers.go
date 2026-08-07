@@ -44,8 +44,8 @@ func InvalidFormatError(component, operation, field, expectedFormat string) *Str
 	return ValidationErrorf(component, operation, field, "invalid format (expected %s)", expectedFormat)
 }
 
-// ParseErrorf creates a parse error with formatted message.
-func ParseErrorf(component, operation, dataType, format string, args ...interface{}) *StructuredError {
+// ParseErrorfWithCommit creates a parse error with formatted message and commit SHA.
+func ParseErrorfWithCommit(component, operation, dataType, commitSHA, format string, args ...interface{}) *StructuredError {
 	message := fmt.Sprintf(format, args...)
 	message = fmt.Sprintf("failed to parse %s: %s", dataType, message)
 
@@ -58,6 +58,7 @@ func ParseErrorf(component, operation, dataType, format string, args ...interfac
 		Code:      code,
 		Component: component,
 		Operation: operation,
+		CommitSHA: commitSHA,
 		Context: ErrorContext{
 			Package: component,
 			Extra: map[string]string{
@@ -65,14 +66,26 @@ func ParseErrorf(component, operation, dataType, format string, args ...interfac
 			},
 		},
 		Timestamp:  getCurrentTimestamp(),
-		Retryable:  false,
+		Retryable: false,
 		Metadata:   make(map[string]interface{}),
 	}
 }
 
+// ParseErrorf creates a parse error with formatted message.
+// Deprecated: Use ParseErrorfWithCommit to include commit SHA context.
+func ParseErrorf(component, operation, dataType, format string, args ...interface{}) *StructuredError {
+	return ParseErrorfWithCommit(component, operation, dataType, "", format, args...)
+}
+
+// JSONParseErrorWithCommit creates an error for JSON parsing failures with commit SHA.
+func JSONParseErrorWithCommit(component, operation, commitSHA string) *StructuredError {
+	return ParseErrorfWithCommit(component, operation, "JSON", commitSHA, "invalid JSON structure")
+}
+
 // JSONParseError creates an error for JSON parsing failures.
+// Deprecated: Use JSONParseErrorWithCommit to include commit SHA context.
 func JSONParseError(component, operation string) *StructuredError {
-	return ParseErrorf(component, operation, "JSON", "invalid JSON structure")
+	return JSONParseErrorWithCommit(component, operation, "")
 }
 
 // DatabaseErrorf creates a database error with formatted message.

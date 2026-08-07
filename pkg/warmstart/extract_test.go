@@ -1346,75 +1346,77 @@ func TestParseTarball_PackFileHeaderTooSmall(t *testing.T) {
 func TestParseTarball_TruncatedPackFileExactly11Bytes(t *testing.T) {
 	// Test detection of pack file that is exactly 11 bytes - just under the minimum 12 byte header size
 	// This is a boundary condition test for the minimum header size check
-	configData := []byte(`{
-			"core.repositoryformatversion": "1",
-			"remote.origin.promisor": "true",
-			"remote.origin.partialclonefilter": "blob:none"
-		}`)
-	refData := []byte("refs/heads/main abc123")
+	t.Run("11-byte pack file triggers Truncated error", func(t *testing.T) {
+		configData := []byte(`{
+				"core.repositoryformatversion": "1",
+				"remote.origin.promisor": "true",
+				"remote.origin.partialclonefilter": "blob:none"
+			}`)
+		refData := []byte("refs/heads/main abc123")
 
-	// Create pack file data that is exactly 11 bytes (1 byte under minimum)
-	// Minimum header size is 12 bytes: "PACK" (4) + version (4) + object count (4)
-	elevenBytePackData := []byte("PACK1234567") // 11 bytes - just under minimum
+		// Create pack file data that is exactly 11 bytes (1 byte under minimum)
+		// Minimum header size is 12 bytes: "PACK" (4) + version (4) + object count (4)
+		elevenBytePackData := []byte("PACK1234567") // 11 bytes - just under minimum
 
-	members := []TarballMember{
-		{Name: "objects/pack/pack-undersized.pack", Data: elevenBytePackData},
-		{Name: "config.json", Data: configData},
-		{Name: "ref", Data: refData},
-	}
+		members := []TarballMember{
+			{Name: "objects/pack/pack-undersized.pack", Data: elevenBytePackData},
+			{Name: "config.json", Data: configData},
+			{Name: "ref", Data: refData},
+		}
 
-	tarball := createTestTarball(t, members)
+		tarball := createTestTarball(t, members)
 
-	_, err := ParseTarball(tarball)
-	if err == nil {
-		t.Error("expected Truncated error for 11-byte pack file, got nil")
-	}
+		_, err := ParseTarball(tarball)
+		if err == nil {
+			t.Error("expected Truncated error for 11-byte pack file, got nil")
+		}
 
-	// Verify it's a Truncated error with proper details
-	var truncErr *Error
-	if !errors.As(err, &truncErr) {
-		t.Fatalf("expected *Error type, got %T: %v", err, err)
-	}
+		// Verify it's a Truncated error with proper details
+		var truncErr *Error
+		if !errors.As(err, &truncErr) {
+			t.Fatalf("expected *Error type, got %T: %v", err, err)
+		}
 
-	if truncErr.Kind != Truncated {
-		t.Errorf("expected Truncated error kind, got %v", truncErr.Kind)
-	}
-	if truncErr.MemberName != "objects/pack/pack-undersized.pack" {
-		t.Errorf("expected member name 'objects/pack/pack-undersized.pack', got %s", truncErr.MemberName)
-	}
+		if truncErr.Kind != Truncated {
+			t.Errorf("expected Truncated error kind, got %v", truncErr.Kind)
+		}
+		if truncErr.MemberName != "objects/pack/pack-undersized.pack" {
+			t.Errorf("expected member name 'objects/pack/pack-undersized.pack', got %s", truncErr.MemberName)
+		}
 
-	// Verify error context mentions both the actual size and minimum requirement
-	if !strings.Contains(truncErr.Context, "11 bytes") {
-		t.Errorf("expected context to mention '11 bytes', got: %s", truncErr.Context)
-	}
-	if !strings.Contains(truncErr.Context, "minimum 12 bytes") {
-		t.Errorf("expected context to mention minimum 12 bytes, got: %s", truncErr.Context)
-	}
+		// Verify error context mentions both the actual size and minimum requirement
+		if !strings.Contains(truncErr.Context, "11 bytes") {
+			t.Errorf("expected context to mention '11 bytes', got: %s", truncErr.Context)
+		}
+		if !strings.Contains(truncErr.Context, "minimum 12 bytes") {
+			t.Errorf("expected context to mention minimum 12 bytes, got: %s", truncErr.Context)
+		}
 
-	// Verify the full error message is comprehensive and actionable
-	errMsg := truncErr.Error()
+		// Verify the full error message is comprehensive and actionable
+		errMsg := truncErr.Error()
 
-	// Must contain the pack file member name for debugging
-	if !strings.Contains(errMsg, "member=objects/pack/pack-undersized.pack") {
-		t.Errorf("error message should include pack file member name: %s", errMsg)
-	}
+		// Must contain the pack file member name for debugging
+		if !strings.Contains(errMsg, "member=objects/pack/pack-undersized.pack") {
+			t.Errorf("error message should include pack file member name: %s", errMsg)
+		}
 
-	// Must mention "truncated tarball" to indicate the error kind
-	if !strings.Contains(errMsg, "truncated tarball") {
-		t.Errorf("error message should mention 'truncated tarball': %s", errMsg)
-	}
+		// Must mention "truncated tarball" to indicate the error kind
+		if !strings.Contains(errMsg, "truncated tarball") {
+			t.Errorf("error message should mention 'truncated tarball': %s", errMsg)
+		}
 
-	// Must mention "12" to indicate the minimum byte requirement
-	if !strings.Contains(errMsg, "12") {
-		t.Errorf("error message should mention '12' (minimum byte size): %s", errMsg)
-	}
+		// Must mention "12" to indicate the minimum byte requirement
+		if !strings.Contains(errMsg, "12") {
+			t.Errorf("error message should mention '12' (minimum byte size): %s", errMsg)
+		}
 
-	// Optionally also check for "minimum" or "bytes" for clarity
-	if !strings.Contains(errMsg, "minimum") && !strings.Contains(errMsg, "bytes") {
-		t.Errorf("error message should mention 'minimum' or 'bytes' for clarity: %s", errMsg)
-	}
+		// Optionally also check for "minimum" or "bytes" for clarity
+		if !strings.Contains(errMsg, "minimum") && !strings.Contains(errMsg, "bytes") {
+			t.Errorf("error message should mention 'minimum' or 'bytes' for clarity: %s", errMsg)
+		}
 
-	t.Logf("Comprehensive error message: %s", errMsg)
+		t.Logf("Comprehensive error message: %s", errMsg)
+	})
 }
 
 func TestTruncatedError_HasMemberName(t *testing.T) {

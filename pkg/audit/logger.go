@@ -9,9 +9,17 @@ import (
 	"time"
 )
 
+// stdLogger is the subset of *log.Logger's interface that Logger depends on.
+// Defining it as an interface (rather than embedding *log.Logger directly)
+// lets tests substitute a lightweight recorder to capture and assert on
+// output without shelling out to the real stderr stream.
+type stdLogger interface {
+	Println(v ...interface{})
+}
+
 // Logger writes structured audit logs for security-sensitive operations.
 type Logger struct {
-	output *log.Logger
+	output stdLogger
 }
 
 // NewLogger creates a new audit logger that writes to stderr (or a configured output).

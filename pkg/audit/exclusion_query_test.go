@@ -17,13 +17,25 @@ import (
 func setupTestDB(t *testing.T) (*sql.DB, func()) {
 	ctx := context.Background()
 
-	// Start PostgreSQL test container
+	// Start PostgreSQL test container.
+	//
+	// The official postgres image logs "database system is ready to accept
+	// connections" twice: once for the short-lived instance initdb starts to
+	// run bootstrap SQL, and again after it restarts into the real server.
+	// Waiting for only the first occurrence races the restart and produces
+	// "EOF"/connection-refused errors when the schema is applied immediately
+	// after. Require the second occurrence so the container is genuinely
+	// ready before we connect.
 	pgContainer, err := postgres.RunContainer(ctx,
 		testcontainers.WithImage("postgres:16-alpine"),
 		postgres.WithDatabase("testdb"),
 		postgres.WithUsername("testuser"),
 		postgres.WithPassword("testpass"),
-		wait.ForLog("database system is ready to accept connections"),
+		testcontainers.WithWaitStrategy(
+			wait.ForLog("database system is ready to accept connections").
+				WithOccurrence(2).
+				WithStartupTimeout(60*time.Second),
+		),
 	)
 	if err != nil {
 		t.Fatalf("failed to start postgres container: %v", err)

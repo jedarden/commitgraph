@@ -220,9 +220,9 @@ func TestInvariant4_QueryStructure(t *testing.T) {
 	})
 }
 
-// ExampleInvariant4_WithRealDatabase shows how to run these invariants
+// Example_invariant4WithRealDatabase shows how to run these invariants
 // against a real database (for CI setup).
-func ExampleInvariant4_WithRealDatabase() {
+func Example_invariant4WithRealDatabase() {
 	// In CI, create a fixture database:
 	//
 	// 1. Run initial schema migration
@@ -265,7 +265,10 @@ func ExampleInvariant4_WithRealDatabase() {
 		// Similar checks for queries (b) and (c)...
 	*/
 
-	// Output: Invariant checks pass with correct violation detection
+	// This function is illustrative documentation only (the body above is a
+	// comment, not executable code) and intentionally has no "// Output:"
+	// comment — a prior version claimed a fake "Output:" that nothing in
+	// this function actually produced, which made `go test` fail.
 }
 
 // TestInvariant4_ProductionUsage documents how to run these invariants

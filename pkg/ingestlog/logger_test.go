@@ -2792,3 +2792,506 @@ func TestLogStatsOutput(t *testing.T) {
 		t.Errorf("TotalFailures = %d, want 1", stats.TotalFailures)
 	}
 }
+
+// TestCaptureUserID verifies CaptureUserID correctly handles user ID values.
+func TestCaptureUserID(t *testing.T) {
+	tests := []struct {
+		name   string
+		userID string
+		want   string
+	}{
+		{
+			name:   "valid user ID",
+			userID: "user-123-abc",
+			want:   "user-123-abc",
+		},
+		{
+			name:   "empty user ID",
+			userID: "",
+			want:   "",
+		},
+		{
+			name:   "user ID with special characters",
+			userID: "user_123!@#$",
+			want:   "user_123!@#$",
+		},
+		{
+			name:   "user ID with UUID format",
+			userID: "550e8400-e29b-41d4-a716-446655440000",
+			want:   "550e8400-e29b-41d4-a716-446655440000",
+		},
+		{
+			name:   "numeric user ID",
+			userID: "12345",
+			want:   "12345",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := CaptureUserID(tt.userID)
+			if got != tt.want {
+				t.Errorf("CaptureUserID() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestCaptureSessionID verifies CaptureSessionID correctly handles session ID values.
+func TestCaptureSessionID(t *testing.T) {
+	tests := []struct {
+		name      string
+		sessionID string
+		want      string
+	}{
+		{
+			name:      "valid session ID",
+			sessionID: "session-abc-123",
+			want:      "session-abc-123",
+		},
+		{
+			name:      "empty session ID",
+			sessionID: "",
+			want:      "",
+		},
+		{
+			name:      "session ID with UUID format",
+			sessionID: "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+			want:      "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+		},
+		{
+			name:      "session ID with timestamp",
+			sessionID: "session-2024-08-07-123456",
+			want:      "session-2024-08-07-123456",
+		},
+		{
+			name:      "session ID with special characters",
+			sessionID: "sess_io.123_abc",
+			want:      "sess_io.123_abc",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := CaptureSessionID(tt.sessionID)
+			if got != tt.want {
+				t.Errorf("CaptureSessionID() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestCaptureRequestID verifies CaptureRequestID correctly handles request ID values.
+func TestCaptureRequestID(t *testing.T) {
+	tests := []struct {
+		name      string
+		requestID string
+		want      string
+	}{
+		{
+			name:      "valid request ID",
+			requestID: "req-xyz-789",
+			want:      "req-xyz-789",
+		},
+		{
+			name:      "empty request ID",
+			requestID: "",
+			want:      "",
+		},
+		{
+			name:      "request ID with UUID format",
+			requestID: "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+			want:      "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+		},
+		{
+			name:      "request ID with timestamp",
+			requestID: "req-20240807-143052-abc123",
+			want:      "req-20240807-143052-abc123",
+		},
+		{
+			name:      "request ID with special characters",
+			requestID: "req.io.123_abc!@#",
+			want:      "req.io.123_abc!@#",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := CaptureRequestID(tt.requestID)
+			if got != tt.want {
+				t.Errorf("CaptureRequestID() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestCaptureEndpointName verifies CaptureEndpointName validates endpoint names correctly.
+func TestCaptureEndpointName(t *testing.T) {
+	tests := []struct {
+		name        string
+		endpoint    string
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name:     "valid endpoint name",
+			endpoint: "github-username-resolution",
+			wantErr:  false,
+		},
+		{
+			name:     "valid endpoint with numbers",
+			endpoint: "api-v2-endpoint",
+			wantErr:  false,
+		},
+		{
+			name:     "valid endpoint with underscores",
+			endpoint: "user_profile_update",
+			wantErr:  false,
+		},
+		{
+			name:        "empty endpoint name",
+			endpoint:    "",
+			wantErr:     true,
+			errContains: "endpoint",
+		},
+		{
+			name:     "endpoint with path",
+			endpoint: "/api/v2/resolve",
+			wantErr:  false,
+		},
+		{
+			name:     "endpoint with hyphen and underscore",
+			endpoint: "email-resolution_v2",
+			wantErr:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := CaptureEndpointName(tt.endpoint)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("CaptureEndpointName() expected error containing %q, got nil", tt.errContains)
+				}
+				if tt.errContains != "" && err != nil && !contains(err.Error(), tt.errContains) {
+					t.Errorf("Error message %q does not contain %q", err.Error(), tt.errContains)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("CaptureEndpointName() unexpected error: %v", err)
+			}
+
+			if got != tt.endpoint {
+				t.Errorf("CaptureEndpointName() = %q, want %q", got, tt.endpoint)
+			}
+		})
+	}
+}
+
+// TestCaptureMethod verifies CaptureMethod validates HTTP methods correctly.
+func TestCaptureMethod(t *testing.T) {
+	tests := []struct {
+		name        string
+		method      string
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name:    "valid GET method",
+			method:  "GET",
+			wantErr: false,
+		},
+		{
+			name:    "valid POST method",
+			method:  "POST",
+			wantErr: false,
+		},
+		{
+			name:    "valid PUT method",
+			method:  "PUT",
+			wantErr: false,
+		},
+		{
+			name:    "valid DELETE method",
+			method:  "DELETE",
+			wantErr: false,
+		},
+		{
+			name:    "valid PATCH method",
+			method:  "PATCH",
+			wantErr: false,
+		},
+		{
+			name:    "valid HEAD method",
+			method:  "HEAD",
+			wantErr: false,
+		},
+		{
+			name:    "valid OPTIONS method",
+			method:  "OPTIONS",
+			wantErr: false,
+		},
+		{
+			name:        "empty method",
+			method:      "",
+			wantErr:     true,
+			errContains: "method",
+		},
+		{
+			name:    "lowercase method",
+			method:  "get",
+			wantErr: false,
+		},
+		{
+			name:    "mixed case method",
+			method:  "Post",
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := CaptureMethod(tt.method)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("CaptureMethod() expected error containing %q, got nil", tt.errContains)
+				}
+				if tt.errContains != "" && err != nil && !contains(err.Error(), tt.errContains) {
+					t.Errorf("Error message %q does not contain %q", err.Error(), tt.errContains)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("CaptureMethod() unexpected error: %v", err)
+			}
+
+			if got != tt.method {
+				t.Errorf("CaptureMethod() = %q, want %q", got, tt.method)
+			}
+		})
+	}
+}
+
+// TestCapturePath verifies CapturePath validates request paths correctly.
+func TestCapturePath(t *testing.T) {
+	tests := []struct {
+		name        string
+		path        string
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name:    "valid simple path",
+			path:    "/",
+			wantErr: false,
+		},
+		{
+			name:    "valid path with segments",
+			path:    "/api/v2/users",
+			wantErr: false,
+		},
+		{
+			name:    "valid path with query parameters",
+			path:    "/search?q=test&page=1",
+			wantErr: false,
+		},
+		{
+			name:    "valid path with fragment",
+			path:    "/page#section",
+			wantErr: false,
+		},
+		{
+			name:    "valid path with ID",
+			path:    "/users/123/profile",
+			wantErr: false,
+		},
+		{
+			name:    "valid path with UUID",
+			path:    "/resources/6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+			wantErr: false,
+		},
+		{
+			name:        "empty path",
+			path:        "",
+			wantErr:     true,
+			errContains: "path",
+		},
+		{
+			name:    "valid complex path",
+			path:    "/api/v1/email-resolution/resolve?format=json&include=true",
+			wantErr: false,
+		},
+		{
+			name:    "valid path with special characters",
+			path:    "/api/user@example.com",
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := CapturePath(tt.path)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("CapturePath() expected error containing %q, got nil", tt.errContains)
+				}
+				if tt.errContains != "" && err != nil && !contains(err.Error(), tt.errContains) {
+					t.Errorf("Error message %q does not contain %q", err.Error(), tt.errContains)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("CapturePath() unexpected error: %v", err)
+			}
+
+			if got != tt.path {
+				t.Errorf("CapturePath() = %q, want %q", got, tt.path)
+			}
+		})
+	}
+}
+
+// TestUserContextHelperFunctionsEdgeCases tests edge cases and error handling
+// for all user context helper functions.
+func TestUserContextHelperFunctionsEdgeCases(t *testing.T) {
+	t.Run("CaptureUserID with whitespace", func(t *testing.T) {
+		// Whitespace is valid (user may want to preserve it)
+		userID := " user 123 "
+		got := CaptureUserID(userID)
+		if got != userID {
+			t.Errorf("CaptureUserID() = %q, want %q", got, userID)
+		}
+	})
+
+	t.Run("CaptureSessionID with whitespace", func(t *testing.T) {
+		sessionID := " session abc "
+		got := CaptureSessionID(sessionID)
+		if got != sessionID {
+			t.Errorf("CaptureSessionID() = %q, want %q", got, sessionID)
+		}
+	})
+
+	t.Run("CaptureRequestID with whitespace", func(t *testing.T) {
+		requestID := " req xyz "
+		got := CaptureRequestID(requestID)
+		if got != requestID {
+			t.Errorf("CaptureRequestID() = %q, want %q", got, requestID)
+		}
+	})
+
+	t.Run("CaptureEndpointName with very long name", func(t *testing.T) {
+		longEndpoint := string(make([]byte, 1000))
+		for i := range longEndpoint {
+			longEndpoint = "a" + longEndpoint[:i]
+		}
+		got, err := CaptureEndpointName(longEndpoint)
+		if err != nil {
+			t.Errorf("CaptureEndpointName() with long name failed: %v", err)
+		}
+		if got != longEndpoint {
+			t.Errorf("CaptureEndpointName() = %q, want %q", got, longEndpoint)
+		}
+	})
+
+	t.Run("CaptureMethod with custom method", func(t *testing.T) {
+		// Custom HTTP methods are allowed
+		customMethod := "CUSTOM_METHOD"
+		got, err := CaptureMethod(customMethod)
+		if err != nil {
+			t.Errorf("CaptureMethod() with custom method failed: %v", err)
+		}
+		if got != customMethod {
+			t.Errorf("CaptureMethod() = %q, want %q", got, customMethod)
+		}
+	})
+
+	t.Run("CapturePath with encoded characters", func(t *testing.T) {
+		encodedPath := "/api/users/user%40example.com/profile"
+		got, err := CapturePath(encodedPath)
+		if err != nil {
+			t.Errorf("CapturePath() with encoded characters failed: %v", err)
+		}
+		if got != encodedPath {
+			t.Errorf("CapturePath() = %q, want %q", got, encodedPath)
+		}
+	})
+}
+
+// TestUserContextHelperFunctionsIntegration tests that the helper functions
+// work together correctly when used in combination.
+func TestUserContextHelperFunctionsIntegration(t *testing.T) {
+	t.Run("all ID capture functions together", func(t *testing.T) {
+		userID := "user-123"
+		sessionID := "session-456"
+		requestID := "req-789"
+
+		capturedUserID := CaptureUserID(userID)
+		capturedSessionID := CaptureSessionID(sessionID)
+		capturedRequestID := CaptureRequestID(requestID)
+
+		if capturedUserID != userID {
+			t.Errorf("CaptureUserID() = %q, want %q", capturedUserID, userID)
+		}
+		if capturedSessionID != sessionID {
+			t.Errorf("CaptureSessionID() = %q, want %q", capturedSessionID, sessionID)
+		}
+		if capturedRequestID != requestID {
+			t.Errorf("CaptureRequestID() = %q, want %q", capturedRequestID, requestID)
+		}
+	})
+
+	t.Run("endpoint helpers together", func(t *testing.T) {
+		endpoint := "github-username-resolution"
+		method := "POST"
+		path := "/email-resolution/resolve"
+
+		capturedEndpoint, err := CaptureEndpointName(endpoint)
+		if err != nil {
+			t.Fatalf("CaptureEndpointName() failed: %v", err)
+		}
+
+		capturedMethod, err := CaptureMethod(method)
+		if err != nil {
+			t.Fatalf("CaptureMethod() failed: %v", err)
+		}
+
+		capturedPath, err := CapturePath(path)
+		if err != nil {
+			t.Fatalf("CapturePath() failed: %v", err)
+		}
+
+		if capturedEndpoint != endpoint {
+			t.Errorf("CaptureEndpointName() = %q, want %q", capturedEndpoint, endpoint)
+		}
+		if capturedMethod != method {
+			t.Errorf("CaptureMethod() = %q, want %q", capturedMethod, method)
+		}
+		if capturedPath != path {
+			t.Errorf("CapturePath() = %q, want %q", capturedPath, path)
+		}
+	})
+
+	t.Run("empty IDs are valid", func(t *testing.T) {
+		// All empty strings should be valid (optional fields)
+		userID := CaptureUserID("")
+		sessionID := CaptureSessionID("")
+		requestID := CaptureRequestID("")
+
+		if userID != "" {
+			t.Errorf("CaptureUserID() with empty string should return empty, got %q", userID)
+		}
+		if sessionID != "" {
+			t.Errorf("CaptureSessionID() with empty string should return empty, got %q", sessionID)
+		}
+		if requestID != "" {
+			t.Errorf("CaptureRequestID() with empty string should return empty, got %q", requestID)
+		}
+	})
+}

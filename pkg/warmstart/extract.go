@@ -211,36 +211,16 @@ func ParseTarball(data []byte) (*WarmStartSnapshot, error) {
 	// to function correctly. Missing companion files will cause git operations to fail.
 	//
 	// Validation flow:
-	// 1. Collect all .pack file base names (e.g., "objects/pack/pack-abc123" from "objects/pack/pack-abc123.pack")
-	// 2. Verify each .pack has a corresponding .idx file (pack index, required for object lookup)
-	// 3. Verify each .pack has a corresponding .ref file (reverse index, required for partial clone promisor packs)
+	// 1. Verify each .pack has a corresponding .idx file (pack index, required for object lookup)
+	// 2. Verify each .pack has a corresponding .ref file (reverse index, required for partial clone promisor packs)
 	//
 	// This validation happens during ParseTarball, before Materialize, to fail fast on corrupted tarballs.
 
-	// Step 1: Collect base names of all .pack files for corresponding file validation
-	var packBaseNames []string
-	for _, pf := range snapshot.PackFiles {
-		if strings.HasSuffix(pf.Name, ".pack") {
-			// Extract base name without extension for corresponding file checks
-			baseName := strings.TrimSuffix(pf.Name, ".pack")
-			packBaseNames = append(packBaseNames, baseName)
-		}
-	}
-
 	// Step 2: Validate that corresponding .idx files exist for each .pack file
 	// The .idx file contains the pack index that git uses to locate objects within the .pack file
-	for _, baseName := range packBaseNames {
-		idxName := baseName + ".idx"
-		foundIdx := false
-		for _, pf := range snapshot.PackFiles {
-			if pf.Name == idxName {
-				foundIdx = true
-				break
-			}
-		}
-		if !foundIdx {
-			return nil, NewMissingMemberError(".idx")
-		}
+	missingIdxFiles := CollectMissingIdxFiles(snapshot.PackFiles)
+	if len(missingIdxFiles) > 0 {
+		return nil, NewMissingMemberErrorWithContext(".idx", fmt.Sprintf("missing .idx files: %s", strings.Join(missingIdxFiles, ", ")))
 	}
 
 	// Step 3: Validate that corresponding .ref files exist for each .pack file
@@ -541,6 +521,77 @@ func CollectMissingRefFiles(members []TarballMember) []string {
 	}
 
 	return missingRefFiles
+}
+
+// IdxFilenameFromPackFilename constructs the expected .idx filename from a .pack filename.
+// It strips the .pack extension and appends .idx.
+// For example: "pack-abc123.pack" becomes "pack-abc123.idx"
+// Edge cases handled:
+//   - No .pack extension: appends .idx to the input as-is
+//   - Multiple dots: only the final .pack extension is stripped
+func IdxFilenameFromPackFilename(packFilename string) string {
+	return strings.TrimSuffix(packFilename, ".pack") + ".idx"
+}
+
+// IdxFileExistsInTarball checks if a .idx file exists in the tarball for a given .pack file.
+// It uses IdxFilenameFromPackFilename to construct the expected .idx filename and searches
+// the provided member list for a matching file.
+//
+// Parameters:
+//   - packFilename: The .pack file name (e.g., "objects/pack/pack-abc123.pack")
+//   - members: Slice of TarballMember representing files in the tarball
+//
+// Returns:
+//   - true if the corresponding .idx file is found in the member list, false otherwise
+//
+// Example:
+//   packFile := "objects/pack/pack-abc123.pack"
+//   members := []TarballMember{{Name: "objects/pack/pack-abc123.idx", Data: ...}}
+//   found := IdxFileExistsInTarball(packFile, members) // returns true
+func IdxFileExistsInTarball(packFilename string, members []TarballMember) bool {
+	expectedIdxName := IdxFilenameFromPackFilename(packFilename)
+	for _, member := range members {
+		if member.Name == expectedIdxName {
+			return true
+		}
+	}
+	return false
+}
+
+// CollectMissingIdxFiles collects all missing .idx files across all pack files.
+// It iterates over each pack file in the members list, checks if the corresponding
+// .idx file exists, and collects the names of missing .idx files.
+//
+// Parameters:
+//   - members: Slice of TarballMember representing files in the tarball
+//
+// Returns:
+//   - []string: List of missing .idx file names (empty if all present)
+//
+// Example:
+//   members := []TarballMember{
+//       {Name: "objects/pack/pack-abc.pack", Data: ...},
+//       {Name: "objects/pack/pack-def.pack", Data: ...},
+//       {Name: "objects/pack/pack-abc.idx", Data: ...},
+//   }
+//   missing := CollectMissingIdxFiles(members) // returns ["objects/pack/pack-def.idx"]
+func CollectMissingIdxFiles(members []TarballMember) []string {
+	var missingIdxFiles []string
+
+	for _, member := range members {
+		// Only check .pack files
+		if !strings.HasSuffix(member.Name, ".pack") {
+			continue
+		}
+
+		// Check if the corresponding .idx file exists
+		if !IdxFileExistsInTarball(member.Name, members) {
+			expectedIdxName := IdxFilenameFromPackFilename(member.Name)
+			missingIdxFiles = append(missingIdxFiles, expectedIdxName)
+		}
+	}
+
+	return missingIdxFiles
 }
 
 // ValidateRefFiles validates .ref file existence for a given list of .pack files.

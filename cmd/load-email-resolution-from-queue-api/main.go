@@ -71,11 +71,16 @@ func main() {
 	var resolvedRows []identity.ResolutionRow
 	for _, row := range rows {
 		if row.Status == "resolved" && row.GitHubLogin != "" {
+			// AttemptedAt is *time.Time; skip if nil, otherwise dereference
+			if row.AttemptedAt == nil {
+				log.Printf("Warning: skipping resolved entry %s with nil AttemptedAt", row.AuthorEmail)
+				continue
+			}
 			resolvedRows = append(resolvedRows, identity.ResolutionRow{
 				Email:      row.AuthorEmail,
 				Login:      row.GitHubLogin,
 				Source:     identity.SourceLive,
-				ResolvedAt: row.AttemptedAt,
+				ResolvedAt: *row.AttemptedAt,
 			})
 		}
 	}

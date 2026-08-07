@@ -7,6 +7,46 @@ import (
 
 // Common mock implementations for testing
 
+// mockDBExecutor is a test double for the DBExecutor interface (used by
+// AliasIngester and other pg types built on database/sql's concrete
+// *sql.Row/*sql.Rows types rather than the custom Executor interface).
+// It records the last query/args executed and can be told to fail, mirroring
+// mockExecutor's behavior for the Executor interface above.
+type mockDBExecutor struct {
+	lastQuery    string
+	lastArgs     []interface{}
+	rowsAffected int64
+	shouldError  bool
+}
+
+func (m *mockDBExecutor) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+	m.lastQuery = query
+	m.lastArgs = args
+	if m.shouldError {
+		return nil, &mockError{err: "test error"}
+	}
+	return &mockResult{rowsAffected: m.rowsAffected}, nil
+}
+
+func (m *mockDBExecutor) QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+	m.lastQuery = query
+	m.lastArgs = args
+	if m.shouldError {
+		return nil, &mockError{err: "test error"}
+	}
+	// *sql.Rows is a concrete type that cannot be constructed without a real
+	// driver; callers that need row data must use an integration test.
+	return nil, nil
+}
+
+func (m *mockDBExecutor) QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row {
+	m.lastQuery = query
+	m.lastArgs = args
+	// *sql.Row is a concrete type that cannot be constructed without a real
+	// driver; callers that need row data must use an integration test.
+	return nil
+}
+
 // mockExecutor is a test double that captures SQL execution without a real database.
 // It implements the DBExecutor interface for ExecContext only.
 // QueryContext and QueryRowContext return nil/empty values since sql.Rows and sql.Row
@@ -44,13 +84,18 @@ func (m *mockExecutor) QueryRowContext(ctx context.Context, query string, args .
 	return &mockRow{}
 }
 
-// mockResult implements Result interface for testing.
+// mockResult implements both the custom Result interface and sql.Result
+// (the latter needs LastInsertId too) for testing.
 type mockResult struct {
 	rowsAffected int64
 }
 
 func (m *mockResult) RowsAffected() (int64, error) {
 	return m.rowsAffected, nil
+}
+
+func (m *mockResult) LastInsertId() (int64, error) {
+	return 0, nil
 }
 
 // mockError implements error interface for testing.

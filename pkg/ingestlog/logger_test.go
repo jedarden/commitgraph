@@ -294,7 +294,7 @@ func TestLogRetry(t *testing.T) {
 		RetryDelayMs:   1000,
 	}
 
-	err := logger.LogRetry(event)
+	err := logger.LogRetry(&event)
 	if err != nil {
 		t.Fatalf("LogRetry failed: %v", err)
 	}
@@ -319,7 +319,7 @@ func TestLogFailure(t *testing.T) {
 		TotalDurationMs: 5000,
 	}
 
-	err := logger.LogFailure(event)
+	err := logger.LogFailure(&event)
 	if err != nil {
 		t.Fatalf("LogFailure failed: %v", err)
 	}
@@ -379,7 +379,7 @@ func TestLogEventValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := logger.LogRetry(tt.event)
+			err := logger.LogRetry(&tt.event)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("LogRetry error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -404,7 +404,7 @@ func TestEventTimestamp(t *testing.T) {
 		// Timestamp is zero - should be auto-populated
 	}
 
-	err := logger.LogSuccess(event)
+	err := logger.LogSuccess(&event)
 	if err != nil {
 		t.Fatalf("LogSuccess failed: %v", err)
 	}
@@ -748,7 +748,10 @@ func TestLogEntryValidation(t *testing.T) {
 		errContains string
 	}{
 		{
-			name: "missing user email",
+			// Since cg-43bpa, user identification only requires *some* form of
+			// context (email OR github_username OR userID/sessionID/requestID),
+			// so github_username alone is sufficient - see extended_context_test.go.
+			name: "github username alone is sufficient user identification",
 			entry: LogEntry{
 				User: UserContext{
 					GithubUsername: "testuser",
@@ -758,11 +761,11 @@ func TestLogEntryValidation(t *testing.T) {
 					AttemptNumber: 1,
 				},
 			},
-			wantErr:     true,
-			errContains: "user.email",
+			wantErr: false,
 		},
 		{
-			name: "missing github username",
+			// Since cg-43bpa, email alone is sufficient user identification too.
+			name: "email alone is sufficient user identification",
 			entry: LogEntry{
 				User: UserContext{
 					Email: "test@example.com",
@@ -772,8 +775,19 @@ func TestLogEntryValidation(t *testing.T) {
 					AttemptNumber: 1,
 				},
 			},
+			wantErr: false,
+		},
+		{
+			name: "no user identification at all",
+			entry: LogEntry{
+				User: UserContext{},
+				Endpoint: EndpointContext{
+					URL:           "http://test:8080/resolve",
+					AttemptNumber: 1,
+				},
+			},
 			wantErr:     true,
-			errContains: "user.github_username",
+			errContains: "user identification required",
 		},
 		{
 			name: "missing endpoint URL",
@@ -1220,6 +1234,173 @@ func TestCaptureContextIntegration(t *testing.T) {
 	}
 }
 
+// TestMetadataMergedIntoLogEntry verifies that a valid metadata map is merged
+// into LogEntry.Metadata, survives JSON serialization, and does not disturb
+// the other captured context fields. This verifies the acceptance criteria
+// for bead cg-52r9h ("optional metadata map is merged correctly").
+func TestMetadataMergedIntoLogEntry(t *testing.T) {
+	logger := NewLogger()
+
+	metadata := RequestMetadata{
+		"batch_id":   "batch-123",
+		"source_row": float64(42),
+	}
+
+	entry := LogEntry{
+		User: UserContext{
+			Email:          "test@example.com",
+			GithubUsername: "testuser",
+		},
+		Endpoint: EndpointContext{
+			URL:           "http://test:8080/resolve",
+			AttemptNumber: 1,
+		},
+		Metadata: metadata,
+	}
+
+	if err := logger.LogRetryWithEntry(&entry); err != nil {
+		t.Fatalf("LogRetryWithEntry failed: %v", err)
+	}
+
+	if entry.Metadata["batch_id"] != "batch-123" {
+		t.Errorf("Metadata[batch_id] = %v, want %q", entry.Metadata["batch_id"], "batch-123")
+	}
+
+	// Verify metadata survives JSON round-trip alongside the rest of the entry.
+	jsonBytes, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatalf("Failed to marshal LogEntry with metadata: %v", err)
+	}
+
+	var unmarshaled LogEntry
+	if err := json.Unmarshal(jsonBytes, &unmarshaled); err != nil {
+		t.Fatalf("Failed to unmarshal LogEntry with metadata: %v", err)
+	}
+
+	if unmarshaled.Metadata["batch_id"] != "batch-123" {
+		t.Errorf("Metadata lost during JSON round-trip: got %v, want %q", unmarshaled.Metadata["batch_id"], "batch-123")
+	}
+	if unmarshaled.User.Email != entry.User.Email {
+		t.Errorf("User context disturbed by metadata: got %q, want %q", unmarshaled.User.Email, entry.User.Email)
+	}
+	if unmarshaled.Endpoint.URL != entry.Endpoint.URL {
+		t.Errorf("Endpoint context disturbed by metadata: got %q, want %q", unmarshaled.Endpoint.URL, entry.Endpoint.URL)
+	}
+}
+
+// TestValidateMetadataKeys_RejectsCollisions verifies that metadata keys
+// colliding with reserved top-level LogEntry field names are rejected, both
+// via ValidateMetadataKeys directly and via LogIngestError end-to-end.
+func TestValidateMetadataKeys_RejectsCollisions(t *testing.T) {
+	tests := []struct {
+		name     string
+		metadata RequestMetadata
+		wantErr  bool
+	}{
+		{
+			name:     "nil metadata is valid",
+			metadata: nil,
+			wantErr:  false,
+		},
+		{
+			name:     "empty metadata is valid",
+			metadata: RequestMetadata{},
+			wantErr:  false,
+		},
+		{
+			name:     "non-colliding key is valid",
+			metadata: RequestMetadata{"batch_id": "123"},
+			wantErr:  false,
+		},
+		{
+			name:     "colliding with 'user' is rejected",
+			metadata: RequestMetadata{"user": "collision"},
+			wantErr:  true,
+		},
+		{
+			name:     "colliding with 'endpoint' is rejected",
+			metadata: RequestMetadata{"endpoint": "collision"},
+			wantErr:  true,
+		},
+		{
+			name:     "colliding with 'metadata' is rejected",
+			metadata: RequestMetadata{"metadata": "collision"},
+			wantErr:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateMetadataKeys(tt.metadata)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateMetadataKeys() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestLogIngestError_MetadataMerging verifies that LogIngestError merges
+// valid metadata into the resulting LogEntry, and rejects metadata whose
+// keys collide with reserved LogEntry fields. This verifies the acceptance
+// criteria for bead cg-52r9h.
+func TestLogIngestError_MetadataMerging(t *testing.T) {
+	logger := NewLogger()
+
+	// Valid metadata should be accepted and merged.
+	err := LogIngestError(
+		logger,
+		"user@example.com", "octocat",
+		"user-123", "session-456", "req-789",
+		"github-username-resolution", "POST", "/email-resolution/resolve",
+		"http://queue-api:8080/email-resolution/resolve",
+		errors.New("internal error"), 500, `{"error":"internal"}`,
+		1, 4, 100, 250,
+		"failure",
+		RequestMetadata{"batch_id": "batch-42"},
+	)
+	if err != nil {
+		t.Fatalf("LogIngestError with valid metadata failed: %v", err)
+	}
+
+	// Metadata colliding with a reserved field should be rejected.
+	err = LogIngestError(
+		logger,
+		"user@example.com", "octocat",
+		"user-123", "session-456", "req-789",
+		"github-username-resolution", "POST", "/email-resolution/resolve",
+		"http://queue-api:8080/email-resolution/resolve",
+		errors.New("internal error"), 500, `{"error":"internal"}`,
+		1, 4, 100, 250,
+		"failure",
+		RequestMetadata{"user": "collision"},
+	)
+	if err == nil {
+		t.Error("LogIngestError with colliding metadata key should have failed, got nil error")
+	} else if !contains(err.Error(), "metadata") {
+		t.Errorf("Error message %q does not mention metadata validation", err.Error())
+	}
+}
+
+// TestLogEntry_ZeroValueValidation verifies that a completely zero-value
+// LogEntry (all fields nil/empty/zero) is rejected gracefully with a
+// descriptive error, rather than panicking. This verifies the acceptance
+// criteria for bead cg-56c0o (nil value and validation test coverage).
+func TestLogEntry_ZeroValueValidation(t *testing.T) {
+	logger := NewLogger()
+
+	var entry LogEntry // fully zero-value: no user context, no endpoint, nil metadata
+
+	err := logger.LogRetryWithEntry(&entry)
+	if err == nil {
+		t.Fatal("LogRetryWithEntry on a zero-value LogEntry should fail, got nil error")
+	}
+
+	// The endpoint.url check happens first in logEntry's validation order.
+	if !contains(err.Error(), "endpoint.url") {
+		t.Errorf("Error message %q does not mention the missing endpoint.url", err.Error())
+	}
+}
+
 // TestLogIngestError_ContextPreservation verifies that all captured user context
 // (userID, sessionID, requestID) is preserved correctly through the error handling path.
 // This test verifies the acceptance criteria for bead cg-5ghvc.
@@ -1505,10 +1686,7 @@ func TestLogIngestErrorExtended_ContextPreservation(t *testing.T) {
 					StatusCode:    tt.endpointCtx.StatusCode,
 					ResponseBody:  tt.endpointCtx.ResponseBody,
 				},
-				Error: ErrorContext{
-					Type:  "server_error",
-					Message: tt.err.Error(),
-				},
+				Error: SerializeError(tt.err),
 			}
 
 			// Verify all three context fields are in the LogEntry
@@ -1965,6 +2143,91 @@ func TestAggregateStats(t *testing.T) {
 	}
 }
 
+// TestRecordProcessedIncrementsCounter verifies that a single call to
+// RecordProcessed() increments TotalProcessed from 0 to 1.
+func TestRecordProcessedIncrementsCounter(t *testing.T) {
+	logger := NewLogger()
+
+	if got := logger.GetStats().TotalProcessed; got != 0 {
+		t.Fatalf("TotalProcessed before RecordProcessed = %d, want 0", got)
+	}
+
+	logger.RecordProcessed()
+
+	if got := logger.GetStats().TotalProcessed; got != 1 {
+		t.Errorf("TotalProcessed after RecordProcessed = %d, want 1", got)
+	}
+}
+
+// TestRecordProcessedMultipleCalls verifies that repeated calls to
+// RecordProcessed() accumulate correctly.
+func TestRecordProcessedMultipleCalls(t *testing.T) {
+	logger := NewLogger()
+
+	const calls = 5
+	for i := 0; i < calls; i++ {
+		logger.RecordProcessed()
+	}
+
+	if got := logger.GetStats().TotalProcessed; got != calls {
+		t.Errorf("TotalProcessed after %d calls = %d, want %d", calls, got, calls)
+	}
+}
+
+// TestRecordProcessedUpdatesTimestamp verifies that RecordProcessed() updates
+// LastUpdateTime.
+func TestRecordProcessedUpdatesTimestamp(t *testing.T) {
+	logger := NewLogger()
+
+	before := logger.GetStats().LastUpdateTime
+	time.Sleep(time.Millisecond)
+
+	logger.RecordProcessed()
+
+	after := logger.GetStats().LastUpdateTime
+	if !after.After(before) {
+		t.Errorf("LastUpdateTime not updated: before=%v, after=%v", before, after)
+	}
+}
+
+// TestRecordProcessedInStats verifies that GetStats() reflects the correct
+// TotalProcessed count after calling RecordProcessed().
+func TestRecordProcessedInStats(t *testing.T) {
+	logger := NewLogger()
+
+	logger.RecordProcessed()
+	logger.RecordProcessed()
+	logger.RecordProcessed()
+
+	stats := logger.GetStats()
+	if stats.TotalProcessed != 3 {
+		t.Errorf("GetStats().TotalProcessed = %d, want 3", stats.TotalProcessed)
+	}
+}
+
+// TestRecordProcessedIsolation verifies that RecordProcessed() only affects
+// TotalProcessed and leaves the other counters (Skipped, Ingested, Retries,
+// Failures) untouched.
+func TestRecordProcessedIsolation(t *testing.T) {
+	logger := NewLogger()
+
+	logger.RecordProcessed()
+
+	stats := logger.GetStats()
+	if stats.TotalSkipped != 0 {
+		t.Errorf("TotalSkipped = %d, want 0", stats.TotalSkipped)
+	}
+	if stats.TotalIngested != 0 {
+		t.Errorf("TotalIngested = %d, want 0", stats.TotalIngested)
+	}
+	if stats.TotalRetries != 0 {
+		t.Errorf("TotalRetries = %d, want 0", stats.TotalRetries)
+	}
+	if stats.TotalFailures != 0 {
+		t.Errorf("TotalFailures = %d, want 0", stats.TotalFailures)
+	}
+}
+
 // TestBatchProgressLogging verifies batch progress logging with calculations.
 func TestBatchProgressLogging(t *testing.T) {
 	logger := NewLogger()
@@ -2136,7 +2399,7 @@ func TestPeriodicReporter(t *testing.T) {
 		IncludeProgress: true,
 	}
 
-	reporter := NewPeriodicReporter(logger, report, 100*time.Millisecond)
+	reporter := NewPeriodicReporter(logger, &report, 100*time.Millisecond)
 
 	// Start reporter
 	reporter.Start()

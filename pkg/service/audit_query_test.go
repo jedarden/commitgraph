@@ -365,10 +365,38 @@ func TestQueryAuditLogs_CombinedFilters(t *testing.T) {
 	repoID := int64(303)
 	now := time.Now().UTC()
 
-	// Insert mixed records
-	insertTestAuditLog(t, db, repoID, "alice", "exclude", time.Time{}, now.Add(-2*time.Hour), "", "spam")
-	insertTestAuditLog(t, db, repoID, "bob", "exclude", time.Time{}, now.Add(-1*time.Hour), "", "policy")
-	insertTestAuditLog(t, db, repoID, "alice", "unexclude", now.Add(-30*time.Minute), time.Time{}, "spam", "")
+	// Insert mixed records with explicit `timestamp` values. insertTestAuditLog
+	// always stamps `timestamp` with time.Now(), which would put every row
+	// inside the same few-millisecond window and make date-range filtering
+	// meaningless here, so insert directly (matching the pattern used by
+	// TestQueryAuditLogs_DateRangeFilter above).
+	aliceExcludeTime := now.Add(-2 * time.Hour)
+	bobExcludeTime := now.Add(-1 * time.Hour)
+	aliceUnexcludeTime := now.Add(-30 * time.Minute)
+
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO exclusion_audit_log (repo_id, actor, timestamp, event_type, old_excluded_at, old_excluded_reason, new_excluded_at, new_excluded_reason)
+		VALUES ($1, $2, $3, $4, NULL, NULL, $5, $6)
+	`, repoID, "alice", aliceExcludeTime, "exclude", aliceExcludeTime, "spam")
+	if err != nil {
+		t.Fatalf("failed to insert alice/exclude record: %v", err)
+	}
+
+	_, err = db.ExecContext(ctx, `
+		INSERT INTO exclusion_audit_log (repo_id, actor, timestamp, event_type, old_excluded_at, old_excluded_reason, new_excluded_at, new_excluded_reason)
+		VALUES ($1, $2, $3, $4, NULL, NULL, $5, $6)
+	`, repoID, "bob", bobExcludeTime, "exclude", bobExcludeTime, "policy")
+	if err != nil {
+		t.Fatalf("failed to insert bob/exclude record: %v", err)
+	}
+
+	_, err = db.ExecContext(ctx, `
+		INSERT INTO exclusion_audit_log (repo_id, actor, timestamp, event_type, old_excluded_at, old_excluded_reason, new_excluded_at, new_excluded_reason)
+		VALUES ($1, $2, $3, $4, $5, $6, NULL, NULL)
+	`, repoID, "alice", aliceUnexcludeTime, "unexclude", aliceUnexcludeTime, "spam")
+	if err != nil {
+		t.Fatalf("failed to insert alice/unexclude record: %v", err)
+	}
 
 	// Query with combined filters: alice + exclude + date range
 	startTime := now.Add(-3 * time.Hour)
@@ -383,7 +411,7 @@ func TestQueryAuditLogs_CombinedFilters(t *testing.T) {
 		t.Fatalf("QueryAuditLogs failed: %v", err)
 	}
 	if len(result.Records) != 1 {
-		t.Errorf("got %d records with combined filters, want 1", len(result.Records))
+		t.Fatalf("got %d records with combined filters, want 1", len(result.Records))
 	}
 	if result.Records[0].Actor != "alice" {
 		t.Errorf("got actor %s, want alice", result.Records[0].Actor)

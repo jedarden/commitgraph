@@ -145,6 +145,10 @@ func TestEmailResolutionLoginUpdateOnRename(t *testing.T) {
 	t.Run("worker error handling", func(t *testing.T) {
 		testRevalidationWorkerErrorHandling(ctx, t, db)
 	})
+
+	t.Run("deletion case preserves historical data", func(t *testing.T) {
+		testRevalidationWorkerDeletionHandling(ctx, t, db)
+	})
 }
 
 // setupEmailResolutionTestTables creates temporary tables for email_resolution rename testing.
@@ -460,4 +464,205 @@ func testRevalidationWorkerErrorHandling(ctx context.Context, t *testing.T, db *
 	} else {
 		t.Logf("✓ Queue-api client called %d time(s) before error", mockQueueClient.CallCount())
 	}
+}
+
+// testRevalidationWorkerDeletionHandling verifies that when the revalidation worker
+// detects a deleted GitHub account, it properly flags the row without silently dropping data.
+//
+// This test covers the deletion scenario from edge case #6:
+// When a GitHub account is deleted (no successor login), the revalidation worker
+// should mark the revalidation status as 'deleted' but preserve all historical data.
+func testRevalidationWorkerDeletionHandling(ctx context.Context, t *testing.T, db *sql.DB) {
+	t.Helper()
+
+	email := "deleted@example.com"
+	login := "deleted-user"
+
+	// Seed user with the login
+	var userID int64
+	err := db.QueryRowContext(ctx, `INSERT INTO users (login) VALUES ($1) RETURNING user_id`, login).Scan(&userID)
+	if err != nil {
+		t.Fatalf("Failed to seed user: %v", err)
+	}
+
+	// Seed repo for activity data
+	var repoID int64
+	err = db.QueryRowContext(ctx, `INSERT INTO repos (provider, repo_full_name) VALUES ($1, $2) RETURNING repo_id`, "github", "test/repo").Scan(&repoID)
+	if err != nil {
+		t.Fatalf("Failed to seed repo: %v", err)
+	}
+
+	// Seed historical repo_user_daily_tool activity under this user_id
+	testDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	_, err = db.ExecContext(ctx, `
+		INSERT INTO repo_user_daily_tool (repo_id, user_id, tool, day, commits, insert_time)
+		VALUES ($1, $2, $3, $4, $5, $6)
+	`, repoID, userID, "claude", testDate, 10, time.Now())
+	if err != nil {
+		t.Fatalf("Failed to seed repo_user_daily_tool activity: %v", err)
+	}
+
+	// Seed email_resolution row
+	resolvedAt := time.Now().UTC().Add(-24 * time.Hour)
+	_, err = db.ExecContext(ctx,
+		`INSERT INTO email_resolution (email, login, source, resolved_at) VALUES ($1, $2, $3, $4)`,
+		email, login, "seed", resolvedAt)
+	if err != nil {
+		t.Fatalf("Failed to seed email_resolution: %v", err)
+	}
+
+	// Create a temporary email_revalidation table for this test
+	_, err = db.ExecContext(ctx, `
+		CREATE TEMPORARY TABLE email_revalidation (
+			email TEXT NOT NULL PRIMARY KEY,
+			login TEXT NOT NULL,
+			last_checked_at TIMESTAMPTZ NOT NULL,
+			next_check_at TIMESTAMPTZ,
+			status TEXT NOT NULL,
+			new_login TEXT,
+			check_error TEXT,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)
+	`)
+	if err != nil {
+		t.Fatalf("Failed to create email_revalidation table: %v", err)
+	}
+
+	// Seed email_revalidation row
+	_, err = db.ExecContext(ctx, `
+		INSERT INTO email_revalidation (email, login, last_checked_at, next_check_at, status)
+		VALUES ($1, $2, $3, NULL, $4)
+	`, email, login, resolvedAt, "pending")
+	if err != nil {
+		t.Fatalf("Failed to seed email_revalidation: %v", err)
+	}
+
+	// Create mock GitHub client configured to return deleted status
+	mockGitHubClient := github.NewMockClient()
+	mockGitHubClient.SetResponse(login, &github.LoginResult{
+		Status:   github.StatusDeleted,
+		NewLogin: nil, // No successor login
+	})
+
+	// Create mock queue-api client (should not be called for deleted status)
+	mockQueueClient := newMockQueueAPIClient()
+
+	// Create revalidation worker config
+	cfg := &revalidation.Config{
+		QueueAPIClient: mockQueueClient,
+		GitHubClient:   mockGitHubClient,
+	}
+
+	// Create a revalidation row for processing
+	row := revalidation.Row{
+		Email:         email,
+		Login:         login,
+		LastCheckedAt: resolvedAt,
+		NextCheckAt:   nil,
+		Status:        "pending",
+		NewLogin:      nil,
+		CheckError:    nil,
+		CreatedAt:     resolvedAt,
+	}
+
+	// Invoke the revalidation worker
+	err = revalidation.ProcessRow(ctx, db, cfg, row)
+	if err != nil {
+		t.Fatalf("Revalidation worker ProcessRow failed: %v", err)
+	}
+
+	// ASSERTIONS
+
+	// 1. Verify queue-api client was NOT called (deletion doesn't trigger resolution update)
+	if mockQueueClient.CallCount() != 0 {
+		t.Errorf("Expected queue-api client NOT to be called for deleted status, but it was called %d time(s)", mockQueueClient.CallCount())
+	} else {
+		t.Logf("✓ Queue-api client not called for deleted status (correct behavior)")
+	}
+
+	// 2. Verify email_revalidation status is 'deleted'
+	var revalidationStatus string
+	err = db.QueryRowContext(ctx, `SELECT status FROM email_revalidation WHERE email = $1`, email).Scan(&revalidationStatus)
+	if err != nil {
+		t.Fatalf("Failed to query email_revalidation status: %v", err)
+	}
+	if revalidationStatus != "deleted" {
+		t.Errorf("Expected email_revalidation status to be 'deleted', got '%s'", revalidationStatus)
+	} else {
+		t.Logf("✓ email_revalidation status correctly set to 'deleted'")
+	}
+
+	// 3. Verify email_revalidation.next_check_at is NULL (stop rechecking)
+	var nextCheckAt interface{}
+	err = db.QueryRowContext(ctx, `SELECT next_check_at FROM email_revalidation WHERE email = $1`, email).Scan(&nextCheckAt)
+	if err != nil {
+		t.Fatalf("Failed to query email_revalidation next_check_at: %v", err)
+	}
+	if nextCheckAt != nil {
+		t.Errorf("Expected email_revalidation.next_check_at to be NULL for deleted status, got %v", nextCheckAt)
+	} else {
+		t.Logf("✓ email_revalidation.next_check_at correctly set to NULL")
+	}
+
+	// 4. Verify email_resolution row is NOT dropped (historical data preserved)
+	var resolutionLogin string
+	var resolutionEmail string
+	err = db.QueryRowContext(ctx, `SELECT login, email FROM email_resolution WHERE email = $1`, email).Scan(&resolutionLogin, &resolutionEmail)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			t.Errorf("email_resolution row was silently dropped for deleted account (should be preserved)")
+		} else {
+			t.Fatalf("Failed to query email_resolution: %v", err)
+		}
+	} else {
+		if resolutionLogin != login {
+			t.Errorf("email_resolution.login should remain '%s' after deletion, got '%s'", login, resolutionLogin)
+		}
+		if resolutionEmail != email {
+			t.Errorf("email_resolution.email should remain '%s' after deletion, got '%s'", email, resolutionEmail)
+		}
+		t.Logf("✓ email_resolution row preserved (login='%s', email='%s')", resolutionLogin, resolutionEmail)
+	}
+
+	// 5. Verify users row is NOT dropped (historical data preserved)
+	var userLogin string
+	var queriedUserID int64
+	err = db.QueryRowContext(ctx, `SELECT user_id, login FROM users WHERE user_id = $1`, userID).Scan(&queriedUserID, &userLogin)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			t.Errorf("users row was silently dropped for deleted account (should be preserved)")
+		} else {
+			t.Fatalf("Failed to query users: %v", err)
+		}
+	} else {
+		if userLogin != login {
+			t.Errorf("users.login should remain '%s' after deletion, got '%s'", login, userLogin)
+		}
+		if queriedUserID != userID {
+			t.Errorf("users.user_id should be preserved as %d, got %d", userID, queriedUserID)
+		}
+		t.Logf("✓ users row preserved (user_id=%d, login='%s')", queriedUserID, userLogin)
+	}
+
+	// 6. Verify repo_user_daily_tool rows are NOT dropped (historical data preserved)
+	var toolCount int
+	var toolUserID int64
+	err = db.QueryRowContext(ctx, `
+		SELECT COUNT(*), user_id
+		FROM repo_user_daily_tool
+		WHERE user_id = $1
+		GROUP BY user_id
+	`, userID).Scan(&toolCount, &toolUserID)
+	if err != nil {
+		t.Fatalf("Failed to query repo_user_daily_tool: %v", err)
+	}
+	if toolCount != 1 {
+		t.Errorf("Expected 1 repo_user_daily_tool row, got %d", toolCount)
+	}
+	if toolUserID != userID {
+		t.Errorf("repo_user_daily_tool.user_id should be preserved as %d, got %d", userID, toolUserID)
+	}
+	t.Logf("✓ repo_user_daily_tool row preserved (user_id=%d)", toolUserID)
+
+	t.Log("✓ Deletion handling test passed: historical data preserved, revalidation status updated")
 }

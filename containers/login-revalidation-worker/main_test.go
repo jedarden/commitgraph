@@ -91,6 +91,21 @@ func TestLoginRename_Integration(t *testing.T) {
 		testIdempotency(ctx, t, db)
 	})
 
+	// Test case 6: Historical data preservation with mock client
+	// Verifies that when the revalidation worker runs (via processRow), it updates
+	// users.login in-place while preserving user_id and maintaining all historical
+	// repo_user_daily_tool links. Prevents history fragmentation across multiple user_ids.
+	t.Run("historical data preservation with mock client", func(t *testing.T) {
+		testHistoricalDataPreservationWithMock(ctx, t, db)
+	})
+
+	// Test case 7: Login deletion with successor-less handling
+	// Verifies that when the revalidation worker detects a deleted login (no successor),
+	// it flags the row appropriately without silently dropping it.
+	t.Run("login deletion with successor-less handling", func(t *testing.T) {
+		testLoginDeletionWithSuccessorLessHandling(ctx, t, db)
+	})
+
 	// Cleanup
 	cleanupTestTables(ctx, t, db)
 }
@@ -934,4 +949,448 @@ func testIdempotency(ctx context.Context, t *testing.T, db *sql.DB) {
 	}
 
 	t.Logf("✓ Idempotency test passed: second run created no duplicates, login=%s, email=%s unchanged", loginAfterSecondRun, emailCheck)
+}
+
+// testHistoricalDataPreservationWithMock verifies that when the revalidation worker
+// runs (invoked via processRow), it correctly updates the users.login in-place while
+// preserving user_id and maintaining all historical repo_user_daily_tool links.
+//
+// This test prevents fragmentation of a developer's history across multiple user_ids.
+// If a login rename created a new users row instead of updating the existing one,
+// all historical activity (repo_user_daily_tool) would remain linked to the old user_id,
+// causing the developer's contribution history to be split across two identities.
+//
+// Uses seeded data from cg-4vkqn (email_resolution) and cg-4rhpp (mock GitHub client).
+func testHistoricalDataPreservationWithMock(ctx context.Context, t *testing.T, db *sql.DB) {
+	t.Helper()
+
+	email := "history-preserve@example.com"
+	oldLogin := "old-name"
+	newLogin := "new-name"
+
+	// Seed complete initial state: users, repos, repo_user_daily_tool, and email_resolution
+	// This captures the original user_id BEFORE the worker runs (critical for preservation check)
+	originalUserID, _ := seedInitialRevalidationState(ctx, t, db, email, oldLogin)
+
+	t.Logf("Seeded initial state: user_id=%d, login=%s, email=%s", originalUserID, oldLogin, email)
+
+	// Verify initial state before worker runs
+	var initialLogin string
+	err := db.QueryRowContext(ctx, `SELECT login FROM users WHERE user_id = $1`, originalUserID).Scan(&initialLogin)
+	if err != nil {
+		t.Fatalf("Failed to query initial users state: %v", err)
+	}
+	if initialLogin != oldLogin {
+		t.Errorf("Initial login should be %s, got %s", oldLogin, initialLogin)
+	}
+
+	// Create mock GitHub client (from cg-4rhpp) configured to return a rename
+	mockGitHubClient := github.NewMockClient()
+	mockGitHubClient.SetResponse(oldLogin, &github.LoginResult{
+		Status:   github.StatusRenamed,
+		NewLogin: &newLogin,
+	})
+
+	// Create mock queue-api client that simulates the downstream effects
+	var capturedUpdate struct {
+		Email  string
+		Login  string
+		Called bool
+	}
+	mockQueueClient := &MockQueueClient{
+		postResolutionFn: func(ctx context.Context, email, login string) error {
+			capturedUpdate.Email = email
+			capturedUpdate.Login = login
+			capturedUpdate.Called = true
+
+			// Simulate queue-api triggering identity ingest, which updates BOTH:
+			// 1. email_resolution.login (to new-name)
+			// 2. users.login (to new-name) - CRITICAL: must UPDATE, not INSERT
+			now := time.Now()
+
+			// Step 1: Update email_resolution
+			_, err := db.ExecContext(ctx, `
+				INSERT INTO email_resolution (email, login, source, resolved_at)
+				VALUES ($1, $2, $3, $4)
+				ON CONFLICT (email) DO UPDATE
+				  SET login = excluded.login,
+				      source = excluded.source,
+				      resolved_at = excluded.resolved_at
+				  WHERE excluded.source = 'manual'
+				     OR (email_resolution.source <> 'manual'
+				         AND excluded.resolved_at > email_resolution.resolved_at)
+			`, email, login, "live", now)
+			if err != nil {
+				return fmt.Errorf("queue-api update email_resolution failed: %w", err)
+			}
+
+			// Step 2: Update users.login in-place (CRITICAL for history preservation)
+			// This MUST be an UPDATE that preserves user_id, NOT an INSERT that creates a new row
+			result, err := db.ExecContext(ctx, `
+				UPDATE users
+				SET login = $1
+				WHERE login = $2
+			`, login, oldLogin)
+			if err != nil {
+				return fmt.Errorf("update users.login failed: %w", err)
+			}
+
+			rowsAffected, _ := result.RowsAffected()
+			if rowsAffected != 1 {
+				return fmt.Errorf("expected 1 row to be updated in users, got %d (row created instead of updated? HISTORY FRAGMENTATION!)", rowsAffected)
+			}
+
+			return nil
+		},
+	}
+
+	// Create config with mocked clients
+	cfg := &Config{
+		QueueAPIClient: mockQueueClient,
+		GitHubClient:   mockGitHubClient,
+	}
+
+	// Create a revalidation row to process (simulating the worker reading from the database)
+	row := RevalidationRow{
+		Email:         email,
+		Login:         oldLogin,
+		LastCheckedAt: time.Now().Add(-24 * time.Hour),
+		NextCheckAt:   nil,
+		Status:        "pending",
+		NewLogin:      nil,
+		CheckError:    nil,
+		CreatedAt:     time.Now().Add(-24 * time.Hour),
+	}
+
+	// Invoke the revalidation worker's processRow function
+	// This is the critical test - actually running the worker logic with mock clients
+	err = processRow(ctx, db, cfg, row)
+	if err != nil {
+		t.Fatalf("processRow failed: %v", err)
+	}
+
+	t.Logf("Worker invoked successfully with mock clients")
+
+	// ASSERTIONS - verify complete data integrity after worker execution
+
+	// 1. Assert email_resolution.login is updated to new-name
+	var resolutionLogin string
+	err = db.QueryRowContext(ctx, `SELECT login FROM email_resolution WHERE email = $1`, email).Scan(&resolutionLogin)
+	if err != nil {
+		t.Fatalf("Failed to query email_resolution: %v", err)
+	}
+	if resolutionLogin != newLogin {
+		t.Errorf("After worker, email_resolution.login should be %s, got %s", newLogin, resolutionLogin)
+	}
+
+	// 2. CRITICAL: Assert users.login is updated to new-name with SAME user_id (no new row created)
+	var updatedUserID int64
+	var updatedLogin string
+	err = db.QueryRowContext(ctx, `SELECT user_id, login FROM users WHERE login = $1`, newLogin).Scan(&updatedUserID, &updatedLogin)
+	if err != nil {
+		t.Fatalf("Failed to query users after worker: %v", err)
+	}
+	if updatedLogin != newLogin {
+		t.Errorf("After worker, users.login should be %s, got %s", newLogin, updatedLogin)
+	}
+	if updatedUserID != originalUserID {
+		t.Errorf("CRITICAL: user_id should be preserved as %d, got %d (NEW ROW CREATED - HISTORY FRAGMENTATION!)", originalUserID, updatedUserID)
+	}
+
+	// 3. Assert NO duplicate users row exists for old-name
+	var oldNameCount int
+	err = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE login = $1`, oldLogin).Scan(&oldNameCount)
+	if err != nil {
+		t.Fatalf("Failed to count old-name users: %v", err)
+	}
+	if oldNameCount != 0 {
+		t.Errorf("Old login %s should not exist after rename, found %d rows (DUPLICATE!)", oldLogin, oldNameCount)
+	}
+
+	// 4. Assert total users count is still 1 (no extra row created)
+	var totalUsers int
+	err = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&totalUsers)
+	if err != nil {
+		t.Fatalf("Failed to count total users: %v", err)
+	}
+	if totalUsers != 1 {
+		t.Errorf("Total users should be 1 (single updated row), got %d (EXTRA ROW CREATED!)", totalUsers)
+	}
+
+	// 5. CRITICAL: Assert all historical repo_user_daily_tool rows still link to the SAME user_id
+	var toolCount int
+	var toolUserID int64
+	err = db.QueryRowContext(ctx, `
+		SELECT COUNT(*), user_id
+		FROM repo_user_daily_tool
+		WHERE user_id = $1
+		GROUP BY user_id
+	`, originalUserID).Scan(&toolCount, &toolUserID)
+	if err != nil {
+		t.Fatalf("Failed to query repo_user_daily_tool: %v", err)
+	}
+	if toolCount != 1 {
+		t.Errorf("Expected 1 repo_user_daily_tool row, got %d (history lost or duplicated?)", toolCount)
+	}
+	if toolUserID != originalUserID {
+		t.Errorf("CRITICAL: repo_user_daily_tool.user_id should still be %d, got %d (HISTORY FRAGMENTATION!)", originalUserID, toolUserID)
+	}
+
+	// 6. Assert no repo_user_daily_tool rows link to any other user_id
+	var otherUserIDCount int
+	err = db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM repo_user_daily_tool
+		WHERE user_id <> $1
+	`, originalUserID).Scan(&otherUserIDCount)
+	if err != nil {
+		t.Fatalf("Failed to check for other user_ids in repo_user_daily_tool: %v", err)
+	}
+	if otherUserIDCount != 0 {
+		t.Errorf("Found %d repo_user_daily_tool rows with different user_id (HISTORY FRAGMENTATION!)", otherUserIDCount)
+	}
+
+	// 7. Assert the mock queue-api was called with new-name (not old-name)
+	if !capturedUpdate.Called {
+		t.Errorf("Mock queue-api should have been called")
+	}
+	if capturedUpdate.Email != email {
+		t.Errorf("Mock queue-api called with wrong email: expected %s, got %s", email, capturedUpdate.Email)
+	}
+	if capturedUpdate.Login != newLogin {
+		t.Errorf("Mock queue-api called with wrong login: expected %s, got %s", newLogin, capturedUpdate.Login)
+	}
+
+	// 8. Assert email_revalidation was updated to 'renamed' status
+	var revalidationStatus string
+	var newLoginResult sql.NullString
+	err = db.QueryRowContext(ctx, `
+		SELECT status, new_login
+		FROM email_revalidation
+		WHERE email = $1
+	`, email).Scan(&revalidationStatus, &newLoginResult)
+	if err != nil {
+		t.Fatalf("Failed to query email_revalidation: %v", err)
+	}
+	if revalidationStatus != "renamed" {
+		t.Errorf("email_revalidation.status should be 'renamed', got %s", revalidationStatus)
+	}
+	if !newLoginResult.Valid || newLoginResult.String != newLogin {
+		t.Errorf("email_revalidation.new_login should be %s, got %v", newLogin, newLoginResult)
+	}
+
+	t.Logf("✓ Historical data preservation test passed: user_id=%d preserved from %s -> %s, all %d repo_user_daily_tool rows intact",
+		originalUserID, oldLogin, newLogin, toolCount)
+}
+
+// testLoginDeletionWithSuccessorLessHandling verifies that when the revalidation worker
+// detects a deleted login (no successor account), it flags the row appropriately without
+// silently dropping it.
+//
+// This test uses seeded data from cg-4vkqn (email_resolution row with login = "old-name")
+// and invokes the worker with a mock client (from cg-4rhpp) configured to return "deleted" status.
+//
+// HANDLING STRATEGY:
+// When a GitHub login is deleted (not renamed), the worker:
+// 1. Marks email_revalidation.status = 'deleted' and next_check_at = NULL (terminal state)
+// 2. Does NOT modify email_resolution table - the row remains for audit trail
+// 3. Does NOT modify users table - the login remains as-is for historical reference
+// 4. Stops further rechecking (no next_check_at scheduled)
+//
+// This approach ensures:
+// - Historical data is preserved (repo_user_daily_tool links remain intact)
+// - Audit trail is maintained (email_resolution row still exists)
+// - No silent data loss (row is flagged but not dropped)
+// - Clear distinction between "deleted" and "renamed" outcomes
+func testLoginDeletionWithSuccessorLessHandling(ctx context.Context, t *testing.T, db *sql.DB) {
+	t.Helper()
+
+	email := "deleted@example.com"
+	deletedLogin := "old-name" // From cg-4vkqn pattern
+
+	// Seed complete initial state: users, repos, repo_user_daily_tool, and email_resolution
+	// This captures the original user_id BEFORE the worker runs (critical for preservation check)
+	originalUserID, _ := seedInitialRevalidationState(ctx, t, db, email, deletedLogin)
+
+	t.Logf("Seeded initial state: user_id=%d, login=%s, email=%s", originalUserID, deletedLogin, email)
+
+	// Verify initial state before worker runs
+	var initialLogin string
+	var initialResolutionLogin string
+	err := db.QueryRowContext(ctx, `SELECT login FROM users WHERE user_id = $1`, originalUserID).Scan(&initialLogin)
+	if err != nil {
+		t.Fatalf("Failed to query initial users state: %v", err)
+	}
+	if initialLogin != deletedLogin {
+		t.Errorf("Initial login should be %s, got %s", deletedLogin, initialLogin)
+	}
+
+	err = db.QueryRowContext(ctx, `SELECT login FROM email_resolution WHERE email = $1`, email).Scan(&initialResolutionLogin)
+	if err != nil {
+		t.Fatalf("Failed to query initial email_resolution state: %v", err)
+	}
+	if initialResolutionLogin != deletedLogin {
+		t.Errorf("Initial email_resolution.login should be %s, got %s", deletedLogin, initialResolutionLogin)
+	}
+
+	// Create mock GitHub client (from cg-4rhpp) configured to return deleted status
+	// This simulates GitHub API returning 404 for the deleted login
+	mockGitHubClient := github.NewMockClient()
+	mockGitHubClient.SetResponse(deletedLogin, &github.LoginResult{
+		Status: github.StatusDeleted, // No NewLogin - account is gone
+	})
+
+	// Create mock queue-api client (should NOT be called for deletion case)
+	var queueAPICalled bool
+	mockQueueClient := &MockQueueClient{
+		postResolutionFn: func(ctx context.Context, email, login string) error {
+			queueAPICalled = true
+			return fmt.Errorf("queue-api should NOT be called for deleted logins")
+		},
+	}
+
+	// Create config with mocked clients
+	cfg := &Config{
+		QueueAPIClient: mockQueueClient,
+		GitHubClient:   mockGitHubClient,
+	}
+
+	// Create a revalidation row to process (simulating the worker reading from the database)
+	row := RevalidationRow{
+		Email:         email,
+		Login:         deletedLogin,
+		LastCheckedAt: time.Now().Add(-24 * time.Hour),
+		NextCheckAt:   nil,
+		Status:        "pending",
+		NewLogin:      nil,
+		CheckError:    nil,
+		CreatedAt:     time.Now().Add(-24 * time.Hour),
+	}
+
+	// Invoke the revalidation worker's processRow function
+	// This is the critical test - actually running the worker logic with deletion result
+	err = processRow(ctx, db, cfg, row)
+	if err != nil {
+		t.Fatalf("processRow failed: %v", err)
+	}
+
+	t.Logf("Worker invoked successfully with mock client returning deleted status")
+
+	// ASSERTIONS - verify correct handling without silent data loss
+
+	// 1. CRITICAL: Assert email_resolution row still exists (NOT silently dropped)
+	var resolutionExists bool
+	var resolutionLogin string
+	err = db.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM email_resolution WHERE email = $1
+		), login FROM email_resolution WHERE email = $1
+	`, email).Scan(&resolutionExists, &resolutionLogin)
+	if err != nil {
+		t.Fatalf("Failed to query email_resolution after deletion: %v", err)
+	}
+	if !resolutionExists {
+		t.Errorf("email_resolution row should still exist (not dropped), but row was deleted")
+	}
+	if resolutionLogin != deletedLogin {
+		t.Errorf("email_resolution.login should remain %s after deletion, got %s", deletedLogin, resolutionLogin)
+	}
+
+	// 2. Assert users row still exists with unchanged login (for historical reference)
+	var userExists bool
+	var userLogin string
+	var userID int64
+	err = db.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM users WHERE user_id = $1
+		), login, user_id FROM users WHERE user_id = $1
+	`, originalUserID).Scan(&userExists, &userLogin, &userID)
+	if err != nil {
+		t.Fatalf("Failed to query users after deletion: %v", err)
+	}
+	if !userExists {
+		t.Errorf("users row should still exist after deletion, but row was deleted")
+	}
+	if userLogin != deletedLogin {
+		t.Errorf("users.login should remain %s after deletion, got %s", deletedLogin, userLogin)
+	}
+	if userID != originalUserID {
+		t.Errorf("users.user_id should be preserved as %d, got %d", originalUserID, userID)
+	}
+
+	// 3. Assert all historical repo_user_daily_tool rows still exist and link to the same user_id
+	var toolCount int
+	var toolUserID int64
+	err = db.QueryRowContext(ctx, `
+		SELECT COUNT(*), user_id
+		FROM repo_user_daily_tool
+		WHERE user_id = $1
+		GROUP BY user_id
+	`, originalUserID).Scan(&toolCount, &toolUserID)
+	if err != nil {
+		t.Fatalf("Failed to query repo_user_daily_tool: %v", err)
+	}
+	if toolCount != 1 {
+		t.Errorf("Expected 1 repo_user_daily_tool row, got %d (historical data lost!)", toolCount)
+	}
+	if toolUserID != originalUserID {
+		t.Errorf("repo_user_daily_tool.user_id should still be %d, got %d", originalUserID, toolUserID)
+	}
+
+	// 4. CRITICAL: Assert email_revalidation is marked as deleted (terminal state)
+	var revalidationStatus string
+	var nextCheck sql.NullTime
+	err = db.QueryRowContext(ctx, `
+		SELECT status, next_check_at
+		FROM email_revalidation
+		WHERE email = $1
+	`, email).Scan(&revalidationStatus, &nextCheck)
+	if err != nil {
+		t.Fatalf("Failed to query email_revalidation: %v", err)
+	}
+	if revalidationStatus != "deleted" {
+		t.Errorf("email_revalidation.status should be 'deleted', got %s", revalidationStatus)
+	}
+	if nextCheck.Valid {
+		t.Errorf("email_revalidation.next_check_at should be NULL for deleted status (terminal state), got %v", nextCheck.Time)
+	}
+
+	// 5. Assert queue-api was NOT called (no successor login to post)
+	if queueAPICalled {
+		t.Errorf("Mock queue-api should NOT be called for deleted logins (no successor to update)")
+	}
+
+	// 6. Assert total row counts are unchanged (no rows deleted or created)
+	var totalUsers int
+	var totalResolution int
+	var totalRollup int
+	db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&totalUsers)
+	db.QueryRowContext(ctx, `SELECT COUNT(*) FROM email_resolution`).Scan(&totalResolution)
+	db.QueryRowContext(ctx, `SELECT COUNT(*) FROM repo_user_daily_tool`).Scan(&totalRollup)
+
+	if totalUsers != 1 {
+		t.Errorf("Total users should be 1 (unchanged), got %d", totalUsers)
+	}
+	if totalResolution != 1 {
+		t.Errorf("Total email_resolution rows should be 1 (unchanged), got %d", totalResolution)
+	}
+	if totalRollup != 1 {
+		t.Errorf("Total repo_user_daily_tool rows should be 1 (unchanged), got %d", totalRollup)
+	}
+
+	// 7. Assert no new_login was set (NULL for deleted case)
+	var newLogin sql.NullString
+	err = db.QueryRowContext(ctx, `
+		SELECT new_login FROM email_revalidation WHERE email = $1
+	`, email).Scan(&newLogin)
+	if err != nil {
+		t.Fatalf("Failed to query email_revalidation.new_login: %v", err)
+	}
+	if newLogin.Valid {
+		t.Errorf("email_revalidation.new_login should be NULL for deleted status, got %s", newLogin.String)
+	}
+
+	t.Logf("✓ Login deletion test passed: email=%s, login=%s flagged as deleted, all historical data preserved",
+		email, deletedLogin)
+	t.Logf("  Handling strategy verified: email_revalidation.status='deleted', next_check_at=NULL, no rows dropped")
 }

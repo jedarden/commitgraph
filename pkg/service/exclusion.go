@@ -5,9 +5,12 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/jedarden/commitgraph/pkg/errors"
 )
 
 // RowScanner is the interface for scanning row results.
@@ -156,16 +159,36 @@ func NewRepoCheckerFromDB(db *sql.DB) *RepoChecker {
 // Valid providers should be lowercase alphanumeric names (e.g., "github", "gitlab").
 func validateProvider(provider string) error {
 	if provider == "" {
-		return fmt.Errorf("provider cannot be empty")
+		// Log validation error at service layer boundary
+		log.Printf("[ERROR] service/exclusion.validateProvider: provider cannot be empty")
+
+		return errors.RequiredFieldError("service/exclusion", "validateProvider", "provider")
 	}
 
 	// Provider should be lowercase alphanumeric
 	matched, err := regexp.MatchString("^[a-z0-9]+$", provider)
 	if err != nil {
-		return fmt.Errorf("failed to validate provider format: %w", err)
+		// Log the error at service layer boundary
+		log.Printf("[ERROR] service/exclusion.validateProvider: failed to validate provider format for provider=%s: %v", provider, err)
+
+		// Handle nil case explicitly
+		if err == nil {
+			err = errors.InvalidFormatError("service/exclusion", "validateProvider", "provider", "lowercase alphanumeric")
+			return err
+		}
+
+		// Wrap with structured error type preserving original context
+		wrappedErr := errors.WrapError(err, *errors.ParseErrorf("service/exclusion", "validateProvider", "provider regex", "failed to validate provider format"))
+		wrappedErr = wrappedErr.WithMetadata(map[string]interface{}{
+			"provider": provider,
+		})
+		return wrappedErr
 	}
 	if !matched {
-		return fmt.Errorf("provider must be lowercase alphanumeric (e.g., 'github', 'gitlab'), got: %s", provider)
+		// Log validation error at service layer boundary
+		log.Printf("[ERROR] service/exclusion.validateProvider: provider must be lowercase alphanumeric, got: %s", provider)
+
+		return errors.InvalidFormatError("service/exclusion", "validateProvider", "provider", "lowercase alphanumeric (e.g., 'github', 'gitlab')")
 	}
 
 	return nil
@@ -176,21 +199,33 @@ func validateProvider(provider string) error {
 // Valid format is "owner/repo" where both owner and repo are non-empty.
 func validateRepoFullName(repoFullName string) error {
 	if repoFullName == "" {
-		return fmt.Errorf("repository full name cannot be empty")
+		// Log validation error at service layer boundary
+		log.Printf("[ERROR] service/exclusion.validateRepoFullName: repository full name cannot be empty")
+
+		return errors.RequiredFieldError("service/exclusion", "validateRepoFullName", "repo_full_name")
 	}
 
 	// Check for owner/repo format
 	parts := strings.Split(repoFullName, "/")
 	if len(parts) != 2 {
-		return fmt.Errorf("repository full name must be in 'owner/repo' format, got: %s", repoFullName)
+		// Log validation error at service layer boundary
+		log.Printf("[ERROR] service/exclusion.validateRepoFullName: repository full name must be in 'owner/repo' format, got: %s", repoFullName)
+
+		return errors.InvalidFormatError("service/exclusion", "validateRepoFullName", "repo_full_name", "owner/repo")
 	}
 
 	owner, repo := parts[0], parts[1]
 	if owner == "" {
-		return fmt.Errorf("repository owner cannot be empty in 'owner/repo' format")
+		// Log validation error at service layer boundary
+		log.Printf("[ERROR] service/exclusion.validateRepoFullName: repository owner cannot be empty")
+
+		return errors.RequiredFieldError("service/exclusion", "validateRepoFullName", "owner")
 	}
 	if repo == "" {
-		return fmt.Errorf("repository name cannot be empty in 'owner/repo' format")
+		// Log validation error at service layer boundary
+		log.Printf("[ERROR] service/exclusion.validateRepoFullName: repository name cannot be empty")
+
+		return errors.RequiredFieldError("service/exclusion", "validateRepoFullName", "repo")
 	}
 
 	return nil
@@ -258,19 +293,45 @@ func SetRepoExclusionWithActor(ctx context.Context, db Transactioner, provider, 
 
 	// Validate reason is not empty
 	if reason == "" {
-		return fmt.Errorf("exclusion reason cannot be empty")
+		// Log validation error at service layer boundary
+		log.Printf("[ERROR] service/exclusion.SetRepoExclusionWithActor: exclusion reason cannot be empty for %s/%s", provider, repoFullName)
+
+		return errors.RequiredFieldError("service/exclusion", "SetRepoExclusionWithActor", "reason")
 	}
 
 	// Check if repo exists
 	checker := NewRepoChecker(db)
 	if !checker.RepoExists(ctx, provider, repoFullName) {
-		return fmt.Errorf("repository %s/%s not found", provider, repoFullName)
+		// Log validation error at service layer boundary
+		log.Printf("[ERROR] service/exclusion.SetRepoExclusionWithActor: repository %s/%s not found", provider, repoFullName)
+
+		notFoundErr := errors.ValidationErrorf("service/exclusion", "SetRepoExclusionWithActor", "", "repository %s/%s not found", provider, repoFullName)
+		notFoundErr = notFoundErr.WithMetadata(map[string]interface{}{
+			"provider":      provider,
+			"repo_full_name": repoFullName,
+		})
+		return notFoundErr
 	}
 
 	// Start transaction
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
+		// Log the error at service layer boundary
+		log.Printf("[ERROR] service/exclusion.SetRepoExclusionWithActor: failed to begin transaction for %s/%s: %v", provider, repoFullName, err)
+
+		// Handle nil case explicitly
+		if err == nil {
+			err = errors.DatabaseErrorf("service/exclusion", "SetRepoExclusionWithActor", "", "unexpected nil error beginning transaction")
+			return err
+		}
+
+		// Wrap with structured error type preserving original context
+		wrappedErr := errors.WrapError(err, *errors.DatabaseConnectionError("service/exclusion", "SetRepoExclusionWithActor", "transaction"))
+		wrappedErr = wrappedErr.WithMetadata(map[string]interface{}{
+			"provider":      provider,
+			"repo_full_name": repoFullName,
+		})
+		return wrappedErr
 	}
 
 	// Ensure rollback happens on error
@@ -290,7 +351,24 @@ func SetRepoExclusionWithActor(ctx context.Context, db Transactioner, provider, 
 
 	selectRow := tx.QueryRowContext(ctx, selectQuery, provider, repoFullName)
 	if err := selectRow.Scan(&repoID, &oldExcludedAt, &oldExcludedReason); err != nil {
-		return fmt.Errorf("failed to query current repo state: %w", err)
+		// Log the error at service layer boundary
+		log.Printf("[ERROR] service/exclusion.SetRepoExclusionWithActor: failed to query current repo state for %s/%s: %v", provider, repoFullName, err)
+
+		// Handle nil case explicitly
+		if err == nil {
+			err = errors.DatabaseQueryError("service/exclusion", "SetRepoExclusionWithActor", selectQuery, "unexpected nil error querying repo state")
+			return err
+		}
+
+		// Wrap with structured error type preserving original context
+		wrappedErr := errors.WrapError(err, *errors.DatabaseQueryError("service/exclusion", "SetRepoExclusionWithActor", selectQuery, "failed to query current repo state"))
+		wrappedErr = wrappedErr.WithMetadata(map[string]interface{}{
+			"provider":       provider,
+			"repo_full_name":  repoFullName,
+			"actor":          actor,
+		})
+		wrappedErr = wrappedErr.WithRecordKey(fmt.Sprintf("%s/%s", provider, repoFullName))
+		return wrappedErr
 	}
 
 	// Update the repo with exclusion information
@@ -303,17 +381,63 @@ func SetRepoExclusionWithActor(ctx context.Context, db Transactioner, provider, 
 
 	result, err := tx.ExecContext(ctx, updateQuery, reason, provider, repoFullName)
 	if err != nil {
-		return fmt.Errorf("failed to update repo exclusion: %w", err)
+		// Log the error at service layer boundary
+		log.Printf("[ERROR] service/exclusion.SetRepoExclusionWithActor: failed to update repo exclusion for %s/%s: %v", provider, repoFullName, err)
+
+		// Handle nil case explicitly
+		if err == nil {
+			err = errors.DatabaseQueryError("service/exclusion", "SetRepoExclusionWithActor", updateQuery, "unexpected nil error updating repo exclusion")
+			return err
+		}
+
+		// Wrap with structured error type preserving original context
+		wrappedErr := errors.WrapError(err, *errors.DatabaseQueryError("service/exclusion", "SetRepoExclusionWithActor", updateQuery, "failed to update repo exclusion"))
+		wrappedErr = wrappedErr.WithMetadata(map[string]interface{}{
+			"provider":       provider,
+			"repo_full_name":  repoFullName,
+			"reason":         reason,
+			"actor":          actor,
+		})
+		wrappedErr = wrappedErr.WithRecordKey(fmt.Sprintf("%s/%s", provider, repoFullName))
+		return wrappedErr
 	}
 
 	// Verify that exactly one row was affected
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("failed to get rows affected: %w", err)
+		// Log the error at service layer boundary
+		log.Printf("[ERROR] service/exclusion.SetRepoExclusionWithActor: failed to get rows affected for %s/%s: %v", provider, repoFullName, err)
+
+		// Handle nil case explicitly
+		if err == nil {
+			err = errors.DatabaseQueryError("service/exclusion", "SetRepoExclusionWithActor", updateQuery, "unexpected nil error getting rows affected")
+			return err
+		}
+
+		// Wrap with structured error type preserving original context
+		wrappedErr := errors.WrapError(err, *errors.DatabaseQueryError("service/exclusion", "SetRepoExclusionWithActor", updateQuery, "failed to get rows affected"))
+		wrappedErr = wrappedErr.WithMetadata(map[string]interface{}{
+			"provider":       provider,
+			"repo_full_name":  repoFullName,
+			"reason":         reason,
+			"actor":          actor,
+		})
+		wrappedErr = wrappedErr.WithRecordKey(fmt.Sprintf("%s/%s", provider, repoFullName))
+		return wrappedErr
 	}
 
 	if rowsAffected == 0 {
-		return fmt.Errorf("no rows updated - repo may have been deleted")
+		// Log the error at service layer boundary
+		log.Printf("[ERROR] service/exclusion.SetRepoExclusionWithActor: no rows updated for %s/%s - repo may have been deleted", provider, repoFullName)
+
+		notUpdatedErr := errors.DatabaseQueryError("service/exclusion", "SetRepoExclusionWithActor", updateQuery, "no rows updated - repo may have been deleted")
+		notUpdatedErr = notUpdatedErr.WithMetadata(map[string]interface{}{
+			"provider":       provider,
+			"repo_full_name":  repoFullName,
+			"actor":          actor,
+		})
+		notUpdatedErr = notUpdatedErr.WithRecordKey(fmt.Sprintf("%s/%s", provider, repoFullName))
+		return notUpdatedErr
 	}
 
 	// Record the audit log entry with before and after states
@@ -331,12 +455,48 @@ func SetRepoExclusionWithActor(ctx context.Context, db Transactioner, provider, 
 		&newExcludedAt,
 		newExcludedReason,
 	); err != nil {
-		return fmt.Errorf("failed to record exclusion audit: %w", err)
+		// Log the error at service layer boundary
+		log.Printf("[ERROR] service/exclusion.SetRepoExclusionWithActor: failed to record exclusion audit for %s/%s: %v", provider, repoFullName, err)
+
+		// Handle nil case explicitly
+		if err == nil {
+			err = errors.DatabaseQueryError("service/exclusion", "SetRepoExclusionWithActor", "audit insert", "unexpected nil error recording exclusion audit")
+			return err
+		}
+
+		// Wrap with structured error type preserving original context
+		wrappedErr := errors.WrapError(err, *errors.DatabaseQueryError("service/exclusion", "SetRepoExclusionWithActor", "audit insert", "failed to record exclusion audit"))
+		wrappedErr = wrappedErr.WithMetadata(map[string]interface{}{
+			"repo_id":        repoID,
+			"actor":          actor,
+			"event_type":     "exclude",
+			"provider":       provider,
+			"repo_full_name":  repoFullName,
+		})
+		wrappedErr = wrappedErr.WithRecordKey(fmt.Sprintf("repo_id:%d", repoID))
+		return wrappedErr
 	}
 
 	// Commit the transaction
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
+		// Log the error at service layer boundary
+		log.Printf("[ERROR] service/exclusion.SetRepoExclusionWithActor: failed to commit transaction for %s/%s: %v", provider, repoFullName, err)
+
+		// Handle nil case explicitly
+		if err == nil {
+			err = errors.DatabaseErrorf("service/exclusion", "SetRepoExclusionWithActor", "", "unexpected nil error committing transaction")
+			return err
+		}
+
+		// Wrap with structured error type preserving original context
+		wrappedErr := errors.WrapError(err, *errors.DatabaseErrorf("service/exclusion", "SetRepoExclusionWithActor", "", "failed to commit transaction"))
+		wrappedErr = wrappedErr.WithMetadata(map[string]interface{}{
+			"provider":       provider,
+			"repo_full_name":  repoFullName,
+			"actor":          actor,
+		})
+		wrappedErr = wrappedErr.WithRecordKey(fmt.Sprintf("%s/%s", provider, repoFullName))
+		return wrappedErr
 	}
 
 	return nil
@@ -409,13 +569,36 @@ func ClearRepoExclusionWithActor(ctx context.Context, db Transactioner, provider
 	// Check if repo exists
 	checker := NewRepoChecker(db)
 	if !checker.RepoExists(ctx, provider, repoFullName) {
-		return fmt.Errorf("repository %s/%s not found", provider, repoFullName)
+		// Log validation error at service layer boundary
+		log.Printf("[ERROR] service/exclusion.ClearRepoExclusionWithActor: repository %s/%s not found", provider, repoFullName)
+
+		notFoundErr := errors.ValidationErrorf("service/exclusion", "ClearRepoExclusionWithActor", "", "repository %s/%s not found", provider, repoFullName)
+		notFoundErr = notFoundErr.WithMetadata(map[string]interface{}{
+			"provider":      provider,
+			"repo_full_name": repoFullName,
+		})
+		return notFoundErr
 	}
 
 	// Start transaction
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
+		// Log the error at service layer boundary
+		log.Printf("[ERROR] service/exclusion.ClearRepoExclusionWithActor: failed to begin transaction for %s/%s: %v", provider, repoFullName, err)
+
+		// Handle nil case explicitly
+		if err == nil {
+			err = errors.DatabaseErrorf("service/exclusion", "ClearRepoExclusionWithActor", "", "unexpected nil error beginning transaction")
+			return err
+		}
+
+		// Wrap with structured error type preserving original context
+		wrappedErr := errors.WrapError(err, *errors.DatabaseConnectionError("service/exclusion", "ClearRepoExclusionWithActor", "transaction"))
+		wrappedErr = wrappedErr.WithMetadata(map[string]interface{}{
+			"provider":      provider,
+			"repo_full_name": repoFullName,
+		})
+		return wrappedErr
 	}
 
 	// Ensure rollback happens on error
@@ -435,7 +618,24 @@ func ClearRepoExclusionWithActor(ctx context.Context, db Transactioner, provider
 
 	selectRow := tx.QueryRowContext(ctx, selectQuery, provider, repoFullName)
 	if err := selectRow.Scan(&repoID, &oldExcludedAt, &oldExcludedReason); err != nil {
-		return fmt.Errorf("failed to query current repo state: %w", err)
+		// Log the error at service layer boundary
+		log.Printf("[ERROR] service/exclusion.ClearRepoExclusionWithActor: failed to query current repo state for %s/%s: %v", provider, repoFullName, err)
+
+		// Handle nil case explicitly
+		if err == nil {
+			err = errors.DatabaseQueryError("service/exclusion", "ClearRepoExclusionWithActor", selectQuery, "unexpected nil error querying repo state")
+			return err
+		}
+
+		// Wrap with structured error type preserving original context
+		wrappedErr := errors.WrapError(err, *errors.DatabaseQueryError("service/exclusion", "ClearRepoExclusionWithActor", selectQuery, "failed to query current repo state"))
+		wrappedErr = wrappedErr.WithMetadata(map[string]interface{}{
+			"provider":       provider,
+			"repo_full_name":  repoFullName,
+			"actor":          actor,
+		})
+		wrappedErr = wrappedErr.WithRecordKey(fmt.Sprintf("%s/%s", provider, repoFullName))
+		return wrappedErr
 	}
 
 	// Update the repo to clear exclusion information
@@ -448,17 +648,61 @@ func ClearRepoExclusionWithActor(ctx context.Context, db Transactioner, provider
 
 	result, err := tx.ExecContext(ctx, updateQuery, provider, repoFullName)
 	if err != nil {
-		return fmt.Errorf("failed to clear repo exclusion: %w", err)
+		// Log the error at service layer boundary
+		log.Printf("[ERROR] service/exclusion.ClearRepoExclusionWithActor: failed to clear repo exclusion for %s/%s: %v", provider, repoFullName, err)
+
+		// Handle nil case explicitly
+		if err == nil {
+			err = errors.DatabaseQueryError("service/exclusion", "ClearRepoExclusionWithActor", updateQuery, "unexpected nil error clearing repo exclusion")
+			return err
+		}
+
+		// Wrap with structured error type preserving original context
+		wrappedErr := errors.WrapError(err, *errors.DatabaseQueryError("service/exclusion", "ClearRepoExclusionWithActor", updateQuery, "failed to clear repo exclusion"))
+		wrappedErr = wrappedErr.WithMetadata(map[string]interface{}{
+			"provider":       provider,
+			"repo_full_name":  repoFullName,
+			"actor":          actor,
+		})
+		wrappedErr = wrappedErr.WithRecordKey(fmt.Sprintf("%s/%s", provider, repoFullName))
+		return wrappedErr
 	}
 
 	// Verify that exactly one row was affected
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("failed to get rows affected: %w", err)
+		// Log the error at service layer boundary
+		log.Printf("[ERROR] service/exclusion.ClearRepoExclusionWithActor: failed to get rows affected for %s/%s: %v", provider, repoFullName, err)
+
+		// Handle nil case explicitly
+		if err == nil {
+			err = errors.DatabaseQueryError("service/exclusion", "ClearRepoExclusionWithActor", updateQuery, "unexpected nil error getting rows affected")
+			return err
+		}
+
+		// Wrap with structured error type preserving original context
+		wrappedErr := errors.WrapError(err, *errors.DatabaseQueryError("service/exclusion", "ClearRepoExclusionWithActor", updateQuery, "failed to get rows affected"))
+		wrappedErr = wrappedErr.WithMetadata(map[string]interface{}{
+			"provider":       provider,
+			"repo_full_name":  repoFullName,
+			"actor":          actor,
+		})
+		wrappedErr = wrappedErr.WithRecordKey(fmt.Sprintf("%s/%s", provider, repoFullName))
+		return wrappedErr
 	}
 
 	if rowsAffected == 0 {
-		return fmt.Errorf("no rows updated - repo may have been deleted")
+		// Log the error at service layer boundary
+		log.Printf("[ERROR] service/exclusion.ClearRepoExclusionWithActor: no rows updated for %s/%s - repo may have been deleted", provider, repoFullName)
+
+		notUpdatedErr := errors.DatabaseQueryError("service/exclusion", "ClearRepoExclusionWithActor", updateQuery, "no rows updated - repo may have been deleted")
+		notUpdatedErr = notUpdatedErr.WithMetadata(map[string]interface{}{
+			"provider":       provider,
+			"repo_full_name":  repoFullName,
+			"actor":          actor,
+		})
+		notUpdatedErr = notUpdatedErr.WithRecordKey(fmt.Sprintf("%s/%s", provider, repoFullName))
+		return notUpdatedErr
 	}
 
 	// Record the audit log entry with before and after states
@@ -474,12 +718,48 @@ func ClearRepoExclusionWithActor(ctx context.Context, db Transactioner, provider
 		nil, // new_excluded_at is NULL when clearing
 		nil, // new_excluded_reason is NULL when clearing
 	); err != nil {
-		return fmt.Errorf("failed to record exclusion audit: %w", err)
+		// Log the error at service layer boundary
+		log.Printf("[ERROR] service/exclusion.ClearRepoExclusionWithActor: failed to record exclusion audit for %s/%s: %v", provider, repoFullName, err)
+
+		// Handle nil case explicitly
+		if err == nil {
+			err = errors.DatabaseQueryError("service/exclusion", "ClearRepoExclusionWithActor", "audit insert", "unexpected nil error recording exclusion audit")
+			return err
+		}
+
+		// Wrap with structured error type preserving original context
+		wrappedErr := errors.WrapError(err, *errors.DatabaseQueryError("service/exclusion", "ClearRepoExclusionWithActor", "audit insert", "failed to record exclusion audit"))
+		wrappedErr = wrappedErr.WithMetadata(map[string]interface{}{
+			"repo_id":        repoID,
+			"actor":          actor,
+			"event_type":     "unexclude",
+			"provider":       provider,
+			"repo_full_name":  repoFullName,
+		})
+		wrappedErr = wrappedErr.WithRecordKey(fmt.Sprintf("repo_id:%d", repoID))
+		return wrappedErr
 	}
 
 	// Commit the transaction
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
+		// Log the error at service layer boundary
+		log.Printf("[ERROR] service/exclusion.ClearRepoExclusionWithActor: failed to commit transaction for %s/%s: %v", provider, repoFullName, err)
+
+		// Handle nil case explicitly
+		if err == nil {
+			err = errors.DatabaseErrorf("service/exclusion", "ClearRepoExclusionWithActor", "", "unexpected nil error committing transaction")
+			return err
+		}
+
+		// Wrap with structured error type preserving original context
+		wrappedErr := errors.WrapError(err, *errors.DatabaseErrorf("service/exclusion", "ClearRepoExclusionWithActor", "", "failed to commit transaction"))
+		wrappedErr = wrappedErr.WithMetadata(map[string]interface{}{
+			"provider":       provider,
+			"repo_full_name":  repoFullName,
+			"actor":          actor,
+		})
+		wrappedErr = wrappedErr.WithRecordKey(fmt.Sprintf("%s/%s", provider, repoFullName))
+		return wrappedErr
 	}
 
 	return nil
@@ -521,7 +801,24 @@ func recordExclusionAuditImpl(
 	)
 
 	if err != nil {
-		return fmt.Errorf("failed to insert exclusion audit log: %w", err)
+		// Log the error at service layer boundary
+		log.Printf("[ERROR] service/exclusion.recordExclusionAuditImpl: failed to insert exclusion audit log for repo_id=%d: %v", repoID, err)
+
+		// Handle nil case explicitly
+		if err == nil {
+			err = errors.DatabaseQueryError("service/exclusion", "recordExclusionAuditImpl", query, "unexpected nil error inserting exclusion audit log")
+			return err
+		}
+
+		// Wrap with structured error type preserving original context
+		wrappedErr := errors.WrapError(err, *errors.DatabaseQueryError("service/exclusion", "recordExclusionAuditImpl", query, "failed to insert exclusion audit log"))
+		wrappedErr = wrappedErr.WithMetadata(map[string]interface{}{
+			"repo_id":    repoID,
+			"actor":      actor,
+			"event_type": eventType,
+		})
+		wrappedErr = wrappedErr.WithRecordKey(fmt.Sprintf("repo_id:%d", repoID))
+		return wrappedErr
 	}
 
 	return nil

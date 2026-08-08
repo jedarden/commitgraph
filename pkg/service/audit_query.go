@@ -5,7 +5,10 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"time"
+
+	"github.com/jedarden/commitgraph/pkg/errors"
 )
 
 // AuditLogQueryOptions contains optional parameters for querying audit logs.
@@ -120,7 +123,19 @@ func (q *AuditLogQuerier) QueryAuditLogs(ctx context.Context, repoID int64, opts
 	copy(countArgs, args)
 	err := q.db.QueryRowContext(ctx, countQuery, countArgs...).Scan(&totalCount)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query audit log count: %w", err)
+		// Log the error at service layer boundary
+		log.Printf("[ERROR] service/audit_query.QueryAuditLogs: failed to query audit log count for repo_id=%d: %v", repoID, err)
+
+		// Handle nil case explicitly
+		if err == nil {
+			err = errors.DatabaseQueryError("service/audit_query", "QueryAuditLogs", countQuery, "unexpected nil error")
+			return nil, err
+		}
+
+		// Wrap with structured error type preserving original context
+		wrappedErr := errors.WrapError(err, *errors.DatabaseQueryError("service/audit_query", "QueryAuditLogs", countQuery, "failed to query audit log count"))
+		wrappedErr = wrappedErr.WithRecordKey(fmt.Sprintf("repo_id:%d", repoID))
+		return nil, wrappedErr
 	}
 
 	// Query for records (with pagination)
@@ -136,7 +151,19 @@ func (q *AuditLogQuerier) QueryAuditLogs(ctx context.Context, repoID int64, opts
 
 	rows, err := q.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query audit logs: %w", err)
+		// Log the error at service layer boundary
+		log.Printf("[ERROR] service/audit_query.QueryAuditLogs: failed to query audit logs for repo_id=%d: %v", repoID, err)
+
+		// Handle nil case explicitly
+		if err == nil {
+			err = errors.DatabaseQueryError("service/audit_query", "QueryAuditLogs", query, "unexpected nil error")
+			return nil, err
+		}
+
+		// Wrap with structured error type preserving original context
+		wrappedErr := errors.WrapError(err, *errors.DatabaseQueryError("service/audit_query", "QueryAuditLogs", query, "failed to query audit logs"))
+		wrappedErr = wrappedErr.WithRecordKey(fmt.Sprintf("repo_id:%d", repoID))
+		return nil, wrappedErr
 	}
 	defer rows.Close()
 
@@ -155,13 +182,37 @@ func (q *AuditLogQuerier) QueryAuditLogs(ctx context.Context, repoID int64, opts
 			&rec.NewExcludedReason,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("failed to scan audit log record: %w", err)
+			// Log the error at service layer boundary
+			log.Printf("[ERROR] service/audit_query.QueryAuditLogs: failed to scan audit log record for repo_id=%d: %v", repoID, err)
+
+			// Handle nil case explicitly
+			if err == nil {
+				err = errors.DatabaseQueryError("service/audit_query", "QueryAuditLogs", query, "unexpected nil error during scan")
+				return nil, err
+			}
+
+			// Wrap with structured error type preserving original context
+			wrappedErr := errors.WrapError(err, *errors.DatabaseQueryError("service/audit_query", "QueryAuditLogs", query, "failed to scan audit log record"))
+			wrappedErr = wrappedErr.WithRecordKey(fmt.Sprintf("repo_id:%d", repoID))
+			return nil, wrappedErr
 		}
 		records = append(records, rec)
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating audit log records: %w", err)
+		// Log the error at service layer boundary
+		log.Printf("[ERROR] service/audit_query.QueryAuditLogs: error iterating audit log records for repo_id=%d: %v", repoID, err)
+
+		// Handle nil case explicitly
+		if err == nil {
+			err = errors.DatabaseQueryError("service/audit_query", "QueryAuditLogs", query, "unexpected nil error during iteration")
+			return nil, err
+		}
+
+		// Wrap with structured error type preserving original context
+		wrappedErr := errors.WrapError(err, *errors.DatabaseQueryError("service/audit_query", "QueryAuditLogs", query, "error iterating audit log records"))
+		wrappedErr = wrappedErr.WithRecordKey(fmt.Sprintf("repo_id:%d", repoID))
+		return nil, wrappedErr
 	}
 
 	// Handle empty results gracefully
@@ -244,7 +295,18 @@ func (q *AuditLogQuerier) QueryAllAuditLogs(ctx context.Context, opts AuditLogQu
 	copy(countArgs, args)
 	err := q.db.QueryRowContext(ctx, countQuery, countArgs...).Scan(&totalCount)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query audit log count: %w", err)
+		// Log the error at service layer boundary
+		log.Printf("[ERROR] service/audit_query.QueryAllAuditLogs: failed to query audit log count: %v", err)
+
+		// Handle nil case explicitly
+		if err == nil {
+			err = errors.DatabaseQueryError("service/audit_query", "QueryAllAuditLogs", countQuery, "unexpected nil error")
+			return nil, err
+		}
+
+		// Wrap with structured error type preserving original context
+		wrappedErr := errors.WrapError(err, *errors.DatabaseQueryError("service/audit_query", "QueryAllAuditLogs", countQuery, "failed to query audit log count"))
+		return nil, wrappedErr
 	}
 
 	// Query for records (with pagination)
@@ -260,7 +322,18 @@ func (q *AuditLogQuerier) QueryAllAuditLogs(ctx context.Context, opts AuditLogQu
 
 	rows, err := q.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query audit logs: %w", err)
+		// Log the error at service layer boundary
+		log.Printf("[ERROR] service/audit_query.QueryAllAuditLogs: failed to query audit logs: %v", err)
+
+		// Handle nil case explicitly
+		if err == nil {
+			err = errors.DatabaseQueryError("service/audit_query", "QueryAllAuditLogs", query, "unexpected nil error")
+			return nil, err
+		}
+
+		// Wrap with structured error type preserving original context
+		wrappedErr := errors.WrapError(err, *errors.DatabaseQueryError("service/audit_query", "QueryAllAuditLogs", query, "failed to query audit logs"))
+		return nil, wrappedErr
 	}
 	defer rows.Close()
 
@@ -279,13 +352,35 @@ func (q *AuditLogQuerier) QueryAllAuditLogs(ctx context.Context, opts AuditLogQu
 			&rec.NewExcludedReason,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("failed to scan audit log record: %w", err)
+			// Log the error at service layer boundary
+			log.Printf("[ERROR] service/audit_query.QueryAllAuditLogs: failed to scan audit log record: %v", err)
+
+			// Handle nil case explicitly
+			if err == nil {
+				err = errors.DatabaseQueryError("service/audit_query", "QueryAllAuditLogs", query, "unexpected nil error during scan")
+				return nil, err
+			}
+
+			// Wrap with structured error type preserving original context
+			wrappedErr := errors.WrapError(err, *errors.DatabaseQueryError("service/audit_query", "QueryAllAuditLogs", query, "failed to scan audit log record"))
+			return nil, wrappedErr
 		}
 		records = append(records, rec)
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating audit log records: %w", err)
+		// Log the error at service layer boundary
+		log.Printf("[ERROR] service/audit_query.QueryAllAuditLogs: error iterating audit log records: %v", err)
+
+		// Handle nil case explicitly
+		if err == nil {
+			err = errors.DatabaseQueryError("service/audit_query", "QueryAllAuditLogs", query, "unexpected nil error during iteration")
+			return nil, err
+		}
+
+		// Wrap with structured error type preserving original context
+		wrappedErr := errors.WrapError(err, *errors.DatabaseQueryError("service/audit_query", "QueryAllAuditLogs", query, "error iterating audit log records"))
+		return nil, wrappedErr
 	}
 
 	// Handle empty results gracefully

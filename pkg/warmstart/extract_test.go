@@ -3270,6 +3270,157 @@ func TestParseTarball_RefFileCorruption(t *testing.T) {
 	t.Log("Current behavior: ParseTarball accepts .ref files regardless of content")
 	t.Log("Hash validation for .ref files is not implemented in the current version")
 }
+
+func TestParseTarball_PartialRefCorruption(t *testing.T) {
+	// Test ParseTarball behavior when a tarball contains multiple pack files
+	// where some .ref files are corrupted while others are valid
+	// Scenario:
+	//   - pack-valid.pack has a valid .ref file
+	//   - pack-corrupted1.pack has a corrupted .ref file (truncated/empty data)
+	//   - pack-corrupted2.pack has a corrupted .ref file (invalid format)
+	//   - pack-valid2.pack has a valid .ref file
+	// Expected behavior: ParseTarball should identify which .ref files are corrupted
+	// and which are valid, reporting the corrupted ones specifically
+
+	configData := []byte(`{
+			"core.repositoryformatversion": "1",
+			"remote.origin.promisor": "true",
+			"remote.origin.partialclonefilter": "blob:none"
+		}`)
+	refData := []byte("refs/heads/main abc123")
+
+	// Create tarball with multiple pack files where .ref files have varying degrees of corruption
+	members := []TarballMember{
+		// First pack file with VALID .ref file
+		{Name: "objects/pack/pack-valid.pack", Data: []byte("PACK123456789")},
+		{Name: "objects/pack/pack-valid.idx", Data: []byte("idx valid")},
+		{Name: "objects/pack/pack-valid.ref", Data: []byte("valid-ref-hash-data")},
+
+		// Second pack file with CORRUPTED .ref file (empty data - corruption type 1)
+		{Name: "objects/pack/pack-corrupted1.pack", Data: []byte("PACK987654321")},
+		{Name: "objects/pack/pack-corrupted1.idx", Data: []byte("idx corrupted1")},
+		{Name: "objects/pack/pack-corrupted1.ref", Data: []byte{}}, // Empty ref file
+
+		// Third pack file with CORRUPTED .ref file (invalid format - corruption type 2)
+		{Name: "objects/pack/pack-corrupted2.pack", Data: []byte("PACK1111122222")},
+		{Name: "objects/pack/pack-corrupted2.idx", Data: []byte("idx corrupted2")},
+		{Name: "objects/pack/pack-corrupted2.ref", Data: []byte("!!!INVALID-CHARACTERS@@@")},
+
+		// Fourth pack file with VALID .ref file
+		{Name: "objects/pack/pack-valid2.pack", Data: []byte("PACK3333444455")},
+		{Name: "objects/pack/pack-valid2.idx", Data: []byte("idx valid2")},
+		{Name: "objects/pack/pack-valid2.ref", Data: []byte("another-valid-ref-hash")},
+
+		// Required metadata files
+		{Name: "config.json", Data: configData},
+		{Name: "ref", Data: refData},
+	}
+
+	tarball := createTestTarball(t, members)
+
+	// Note: The current implementation only validates .ref file existence, not content
+	// This test documents the current behavior where ParseTarball succeeds even with
+	// partially "corrupted" .ref files because content validation is not implemented
+
+	// Future implementation should:
+	// 1. Parse each .ref file and validate its content format
+	// 2. Identify which .ref files are corrupted (empty, invalid format, etc.)
+	// 3. Return an error that specifically lists the corrupted .ref files
+	// 4. Allow valid .ref files to pass validation
+
+	snapshot, err := ParseTarball(tarball)
+	if err != nil {
+		t.Fatalf("ParseTarball failed with error: %v", err)
+	}
+
+	if snapshot == nil {
+		t.Fatal("expected non-nil snapshot")
+	}
+
+	// Verify all pack files were captured (12 total files: 3 per pack set × 4 packs)
+	if len(snapshot.PackFiles) != 12 {
+		t.Errorf("expected 12 pack files (3 per pack set × 4 packs), got %d", len(snapshot.PackFiles))
+	}
+
+	// Verify each pack file set is present
+	expectedPackFiles := []string{
+		"objects/pack/pack-valid.pack",
+		"objects/pack/pack-valid.ref",
+		"objects/pack/pack-corrupted1.pack",
+		"objects/pack/pack-corrupted1.ref",
+		"objects/pack/pack-corrupted2.pack",
+		"objects/pack/pack-corrupted2.ref",
+		"objects/pack/pack-valid2.pack",
+		"objects/pack/pack-valid2.ref",
+	}
+
+	for _, expectedName := range expectedPackFiles {
+		found := false
+		for _, pf := range snapshot.PackFiles {
+			if pf.Name == expectedName {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected pack file %s not found in snapshot", expectedName)
+		}
+	}
+
+	// Find and verify the .ref files
+	refFiles := make(map[string]*TarballMember)
+	for i := range snapshot.PackFiles {
+		if strings.HasSuffix(snapshot.PackFiles[i].Name, ".ref") {
+			refFiles[snapshot.PackFiles[i].Name] = &snapshot.PackFiles[i]
+		}
+	}
+
+	// Verify we found exactly 4 .ref files
+	if len(refFiles) != 4 {
+		t.Errorf("expected 4 .ref files, found %d", len(refFiles))
+	}
+
+	// Verify valid .ref files have correct content
+	validRefs := map[string]string{
+		"objects/pack/pack-valid.ref":  "valid-ref-hash-data",
+		"objects/pack/pack-valid2.ref": "another-valid-ref-hash",
+	}
+
+	for refName, expectedContent := range validRefs {
+		refFile := refFiles[refName]
+		if refFile == nil {
+			t.Errorf("valid .ref file %s not found", refName)
+			continue
+		}
+		if string(refFile.Data) != expectedContent {
+			t.Errorf("%s content mismatch: got %q, want %q", refName, string(refFile.Data), expectedContent)
+		}
+		t.Logf("✓ Valid .ref file: %s (%d bytes)", refName, len(refFile.Data))
+	}
+
+	// Verify corrupted .ref files have their corrupted content
+	corruptedRefs := map[string]string{
+		"objects/pack/pack-corrupted1.ref": "",                           // Empty
+		"objects/pack/pack-corrupted2.ref": "!!!INVALID-CHARACTERS@@@", // Invalid format
+	}
+
+	for refName, expectedContent := range corruptedRefs {
+		refFile := refFiles[refName]
+		if refFile == nil {
+			t.Errorf("corrupted .ref file %s not found", refName)
+			continue
+		}
+		if string(refFile.Data) != expectedContent {
+			t.Errorf("%s content mismatch: got %q, want %q", refName, string(refFile.Data), expectedContent)
+		}
+		t.Logf("⚠ Corrupted .ref file: %s (%d bytes, content: %q)", refName, len(refFile.Data), string(refFile.Data))
+	}
+
+	t.Log("Current behavior: ParseTarball accepts .ref files regardless of content")
+	t.Log("Partial corruption detection (identifying specific corrupted .ref files) is not implemented")
+	t.Log("Future enhancement: Add .ref file content validation and report specific corrupted files")
+}
+
 // Sanity check tests for git fsck and git log verification
 
 func TestVerifyGitFsck_ValidRepository(t *testing.T) {
@@ -4474,6 +4625,184 @@ func TestExtractWarmStart_CorruptedTarball(t *testing.T) {
 	if !errors.Is(err, ErrInvalidTarball) {
 		t.Logf("Got error type: %T: %v", err, err)
 	}
+}
+
+func TestParseTarball_MixedRefFilePresence(t *testing.T) {
+	// Test tarballs with mixed .ref file presence
+	// Some pack files have .ref files, others don't
+	// Current behavior: ParseTarball should fail with MissingMember error for missing .ref files
+	configData := []byte(`{
+			"core.repositoryformatversion": "1",
+			"remote.origin.promisor": "true",
+			"remote.origin.partialclonefilter": "blob:none"
+		}`)
+	refData := []byte("refs/heads/main abc123")
+
+	members := []TarballMember{
+		// pack-abc has its .ref file (complete set)
+		{Name: "objects/pack/pack-abc.pack", Data: []byte("PACK123456789")},
+		{Name: "objects/pack/pack-abc.idx", Data: []byte("idx abc")},
+		{Name: "objects/pack/pack-abc.ref", Data: []byte("abc123hash")},
+		// pack-def has NO .ref file (intentionally missing - incomplete set)
+		{Name: "objects/pack/pack-def.pack", Data: []byte("PACK987654321")},
+		{Name: "objects/pack/pack-def.idx", Data: []byte("idx def")},
+		// pack-ghi has its .ref file (complete set)
+		{Name: "objects/pack/pack-ghi.pack", Data: []byte("PACK555555555")},
+		{Name: "objects/pack/pack-ghi.idx", Data: []byte("idx ghi")},
+		{Name: "objects/pack/pack-ghi.ref", Data: []byte("ghi789hash")},
+		// Required metadata files
+		{Name: "config.json", Data: configData},
+		{Name: "ref", Data: refData},
+	}
+
+	tarball := createTestTarball(t, members)
+
+	_, err := ParseTarball(tarball)
+	if err == nil {
+		t.Fatal("expected error for tarball with missing .ref file, got nil")
+	}
+
+	// Verify it's a MissingMember error for .ref file
+	var missingErr *Error
+	if !errors.As(err, &missingErr) {
+		t.Fatalf("expected *Error type, got %T: %v", err, err)
+	}
+
+	if missingErr.Kind != MissingMember {
+		t.Errorf("expected MissingMember error kind, got %v", missingErr.Kind)
+	}
+
+	if missingErr.MemberName != ".ref" {
+		t.Errorf("expected member name '.ref', got %s", missingErr.MemberName)
+	}
+
+	// Verify error context mentions the missing file
+	if !strings.Contains(missingErr.Context, "objects/pack/pack-def.ref") {
+		t.Errorf("error context should mention missing pack-def.ref, got: %s", missingErr.Context)
+	}
+
+	t.Logf("Successfully detected missing .ref file in mixed scenario: %v", missingErr)
+}
+
+func TestParseTarball_MixedRefFilePresence_AllComplete(t *testing.T) {
+	// Test tarballs where all pack files have .ref files (should succeed)
+	// This validates that the validation allows complete sets even when presence is mixed in the sense
+	// that we have multiple pack files but all are complete
+	configData := []byte(`{
+			"core.repositoryformatversion": "1",
+			"remote.origin.promisor": "true",
+			"remote.origin.partialclonefilter": "blob:none"
+		}`)
+	refData := []byte("refs/heads/main abc123")
+
+	members := []TarballMember{
+		// All pack files have complete sets (.pack, .idx, .ref)
+		{Name: "objects/pack/pack-one.pack", Data: []byte("PACK111111111")},
+		{Name: "objects/pack/pack-one.idx", Data: []byte("idx one")},
+		{Name: "objects/pack/pack-one.ref", Data: []byte("ref one")},
+		{Name: "objects/pack/pack-two.pack", Data: []byte("PACK222222222")},
+		{Name: "objects/pack/pack-two.idx", Data: []byte("idx two")},
+		{Name: "objects/pack/pack-two.ref", Data: []byte("ref two")},
+		{Name: "objects/pack/pack-three.pack", Data: []byte("PACK333333333")},
+		{Name: "objects/pack/pack-three.idx", Data: []byte("idx three")},
+		{Name: "objects/pack/pack-three.ref", Data: []byte("ref three")},
+		// Required metadata files
+		{Name: "config.json", Data: configData},
+		{Name: "ref", Data: refData},
+	}
+
+	tarball := createTestTarball(t, members)
+
+	snapshot, err := ParseTarball(tarball)
+	if err != nil {
+		t.Fatalf("expected success with all complete pack file sets, got error: %v", err)
+	}
+
+	// Verify all pack files were captured (9 pack files total: 3 packs × 3 files each)
+	if len(snapshot.PackFiles) != 9 {
+		t.Errorf("expected 9 pack files (3 complete sets), got %d", len(snapshot.PackFiles))
+	}
+
+	// Verify each complete set is present
+	completeSets := 0
+	for _, pf := range snapshot.PackFiles {
+		if strings.HasSuffix(pf.Name, "pack-one.pack") ||
+		   strings.HasSuffix(pf.Name, "pack-two.pack") ||
+		   strings.HasSuffix(pf.Name, "pack-three.pack") {
+			completeSets++
+		}
+	}
+
+	if completeSets != 3 {
+		t.Errorf("expected 3 complete pack sets, found %d", completeSets)
+	}
+
+	t.Logf("Successfully validated all complete pack file sets in tarball")
+}
+
+func TestParseTarball_MixedRefFilePresence_SingleMissingInLargeSet(t *testing.T) {
+	// Test tarball with many complete pack files and one missing .ref
+	// Validates that validation catches the single incomplete set even among many complete ones
+	configData := []byte(`{
+			"core.repositoryformatversion": "1",
+			"remote.origin.promisor": "true",
+			"remote.origin.partialclonefilter": "blob:none"
+		}`)
+	refData := []byte("refs/heads/main abc123")
+
+	members := []TarballMember{
+		// 5 complete pack sets
+		{Name: "objects/pack/pack-01.pack", Data: []byte("PACK000000001")},
+		{Name: "objects/pack/pack-01.idx", Data: []byte("idx 01")},
+		{Name: "objects/pack/pack-01.ref", Data: []byte("ref 01")},
+		{Name: "objects/pack/pack-02.pack", Data: []byte("PACK000000002")},
+		{Name: "objects/pack/pack-02.idx", Data: []byte("idx 02")},
+		{Name: "objects/pack/pack-02.ref", Data: []byte("ref 02")},
+		{Name: "objects/pack/pack-03.pack", Data: []byte("PACK000000003")},
+		{Name: "objects/pack/pack-03.idx", Data: []byte("idx 03")},
+		{Name: "objects/pack/pack-03.ref", Data: []byte("ref 03")},
+		{Name: "objects/pack/pack-04.pack", Data: []byte("PACK000000004")},
+		{Name: "objects/pack/pack-04.idx", Data: []byte("idx 04")},
+		{Name: "objects/pack/pack-04.ref", Data: []byte("ref 04")},
+		{Name: "objects/pack/pack-05.pack", Data: []byte("PACK000000005")},
+		{Name: "objects/pack/pack-05.idx", Data: []byte("idx 05")},
+		{Name: "objects/pack/pack-05.ref", Data: []byte("ref 05")},
+		// One incomplete set (missing .ref)
+		{Name: "objects/pack/pack-06.pack", Data: []byte("PACK000000006")},
+		{Name: "objects/pack/pack-06.idx", Data: []byte("idx 06")},
+		// Missing pack-06.ref
+		// Required metadata files
+		{Name: "config.json", Data: configData},
+		{Name: "ref", Data: refData},
+	}
+
+	tarball := createTestTarball(t, members)
+
+	_, err := ParseTarball(tarball)
+	if err == nil {
+		t.Fatal("expected error for tarball with one missing .ref file, got nil")
+	}
+
+	// Verify it's a MissingMember error
+	var missingErr *Error
+	if !errors.As(err, &missingErr) {
+		t.Fatalf("expected *Error type, got %T: %v", err, err)
+	}
+
+	if missingErr.Kind != MissingMember {
+		t.Errorf("expected MissingMember error kind, got %v", missingErr.Kind)
+	}
+
+	if missingErr.MemberName != ".ref" {
+		t.Errorf("expected member name '.ref', got %s", missingErr.MemberName)
+	}
+
+	// Verify error context mentions the specific missing file
+	if !strings.Contains(missingErr.Context, "objects/pack/pack-06.ref") {
+		t.Errorf("error context should mention pack-06.ref, got: %s", missingErr.Context)
+	}
+
+	t.Logf("Successfully detected single missing .ref file among 5 complete sets: %v", missingErr)
 }
 
 func TestExtractWarmStart_TruncatedTarball(t *testing.T) {

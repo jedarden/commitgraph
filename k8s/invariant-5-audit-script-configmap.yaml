@@ -1,0 +1,114 @@
+---
+# ConfigMap update for Invariant 5 audit script
+# This should be merged into the existing invariant-audit-scripts ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: invariant-audit-scripts
+  namespace: commitgraph
+data:
+  # Invariant 5 script (NEW)
+  audit-invariant-5.sh: |
+    #!/usr/bin/env bash
+    #
+    # Production audit script for Invariant 5: Uniform scan time per repo
+    #
+    # Validates that all rows for a given repo_id share exactly one insert_time
+    # value. This is guaranteed by the whole-slice DELETE+INSERT write pattern.
+    #
+    # Exit codes: 0=pass, 1=violations, 2=error
+
+    set -euo pipefail
+
+    ENVIRONMENT="${ENVIRONMENT:-production}"
+
+    # Required environment variables
+    if [[ -z "${POSTGRES_DB:-}" ]]; then
+      echo "ERROR: POSTGRES_DB required" >&2
+      exit 2
+    fi
+
+    if [[ -z "${POSTGRES_USER:-}" ]]; then
+      echo "ERROR: POSTGRES_USER required" >&2
+      exit 2
+    fi
+
+    if [[ -z "${POSTGRES_PASSWORD_FILE:-}" ]]; then
+      echo "ERROR: POSTGRES_PASSWORD_FILE required" >&2
+      exit 2
+    fi
+
+    # Read password
+    POSTGRES_PASSWORD=$(cat "${POSTGRES_PASSWORD_FILE}")
+
+    echo "========================================"
+    echo "Invariant 5 Audit: ${ENVIRONMENT}"
+    echo "========================================"
+    echo "Database: ${POSTGRES_DB}"
+    echo ""
+
+    # Run the invariant query directly
+    VIOLATIONS=$(PGPASSWORD="${POSTGRES_PASSWORD}" psql \
+        -h "${POSTGRES_HOST}" \
+        -p "${POSTGRES_PORT:-5432}" \
+        -d "${POSTGRES_DB}" \
+        -U "${POSTGRES_USER}" \
+        -t -A \
+        -c "
+          SELECT
+              rut.repo_id,
+              r.provider,
+              r.repo_full_name,
+              COUNT(DISTINCT rut.insert_time) AS distinct_insert_time_count,
+              ARRAY_AGG(DISTINCT rut.insert_time ORDER BY rut.insert_time) AS insert_time_samples,
+              COUNT(*) AS total_rows,
+              MIN(rut.day) AS earliest_day,
+              MAX(rut.day) AS latest_day
+          FROM repo_user_daily_tool rut
+          JOIN repos r ON rut.repo_id = r.repo_id
+          GROUP BY rut.repo_id, r.provider, r.repo_full_name
+          HAVING COUNT(DISTINCT rut.insert_time) > 1
+          ORDER BY distinct_insert_time_count DESC, rut.repo_id;
+        " \
+        2>&1) || true
+
+    # Check for errors
+    if [[ "${VIOLATIONS}" == *"ERROR:"* ]]; then
+      echo "❌ ERROR: Failed to execute query" >&2
+      echo "${VIOLATIONS}" >&2
+      exit 2
+    fi
+
+    # Count violations
+    VIOLATION_COUNT=0
+    if [[ -n "${VIOLATIONS}" ]]; then
+      VIOLATION_COUNT=$(echo "${VIOLATIONS}" | grep -c '^[^[:space:]]' || true)
+    fi
+
+    echo "Violations found: ${VIOLATION_COUNT}"
+    echo ""
+
+    if [[ "${VIOLATION_COUNT}" -eq 0 ]]; then
+      echo "✅ PASS: All repos have uniform insert_time values"
+      echo "   All rows for each repo_id share exactly one insert_time."
+      exit 0
+    else
+      echo "❌ FAIL: ${VIOLATION_COUNT} repos with mixed insert_time values"
+      echo ""
+      echo "Violating repos:"
+      echo "${VIOLATIONS}"
+      echo ""
+
+      # Create detailed alert with repo details
+      ALERT_MESSAGE="🚨 Invariant 5 Violation in ${ENVIRONMENT}: ${VIOLATION_COUNT} repos have mixed insert_time values
+This indicates a partial write escaped the whole-slice-replace transaction."
+
+      if [[ -n "${SLACK_WEBHOOK_URL:-}" ]]; then
+        curl -s -X POST "${SLACK_WEBHOOK_URL}" \
+            -H 'Content-Type: application/json' \
+            -d "{\"text\": \"${ALERT_MESSAGE}\"}" || true
+      fi
+
+      echo "${ALERT_MESSAGE}" >&2
+      exit 1
+    fi

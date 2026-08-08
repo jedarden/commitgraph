@@ -1,0 +1,104 @@
+---
+# Periodic Invariant 5 audit — runs every 6 hours against production.
+#
+# Invariant 5: Uniform scan time per repo
+# All rows for a given repo_id share exactly one insert_time value.
+# A violation means a partial write escaped the whole-slice-replace transaction.
+#
+# NOTE: this follows the sanctioned Deployment pattern (not CronJob) to ensure
+# ArgoCD can manage it idempotently and prune old pods automatically.
+#
+# Deploy via declarative-config + ArgoCD — never `kubectl apply`.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: invariant-5-audit
+  namespace: commitgraph
+  labels:
+    app: invariant-audit
+    invariant: "5"
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: invariant-audit
+      invariant: "5"
+  template:
+    metadata:
+      labels:
+        app: invariant-audit
+        invariant: "5"
+    spec:
+      containers:
+      - name: audit
+        image: postgres:16-alpine
+        command:
+        - /bin/bash
+        - -c
+        - |
+          # Internal scheduler: replaces `schedule: "0 */6 * * *"`.
+          # A single looping process is inherently `concurrencyPolicy: Forbid`.
+          # The audit is wrapped in `timeout` to preserve activeDeadlineSeconds.
+          # A failed audit must NOT exit the container — it logs, alerts, and waits.
+          set -uo pipefail
+          INTERVAL="${AUDIT_INTERVAL_SECONDS:-21600}"
+          while true; do
+            echo "[invariant-5-audit] starting audit at $(date -Is)"
+            if timeout 600 /bin/bash /scripts/audit-invariant-5.sh production; then
+              echo "[invariant-5-audit] audit passed at $(date -Is)"
+            else
+              echo "[invariant-5-audit] AUDIT FAILED (exit $?) at $(date -Is)" >&2
+            fi
+            echo "[invariant-5-audit] sleeping ${INTERVAL}s"
+            sleep "${INTERVAL}"
+          done
+        env:
+        - name: AUDIT_INTERVAL_SECONDS
+          value: "21600"   # 6 hours
+        - name: POSTGRES_HOST
+          value: "postgres-commitgraph"
+        - name: POSTGRES_PORT
+          value: "5432"
+        - name: POSTGRES_DB
+          value: "commitgraph"
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: postgres-credentials
+              key: username
+        - name: POSTGRES_PASSWORD_FILE
+          value: "/etc/postgres-password/password"
+        - name: SLACK_WEBHOOK_URL
+          valueFrom:
+            secretKeyRef:
+              name: alert-webhooks
+              key: slack-invariant-violation
+              optional: true
+        volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+          readOnly: true
+        - name: postgres-password
+          mountPath: /etc/postgres-password
+          readOnly: true
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 500m
+            memory: 128Mi
+      volumes:
+      - name: scripts
+        configMap:
+          name: invariant-audit-scripts
+          defaultMode: 0755
+      - name: postgres-password
+        secret:
+          secretName: postgres-credentials
+          items:
+          - key: password
+            path: password
+            mode: 0400

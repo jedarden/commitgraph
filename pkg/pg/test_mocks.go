@@ -36,7 +36,7 @@ func (m *mockDBExecutor) QueryContext(ctx context.Context, query string, args ..
 	}
 	// *sql.Rows is a concrete type that cannot be constructed without a real
 	// driver; callers that need row data must use an integration test.
-	return nil, nil
+	return nil, &mockError{err: "mock cannot construct *sql.Rows - use integration test"}
 }
 
 func (m *mockDBExecutor) QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row {
@@ -80,8 +80,8 @@ func (m *mockExecutor) QueryContext(ctx context.Context, query string, args ...i
 func (m *mockExecutor) QueryRowContext(ctx context.Context, query string, args ...interface{}) Row {
 	m.lastQuery = query
 	m.lastArgs = args
-	// Return nil - caller must handle this
-	return &mockRow{}
+	// Return mockRow with error state propagated
+	return &mockRow{shouldError: m.shouldError}
 }
 
 // mockResult implements both the custom Result interface and sql.Result

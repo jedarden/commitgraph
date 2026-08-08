@@ -491,6 +491,131 @@ Always include relevant context:
 3. Don't double-wrap already structured errors
 4. Maintain error chain for debugging
 
+## Exit Code Mapping
+
+### Overview
+The commitgraph project uses standardized exit codes for CLI commands to enable programmatic error handling and monitoring. Exit codes follow the Unix convention where 0 indicates success and non-zero values indicate various failure modes.
+
+### Exit Code Constants
+
+```go
+const (
+    ExitCodeSuccess            = 0  // Successful execution
+    ExitCodeError              = 1  // General error (default/fallback)
+    ExitCodeInvalidInput       = 2  // Invalid command-line arguments or input
+    ExitCodeDatabaseError      = 3  // Database connection or query errors
+    ExitCodeNetworkError       = 4  // Network connectivity errors
+    ExitCodeTimeoutError       = 5  // Operation timeout
+    ExitCodeAuthenticationError = 6 // Authentication/authorization failures
+    ExitCodeConfigError        = 7  // Configuration problems
+    ExitCodeValidationError    = 8  // Data validation failures
+    ExitCodeParseError         = 9  // Data parsing failures
+    ExitCodeResourceError      = 10 // Resource exhaustion/unavailability
+    ExitCodeConcurrencyError   = 11 // Concurrency/locking issues
+    ExitCodeServerError        = 12 // Server-side errors (HTTP 5xx)
+)
+```
+
+### Error Category to Exit Code Mapping
+
+| Error Category         | Exit Code | Description                          |
+|------------------------|-----------|--------------------------------------|
+| ValidationError        | 8         | Input validation failures            |
+| ParseError             | 9         | Data parsing failures                |
+| DatabaseError          | 3         | Database operation failures          |
+| NetworkError           | 4         | Network operation failures           |
+| TimeoutError           | 5         | Operation timeout failures           |
+| ClientError            | 2         | HTTP 4xx client errors (bad input)   |
+| ServerError            | 12        | HTTP 5xx server errors                |
+| AuthError              | 6         | Authentication/authorization failures |
+| ConfigError            | 7         | Configuration problems               |
+| ResourceError          | 10        | Resource exhaustion/unavailability    |
+| ConcurrencyError       | 11        | Concurrency/locking issues            |
+| UnknownError           | 1         | Uncategorized errors (fallback)       |
+
+### Severity to Exit Code Mapping
+
+| Severity Level   | Example Exit Codes | Usage                                |
+|------------------|--------------------|--------------------------------------|
+| SeverityInfo     | 0                  | Success, no errors                   |
+| SeverityLow      | 1, 2, 8, 9         | User input errors, validation issues |
+| SeverityMedium   | 5, 11, 12          | Retriable errors (timeouts, server) |
+| SeverityHigh     | 3, 4, 6           | System errors requiring attention    |
+| SeverityCritical | 7, 10             | Critical failures (config, resources)|
+
+### Usage in CLI Commands
+
+```go
+import "github.com/jedarden/commitgraph/pkg/errors"
+
+func main() {
+    cliHandler := errors.NewCLIHandler("my-program")
+    
+    // Handle validation errors
+    if requiredField == "" {
+        cliHandler.HandleError(errors.RequiredFlagError("field"))
+        // Exits with code 8 (ExitCodeValidationError)
+    }
+    
+    // Handle database errors
+    if err != nil {
+        cliHandler.HandleError(errors.WrapDatabaseConnectionError(err))
+        // Exits with code 3 (ExitCodeDatabaseError)
+    }
+    
+    // Success
+    cliHandler.Success("Operation completed")
+    // Exits with code 0 (ExitCodeSuccess)
+}
+```
+
+### Programmatic Error Handling
+
+Exit codes enable shell scripts and automation to detect and handle errors:
+
+```bash
+#!/bin/bash
+# Example shell script using exit codes
+
+my-program || exit_code=$?
+
+case $exit_code in
+    0) echo "Success" ;;
+    2) echo "Invalid input - check arguments" ;;
+    3) echo "Database error - check connection" ;;
+    4) echo "Network error - check connectivity" ;;
+    8) echo "Validation error - check input format" ;;
+    *) echo "Unknown error (code $exit_code)" ;;
+esac
+```
+
+### Exit Code Rationale
+
+The exit code scheme follows these principles:
+
+1. **Standard conventions**: 0 = success, 1 = general error, 2 = usage/input errors
+2. **Categorization**: Related errors share codes (e.g., all DB errors = 3)
+3. **Automation-friendly**: Codes enable programmatic error handling
+4. **Debugging aids**: Codes map to specific error categories for troubleshooting
+5. **Compatibility**: Follows POSIX/Unix conventions for shell integration
+
+### Design Decisions
+
+**Why code 2 for client errors?**
+- Follows Unix convention: exit code 2 indicates "command line usage errors"
+- Maps 4xx client errors to user-correctable input problems
+- Distinguishes user input errors from system errors (3+)
+
+**Why code 3 for database errors?**
+- Database is a critical dependency; deserves dedicated code
+- Enables monitoring systems to track DB issues separately
+- Common failure mode that operators need to identify quickly
+
+**Why code 12 for server errors?**
+- Separates server-side failures (5xx) from other errors
+- Allows retry logic to distinguish server (retryable) vs client (non-retryable)
+- Highest numbered code indicates "most severe" (server infrastructure down)
+
 ## Migration Notes
 
 ### From Existing Error System

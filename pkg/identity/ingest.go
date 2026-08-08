@@ -8,7 +8,11 @@ package identity
 import (
 	"context"
 	"fmt"
+	"log"
+	"runtime/debug"
 	"time"
+
+	"github.com/jedarden/commitgraph/pkg/ingestlog"
 )
 
 // ResolutionRow represents a single email→login resolution row.
@@ -77,6 +81,7 @@ type IngestResult struct {
 // Ingester handles bulk upsert of email resolution rows with counter tracking.
 type Ingester struct {
 	db          DB
+	logger      *ingestlog.Logger     // Structured logger for ingest operations
 	Processed   int64                 // Total number of records processed (seen)
 	Ingested    int64                 // Total number of records successfully written (inserted or updated)
 	Skipped     int64                 // Total number of records skipped due to conflict resolution
@@ -99,6 +104,7 @@ type DB interface {
 func NewIngester(db DB) *Ingester {
 	return &Ingester{
 		db:          db,
+		logger:      ingestlog.NewLogger(), // Initialize structured logger
 		Processed:   0,                      // Initialize counter to zero
 		Ingested:    0,                     // Initialize counter to zero
 		Skipped:     0,                     // Initialize counter to zero
@@ -139,6 +145,9 @@ func (i *Ingester) IngestResolution(ctx context.Context, rows []ResolutionRow) e
 	// Validate all rows first
 	for idx := range rows {
 		if err := rows[idx].Validate(); err != nil {
+			// Log validation error with full context
+			row := rows[idx]
+			i.logValidationError(idx, row, err)
 			return fmt.Errorf("row %d: %w", idx, err)
 		}
 	}
@@ -190,5 +199,60 @@ func (i *Ingester) GetSummary() map[string]interface{} {
 		"ingested":     i.Ingested,
 		"skipped":      i.Skipped,
 		"skip_details": skipDetails,
+	}
+}
+
+// logValidationError logs a validation error with structured context.
+// It captures the row index, email, login, and validation error details.
+// Falls back to stderr logging if the structured logger fails.
+func (i *Ingester) logValidationError(rowIdx int, row ResolutionRow, err error) {
+	// Build structured error context
+	errorMsg := fmt.Sprintf("validation_error at row %d: email=%q login=%q source=%q error=%s",
+		rowIdx, row.Email, row.Login, row.Source, err.Error())
+
+	// Try to use the structured logger first
+	if i.logger != nil {
+		// Record as a skip for statistics tracking
+		i.logger.RecordSkipped(errorMsg)
+
+		// Build a detailed log entry for the validation error
+		entry := &ingestlog.LogEntry{
+			Timestamp: time.Now().UTC(),
+			EventType: "validation_error",
+			User: ingestlog.UserContext{
+				Email:          row.Email,
+				GithubUsername: row.Login,
+			},
+			Endpoint: ingestlog.EndpointContext{
+				Endpoint:      "identity-ingest",
+				Method:        "VALIDATE",
+				Path:          "row_validation",
+				URL:           "internal://ingest/validation",
+				AttemptNumber: rowIdx + 1, // Use 1-based indexing for attempts
+			},
+			Error: ingestlog.ErrorContext{
+				Type:        "validation_error",
+				Message:     err.Error(),
+				StackTrace: string(debug.Stack()),
+			},
+			MaxRetries:      0, // No retries for validation errors
+			RetryDelayMs:    0,
+			TotalDurationMs: 0,
+			Metadata: ingestlog.RequestMetadata{
+				"row_index":    rowIdx,
+				"row_source":   string(row.Source),
+				"resolved_at":  row.ResolvedAt.UTC().Format(time.RFC3339),
+			},
+		}
+
+		// Try to log the structured entry
+		if logErr := i.logger.LogFailureWithEntry(entry); logErr != nil {
+			// Fallback to stderr if structured logging fails
+			log.Printf("[INGEST-VALIDATION-ERROR-FALLBACK] %s\n", errorMsg)
+			log.Printf("[INGEST-VALIDATION-ERROR-FALLBACK] logging failed: %v\n", logErr)
+		}
+	} else {
+		// Final fallback if logger is not initialized
+		log.Printf("[INGEST-VALIDATION-ERROR] %s\n", errorMsg)
 	}
 }

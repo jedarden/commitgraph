@@ -250,17 +250,26 @@ func testEmailResolutionRenameUpdate(ctx context.Context, t *testing.T, db *sql.
 		t.Errorf("Expected queue-api PostResolution to be called with email=%s, login=%s", email, newLogin)
 	}
 
-	// Verify email_resolution.login is updated
+	// Verify email_resolution table after worker invocation
 	var updatedLogin string
-	err = db.QueryRowContext(ctx, `SELECT login FROM email_resolution WHERE email = $1`, email).Scan(&updatedLogin)
-	if err != nil {
-		t.Fatalf("Failed to query updated email_resolution: %v", err)
-	}
-	if updatedLogin != newLogin {
-		t.Errorf("Expected login=%s, got %s", newLogin, updatedLogin)
+	var updatedEmail string
+	queryErr := db.QueryRowContext(ctx,
+		`SELECT login, email FROM email_resolution WHERE email = $1`, email).Scan(&updatedLogin, &updatedEmail)
+	if queryErr != nil {
+		t.Fatalf("Failed to query email_resolution table after worker invocation: %v", queryErr)
 	}
 
-	t.Logf("✓ email_resolution.login updated: %s -> %s", oldLogin, newLogin)
+	// Assert that the login column equals new-name (was updated)
+	if updatedLogin != newLogin {
+		t.Errorf("After worker invocation: expected login column to be updated to '%s', but got '%s' (login was not updated correctly)", newLogin, updatedLogin)
+	}
+
+	// Assert that the email column is unchanged (same as before rename)
+	if updatedEmail != email {
+		t.Errorf("After worker invocation: expected email column to be preserved as '%s', but got '%s' (email address should not change during rename)", email, updatedEmail)
+	}
+
+	t.Logf("✓ email_resolution properly updated: login='%s' -> '%s', email='%s' (preserved)", oldLogin, newLogin, updatedEmail)
 }
 
 // testEmailResolutionRenamePreservesUserID verifies that user_id is preserved during rename.

@@ -68,7 +68,7 @@
       "name": "IngestResolution",
       "package": "pkg/identity",
       "file": "pkg/identity/ingest.go",
-      "line": 140,
+      "line": 131,
       "signature": "func (i *Ingester) IngestResolution(ctx context.Context, rows []ResolutionRow) error",
       "purpose": "Main stream ingestion function for email resolution data"
     },

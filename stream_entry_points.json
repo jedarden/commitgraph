@@ -1,0 +1,123 @@
+{
+  "stream_entry_points": [
+    {
+      "name": "CaptureUserContext",
+      "package": "pkg/ingestlog",
+      "file": "pkg/ingestlog/logger.go",
+      "line": 910,
+      "signature": "func CaptureUserContext(email, githubUsername string) (UserContext, error)",
+      "purpose": "Captures and validates user context data during stream processing"
+    },
+    {
+      "name": "CaptureUserID",
+      "package": "pkg/ingestlog",
+      "file": "pkg/ingestlog/logger.go",
+      "line": 934,
+      "signature": "func CaptureUserID(userID string) string",
+      "purpose": "Captures and validates user ID from stream"
+    },
+    {
+      "name": "CaptureSessionID",
+      "package": "pkg/ingestlog",
+      "file": "pkg/ingestlog/logger.go",
+      "line": 950,
+      "signature": "func CaptureSessionID(sessionID string) string",
+      "purpose": "Captures and validates session ID from stream"
+    },
+    {
+      "name": "CaptureRequestID",
+      "package": "pkg/ingestlog",
+      "file": "pkg/ingestlog/logger.go",
+      "line": 966,
+      "signature": "func CaptureRequestID(requestID string) string",
+      "purpose": "Captures and validates request ID from stream"
+    },
+    {
+      "name": "CaptureEndpointName",
+      "package": "pkg/ingestlog",
+      "file": "pkg/ingestlog/logger.go",
+      "line": 983,
+      "signature": "func CaptureEndpointName(endpoint string) (string, error)",
+      "purpose": "Captures and validates endpoint names from stream"
+    },
+    {
+      "name": "CaptureMethod",
+      "package": "pkg/ingestlog",
+      "file": "pkg/ingestlog/logger.go",
+      "line": 1000,
+      "signature": "func CaptureMethod(method string) (string, error)",
+      "purpose": "Captures and validates HTTP methods from stream"
+    },
+    {
+      "name": "CapturePath",
+      "package": "pkg/ingestlog",
+      "file": "pkg/ingestlog/logger.go",
+      "line": 1017,
+      "signature": "func CapturePath(path string) (string, error)",
+      "purpose": "Captures and validates URL paths from stream"
+    },
+    {
+      "name": "CaptureEndpointContext",
+      "package": "pkg/ingestlog",
+      "file": "pkg/ingestlog/logger.go",
+      "line": 1041,
+      "signature": "func CaptureEndpointContext(endpoint, method, path, url string, attemptNumber int, statusCode int, responseBody string) (EndpointContext, error)",
+      "purpose": "Captures and validates endpoint context data from stream"
+    },
+    {
+      "name": "IngestResolution",
+      "package": "pkg/identity",
+      "file": "pkg/identity/ingest.go",
+      "line": 140,
+      "signature": "func (i *Ingester) IngestResolution(ctx context.Context, rows []ResolutionRow) error",
+      "purpose": "Main stream ingestion function for email resolution data"
+    },
+    {
+      "name": "IngestEmailResolution",
+      "package": "pkg/pg",
+      "file": "pkg/pg/identity.go",
+      "line": 94,
+      "signature": "func (i *IdentityIngester) IngestEmailResolution(ctx context.Context, rows []identity.ResolutionRow) (*identity.IngestResult, error)",
+      "purpose": "PostgreSQL bulk upsert implementation for email resolution stream"
+    },
+    {
+      "name": "UpsertAliases",
+      "package": "pkg/pg",
+      "file": "pkg/pg/user_aliases.go",
+      "line": 46,
+      "signature": "func (a *AliasIngester) UpsertAliases(ctx context.Context, rows []AliasRow) error",
+      "purpose": "PostgreSQL bulk upsert implementation for user aliases stream"
+    }
+  ],
+  "state_entry_points": [
+    "cmd/load-admin-aliases:parseAliasesFromConfigMap",
+    "pkg/handler:parseDate",
+    "cmd/get-audit-logs:parseDate",
+    "cmd/load-email-resolution-from-queue-api:parseTime",
+    "cmd/load-email-resolution-from-queue-api:parseValuesString",
+    "pkg/handler:parseQueryParams",
+    "cmd/load-email-resolution-from-queue-api:parseTimePtr",
+    "cmd/audit-logs:parseDate",
+    "cmd/load-email-resolution-from-queue-api:parseDump",
+    "cmd/verify-email-resolution-dump:parseInsertLine",
+    "pkg/warmstart:parseConfigKey"
+  ],
+  "summary": {
+    "total_stream_functions": 11,
+    "total_state_functions": 11,
+    "stream_packages": [
+      "pkg/identity",
+      "pkg/pg",
+      "pkg/ingestlog"
+    ],
+    "state_packages": [
+      "pkg/warmstart",
+      "cmd/audit-logs",
+      "pkg/handler",
+      "cmd/verify-email-resolution-dump",
+      "cmd/get-audit-logs",
+      "cmd/load-email-resolution-from-queue-api",
+      "cmd/load-admin-aliases"
+    ]
+  }
+}

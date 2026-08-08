@@ -39,18 +39,20 @@ import (
 	"time"
 
 	_ "github.com/lib/pq"
+	"github.com/jedarden/commitgraph/pkg/client/github"
 	"github.com/jedarden/commitgraph/pkg/client/queueapi"
 )
 
 // Config holds worker configuration from environment variables.
 type Config struct {
-	QueueAPIClient   *queueapi.Client
-	GitHubToken      string
-	PostgresURL      string
-	WorkerID         string
-	ClaimBatch       int
-	IdleSleepSecs    int
-	APICallIntervalSecs int
+	QueueAPIClient       queueapi.PostResolutionClient
+	GitHubClient         github.Client
+	GitHubToken          string
+	PostgresURL          string
+	WorkerID             string
+	ClaimBatch           int
+	IdleSleepSecs        int
+	APICallIntervalSecs  int
 }
 
 // RevalidationRow represents a row from the email_revalidation table.
@@ -98,12 +100,13 @@ func loadConfig() (*Config, error) {
 	queueAPIToken := os.Getenv("QUEUE_API_INTERNAL_TOKEN")
 
 	cfg := &Config{
-		QueueAPIClient: queueapi.NewClient(queueAPIURL, queueAPIToken),
-		GitHubToken:    githubToken,
-		PostgresURL:    postgresURL,
-		WorkerID:       workerID,
-		ClaimBatch:     getEnvInt("CLAIM_BATCH", 50),
-		IdleSleepSecs:  getEnvInt("IDLE_SLEEP_SECS", 60),
+		QueueAPIClient:      queueapi.NewClient(queueAPIURL, queueAPIToken),
+		GitHubClient:        github.NewHTTPClient(githubToken, 0),
+		GitHubToken:         githubToken,
+		PostgresURL:         postgresURL,
+		WorkerID:            workerID,
+		ClaimBatch:          getEnvInt("CLAIM_BATCH", 50),
+		IdleSleepSecs:       getEnvInt("IDLE_SLEEP_SECS", 60),
 		APICallIntervalSecs: int(getEnvFloat("API_CALL_INTERVAL_SECS", 6.0)),
 	}
 
@@ -241,53 +244,56 @@ func claimRows(ctx context.Context, db *sql.DB, batch int) ([]RevalidationRow, e
 func processRow(ctx context.Context, db *sql.DB, cfg *Config, row RevalidationRow) error {
 	now := time.Now()
 
-	// Check GitHub API for login liveness
-	status, newLogin, checkError := checkLogin(ctx, cfg.GitHubToken, row.Login)
+	// Check GitHub API for login liveness using the GitHub client
+	result, err := cfg.GitHubClient.CheckLogin(ctx, row.Login)
+	if err != nil {
+		return fmt.Errorf("GitHub client check failed: %w", err)
+	}
 
-	switch status {
-	case "validated":
+	switch result.Status {
+	case github.StatusValidated:
 		// Login is live and current - update for next check in 90 days
 		nextCheck := now.Add(90 * 24 * time.Hour)
-		if err := updateRevalidation(ctx, db, row.Email, status, nil, nextCheck, nil); err != nil {
+		if err := updateRevalidation(ctx, db, row.Email, string(result.Status), nil, nextCheck, nil); err != nil {
 			return fmt.Errorf("update validated failed: %w", err)
 		}
 		log.Printf("Validated email=%s login=%s", row.Email, row.Login)
 
-	case "renamed":
+	case github.StatusRenamed:
 		// Login was renamed - update email_resolution
-		if newLogin == nil {
+		if result.NewLogin == nil {
 			return fmt.Errorf("renamed status requires new_login")
 		}
-		if err := updateEmailResolution(ctx, cfg, row.Email, *newLogin); err != nil {
+		if err := updateEmailResolution(ctx, cfg, row.Email, *result.NewLogin); err != nil {
 			return fmt.Errorf("update email_resolution failed: %w", err)
 		}
 		// Mark as renamed - no further checks needed
-		if err := updateRevalidation(ctx, db, row.Email, status, newLogin, time.Time{}, nil); err != nil {
+		if err := updateRevalidation(ctx, db, row.Email, string(result.Status), result.NewLogin, time.Time{}, nil); err != nil {
 			return fmt.Errorf("update renamed failed: %w", err)
 		}
-		log.Printf("Renamed email=%s old_login=%s new_login=%s", row.Email, row.Login, *newLogin)
+		log.Printf("Renamed email=%s old_login=%s new_login=%s", row.Email, row.Login, *result.NewLogin)
 
-	case "deleted":
+	case github.StatusDeleted:
 		// Account is gone - stop rechecking
-		if err := updateRevalidation(ctx, db, row.Email, status, nil, time.Time{}, nil); err != nil {
+		if err := updateRevalidation(ctx, db, row.Email, string(result.Status), nil, time.Time{}, nil); err != nil {
 			return fmt.Errorf("update deleted failed: %w", err)
 		}
 		log.Printf("Deleted email=%s login=%s", row.Email, row.Login)
 
-	case "retry":
+	case github.StatusRetry:
 		// Transient failure - short backoff
 		nextCheck := now.Add(5 * time.Minute)
 		errMsg := "rate limit or network error"
-		if checkError != nil {
-			errMsg = *checkError
+		if result.ErrorMsg != nil {
+			errMsg = *result.ErrorMsg
 		}
-		if err := updateRevalidation(ctx, db, row.Email, status, nil, nextCheck, &errMsg); err != nil {
+		if err := updateRevalidation(ctx, db, row.Email, string(result.Status), nil, nextCheck, &errMsg); err != nil {
 			return fmt.Errorf("update retry failed: %w", err)
 		}
 		log.Printf("Retry email=%s login=%s error=%s", row.Email, row.Login, errMsg)
 
 	default:
-		return fmt.Errorf("unknown status: %s", status)
+		return fmt.Errorf("unknown status: %s", result.Status)
 	}
 
 	return nil

@@ -1,0 +1,110 @@
+---
+# Admin-Alias ConfigMap Watcher — Deployment with internal watch loop.
+#
+# This watcher monitors the admin-alias-configmap.yml file for changes and
+# automatically re-runs the alias loader whenever the ConfigMap is modified.
+# This ensures that hand-curated aliases in git stay in sync with the
+# user_aliases table without requiring manual database operations.
+#
+# Time bound: Changes are reflected in user_aliases within
+# poll-interval (5s) + debounce (5s) + load time (~1-2s) = ~11-12s worst case.
+#
+# NOTE: This uses a Deployment with an internal watch loop, NOT a Job/CronJob.
+# Jobs/CronJobs are banned org-wide: ArgoCD cannot manage them idempotently,
+# and their pods are not ArgoCD-owned, so they are never pruned and hold
+# resource reservations indefinitely.
+#
+# Deploy via declarative-config + ArgoCD — never `kubectl apply`.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: admin-alias-configmap-watcher
+  namespace: commitgraph
+  labels:
+    app: admin-alias-configmap-watcher
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: admin-alias-configmap-watcher
+  template:
+    metadata:
+      labels:
+        app: admin-alias-configmap-watcher
+    spec:
+      containers:
+      - name: watcher
+        image: ronaldraygun/admin-alias-configmap-watcher:1.0.0  # Pin version - never :latest
+        command:
+        - /watch-admin-alias-configmap
+        args:
+        - -configmap-path=/etc/config/aliases.yml
+        - -db-host=$(DB_HOST)
+        - -db-port=$(DB_PORT)
+        - -db-name=$(DB_NAME)
+        - -db-user=$(DB_USER)
+        - -db-password=$(DB_PASSWORD)
+        - -sslmode=$(DB_SSLMODE)
+        - -poll-interval=5s
+        - -debounce=5s
+        env:
+        - name: DB_HOST
+          value: postgres-commitgraph.commitgraph.svc.cluster.local
+        - name: DB_PORT
+          value: "5432"
+        - name: DB_NAME
+          value: commitgraph
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: commitgraph-app
+              key: postgres-user
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: commitgraph-app
+              key: postgres-password
+        - name: DB_SSLMODE
+          value: require
+        volumeMounts:
+        - name: config
+          mountPath: /etc/config
+          readOnly: true
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+        livenessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - |
+              # Check if the watcher process is running
+              pgrep -f /watch-admin-alias-configmap || exit 1
+          initialDelaySeconds: 30
+          periodSeconds: 60
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - |
+              # Watcher is ready immediately - it just needs to stat the config file
+              test -f /etc/config/admin-alias-configmap.yml || exit 1
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      volumes:
+      - name: config
+        configMap:
+          name: admin-alias-map
+          items:
+          - key: aliases.yml
+            path: aliases.yml

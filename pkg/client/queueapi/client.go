@@ -24,6 +24,12 @@ type Client struct {
 	logger     *ingestlog.Logger // Optional structured logger
 }
 
+// PostResolutionClient defines the interface for posting email resolutions.
+// This allows for test mocks without making actual HTTP requests.
+type PostResolutionClient interface {
+	PostResolution(ctx context.Context, email, githubUsername string) error
+}
+
 // DefaultMaxRetries is the maximum number of retry attempts for ingest endpoint failures.
 const DefaultMaxRetries = 4
 

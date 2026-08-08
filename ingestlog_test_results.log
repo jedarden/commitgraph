@@ -1,0 +1,671 @@
+=== RUN   TestSerializeError_FilePathInclusion
+=== RUN   TestSerializeError_FilePathInclusion/basic_error_serialization_includes_stack_trace_with_file_paths
+    error_serializer_context_test.go:68: Error context - Type: errorString, Message: test error, StackTrace length: 521
+=== RUN   TestSerializeError_FilePathInclusion/error_with_file_path_in_message
+    error_serializer_context_test.go:68: Error context - Type: errorString, Message: failed to open /path/to/config.json: no such file, StackTrace length: 521
+=== RUN   TestSerializeError_FilePathInclusion/nil_error_produces_empty_context
+    error_serializer_context_test.go:68: Error context - Type: , Message: , StackTrace length: 0
+--- PASS: TestSerializeError_FilePathInclusion (0.00s)
+    --- PASS: TestSerializeError_FilePathInclusion/basic_error_serialization_includes_stack_trace_with_file_paths (0.00s)
+    --- PASS: TestSerializeError_FilePathInclusion/error_with_file_path_in_message (0.00s)
+    --- PASS: TestSerializeError_FilePathInclusion/nil_error_produces_empty_context (0.00s)
+=== RUN   TestSerializeError_StackTraceFormat
+    error_serializer_context_test.go:99: Found valid stack trace line: /home/coding/commitgraph/pkg/ingestlog/error_serializer.go:35 github.com/jedarden/commitgraph/pkg/ingestlog.SerializeError
+    error_serializer_context_test.go:99: Found valid stack trace line: /home/coding/commitgraph/pkg/ingestlog/error_serializer_context_test.go:78 github.com/jedarden/commitgraph/pkg/ingestlog.TestSerializeError_StackTraceFormat
+    error_serializer_context_test.go:99: Found valid stack trace line: /home/coding/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.0.linux-amd64/src/testing/testing.go:1934 testing.tRunner
+    error_serializer_context_test.go:99: Found valid stack trace line: /home/coding/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.0.linux-amd64/src/runtime/asm_amd64.s:1693 runtime.goexit
+    error_serializer_context_test.go:114: Stack trace captured successfully with 5 lines
+--- PASS: TestSerializeError_StackTraceFormat (0.00s)
+=== RUN   TestSerializeErrorWithCaller_DifferentDepths
+=== RUN   TestSerializeErrorWithCaller_DifferentDepths/depth_0_captures_caller
+    error_serializer_context_test.go:177: Stack trace at depth 0:
+        /home/coding/commitgraph/pkg/ingestlog/error_serializer_context_test.go:158 github.com/jedarden/commitgraph/pkg/ingestlog.TestSerializeErrorWithCaller_DifferentDepths.func3
+        /home/coding/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.0.linux-amd64/src/testing/testing.go:1934 testing.tRunner
+        /home/coding/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.0.linux-amd64/src/runtime/asm_amd64.s:1693 runtime.goexit
+=== RUN   TestSerializeErrorWithCaller_DifferentDepths/depth_1_skips_one_frame
+    error_serializer_context_test.go:172: Warning: expected 'error_serializer_context_test.go' in stack trace at depth 1
+    error_serializer_context_test.go:177: Stack trace at depth 1:
+        /home/coding/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.0.linux-amd64/src/testing/testing.go:1934 testing.tRunner
+        /home/coding/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.0.linux-amd64/src/runtime/asm_amd64.s:1693 runtime.goexit
+=== RUN   TestSerializeErrorWithCaller_DifferentDepths/depth_5_skips_multiple_frames
+    error_serializer_context_test.go:150: Depth 5 produced stack trace length: 0
+    error_serializer_context_test.go:177: Stack trace at depth 5:
+--- PASS: TestSerializeErrorWithCaller_DifferentDepths (0.00s)
+    --- PASS: TestSerializeErrorWithCaller_DifferentDepths/depth_0_captures_caller (0.00s)
+    --- PASS: TestSerializeErrorWithCaller_DifferentDepths/depth_1_skips_one_frame (0.00s)
+    --- PASS: TestSerializeErrorWithCaller_DifferentDepths/depth_5_skips_multiple_frames (0.00s)
+=== RUN   TestSerializeErrorWithOptions_Customization
+=== RUN   TestSerializeErrorWithOptions_Customization/include_stack_trace
+    error_serializer_context_test.go:266: Options &{true 0} - Stack trace length: 406
+=== RUN   TestSerializeErrorWithOptions_Customization/exclude_stack_trace
+    error_serializer_context_test.go:266: Options &{false 0} - Stack trace length: 0
+=== RUN   TestSerializeErrorWithOptions_Customization/nil_options_uses_defaults
+    error_serializer_context_test.go:266: Options <nil> - Stack trace length: 406
+=== RUN   TestSerializeErrorWithOptions_Customization/custom_caller_depth
+    error_serializer_context_test.go:252: Note: stack trace at depth 2:
+        /home/coding/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.0.linux-amd64/src/runtime/asm_amd64.s:1693 runtime.goexit
+    error_serializer_context_test.go:266: Options &{true 2} - Stack trace length: 117
+--- PASS: TestSerializeErrorWithOptions_Customization (0.00s)
+    --- PASS: TestSerializeErrorWithOptions_Customization/include_stack_trace (0.00s)
+    --- PASS: TestSerializeErrorWithOptions_Customization/exclude_stack_trace (0.00s)
+    --- PASS: TestSerializeErrorWithOptions_Customization/nil_options_uses_defaults (0.00s)
+    --- PASS: TestSerializeErrorWithOptions_Customization/custom_caller_depth (0.00s)
+=== RUN   TestGetErrorChain_VerifyChainExtraction
+=== RUN   TestGetErrorChain_VerifyChainExtraction/single_error
+    error_serializer_context_test.go:330: Error chain (1): [errorString]
+=== RUN   TestGetErrorChain_VerifyChainExtraction/wrapped_error_chain
+    error_serializer_context_test.go:330: Error chain (2): [wrapError errorString]
+=== RUN   TestGetErrorChain_VerifyChainExtraction/double_wrapped_error_chain
+    error_serializer_context_test.go:330: Error chain (3): [wrapError wrapError errorString]
+=== RUN   TestGetErrorChain_VerifyChainExtraction/nil_error
+    error_serializer_context_test.go:330: Error chain (0): []
+--- PASS: TestGetErrorChain_VerifyChainExtraction (0.00s)
+    --- PASS: TestGetErrorChain_VerifyChainExtraction/single_error (0.00s)
+    --- PASS: TestGetErrorChain_VerifyChainExtraction/wrapped_error_chain (0.00s)
+    --- PASS: TestGetErrorChain_VerifyChainExtraction/double_wrapped_error_chain (0.00s)
+    --- PASS: TestGetErrorChain_VerifyChainExtraction/nil_error (0.00s)
+=== RUN   TestErrorContext_DebuggingCompleteness
+    error_serializer_context_test.go:352: Error Message: failed to read /var/lib/git/config.json: permission denied
+    error_serializer_context_test.go:352: Stack Trace: /home/coding/commitgraph/pkg/ingestlog/error_serializer.go:35 github.com/jedarden/commitgraph/pkg/ingestlog.SerializeError
+        /home/coding/commitgraph/pkg/ingestlog/error_serializer_context_test.go:339 github.com/jedarden/commitgraph/pkg/ingestlog.TestErrorContext_DebuggingCompleteness
+        /home/coding/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.0.linux-amd64/src/testing/testing.go:1934 testing.tRunner
+        /home/coding/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.0.linux-amd64/src/runtime/asm_amd64.s:1693 runtime.goexit
+    error_serializer_context_test.go:352: Error Type: errorString
+    error_serializer_context_test.go:373: Found function: github.com/jedarden/commitgraph/pkg/ingestlog.SerializeError
+--- PASS: TestErrorContext_DebuggingCompleteness (0.00s)
+=== RUN   TestErrorContext_SourceLocationTracing
+    error_serializer_context_test.go:424: Extracted 4 source locations from error context:
+    error_serializer_context_test.go:426:   [0] /home/coding/commitgraph/pkg/ingestlog/error_serializer.go:35
+    error_serializer_context_test.go:426:   [1] /home/coding/commitgraph/pkg/ingestlog/error_serializer_context_test.go:388
+    error_serializer_context_test.go:426:   [2] /home/coding/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.0.linux-amd64/src/testing/testing.go:1934
+    error_serializer_context_test.go:426:   [3] /home/coding/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.0.linux-amd64/src/runtime/asm_amd64.s:1693
+    error_serializer_context_test.go:434: Found this test file in stack trace: /home/coding/commitgraph/pkg/ingestlog/error_serializer_context_test.go:388
+--- PASS: TestErrorContext_SourceLocationTracing (0.00s)
+=== RUN   TestErrorContext_ErrorTypeExtraction
+=== RUN   TestErrorContext_ErrorTypeExtraction/standard_error
+    error_serializer_context_test.go:490: Error type extracted: errorString
+=== RUN   TestErrorContext_ErrorTypeExtraction/wrapped_error
+    error_serializer_context_test.go:490: Error type extracted: wrapError
+=== RUN   TestErrorContext_ErrorTypeExtraction/nil_error
+    error_serializer_context_test.go:490: Error type extracted: 
+--- PASS: TestErrorContext_ErrorTypeExtraction (0.00s)
+    --- PASS: TestErrorContext_ErrorTypeExtraction/standard_error (0.00s)
+    --- PASS: TestErrorContext_ErrorTypeExtraction/wrapped_error (0.00s)
+    --- PASS: TestErrorContext_ErrorTypeExtraction/nil_error (0.00s)
+=== RUN   TestErrorContext_MultipleErrorContext
+    error_serializer_context_test.go:521: Multiple error contexts handled independently
+--- PASS: TestErrorContext_MultipleErrorContext (0.00s)
+=== RUN   TestErrorContext_PathNormalization
+=== RUN   TestErrorContext_PathNormalization/absolute_Unix_path
+    error_serializer_context_test.go:579: Path handling: failed to open /usr/local/config.json
+=== RUN   TestErrorContext_PathNormalization/relative_path
+    error_serializer_context_test.go:579: Path handling: failed to open ./config/settings.json
+=== RUN   TestErrorContext_PathNormalization/path_with_parent_directory
+    error_serializer_context_test.go:579: Path handling: failed to open ../data/file.txt
+=== RUN   TestErrorContext_PathNormalization/Windows_path
+    error_serializer_context_test.go:579: Path handling: failed to open C:\Users\test\file.dat
+=== RUN   TestErrorContext_PathNormalization/mixed_path_separators
+    error_serializer_context_test.go:579: Path handling: failed to open path/to\mixed/file
+--- PASS: TestErrorContext_PathNormalization (0.00s)
+    --- PASS: TestErrorContext_PathNormalization/absolute_Unix_path (0.00s)
+    --- PASS: TestErrorContext_PathNormalization/relative_path (0.00s)
+    --- PASS: TestErrorContext_PathNormalization/path_with_parent_directory (0.00s)
+    --- PASS: TestErrorContext_PathNormalization/Windows_path (0.00s)
+    --- PASS: TestErrorContext_PathNormalization/mixed_path_separators (0.00s)
+=== RUN   TestSerializeError
+=== RUN   TestSerializeError/standard_error
+=== RUN   TestSerializeError/network_error
+=== RUN   TestSerializeError/nil_error
+--- PASS: TestSerializeError (0.00s)
+    --- PASS: TestSerializeError/standard_error (0.00s)
+    --- PASS: TestSerializeError/network_error (0.00s)
+    --- PASS: TestSerializeError/nil_error (0.00s)
+=== RUN   TestSerializeErrorWithCaller
+--- PASS: TestSerializeErrorWithCaller (0.00s)
+=== RUN   TestSerializeErrorWithOptions
+--- PASS: TestSerializeErrorWithOptions (0.00s)
+=== RUN   TestGetErrorType
+=== RUN   TestGetErrorType/standard_error
+=== RUN   TestGetErrorType/network_OpError
+=== RUN   TestGetErrorType/fmt_wrapError
+--- PASS: TestGetErrorType (0.00s)
+    --- PASS: TestGetErrorType/standard_error (0.00s)
+    --- PASS: TestGetErrorType/network_OpError (0.00s)
+    --- PASS: TestGetErrorType/fmt_wrapError (0.00s)
+=== RUN   TestCustomTypeError
+--- PASS: TestCustomTypeError (0.00s)
+=== RUN   TestCaptureStackTrace
+--- PASS: TestCaptureStackTrace (0.00s)
+=== RUN   TestCaptureStackTraceWithDepth
+    error_serializer_test.go:222: Stack trace at depth 10 (may legitimately be empty): ""
+--- PASS: TestCaptureStackTraceWithDepth (0.00s)
+=== RUN   TestSimplifyTypeName
+=== RUN   TestSimplifyTypeName/*errors.errorString
+=== RUN   TestSimplifyTypeName/net.OpError
+=== RUN   TestSimplifyTypeName/github.com/user/repo/pkg.Type
+=== RUN   TestSimplifyTypeName/*github.com/user/repo/pkg.Type
+--- PASS: TestSimplifyTypeName (0.00s)
+    --- PASS: TestSimplifyTypeName/*errors.errorString (0.00s)
+    --- PASS: TestSimplifyTypeName/net.OpError (0.00s)
+    --- PASS: TestSimplifyTypeName/github.com/user/repo/pkg.Type (0.00s)
+    --- PASS: TestSimplifyTypeName/*github.com/user/repo/pkg.Type (0.00s)
+=== RUN   TestGetErrorChain
+--- PASS: TestGetErrorChain (0.00s)
+=== RUN   TestGetErrorChainNil
+--- PASS: TestGetErrorChainNil (0.00s)
+=== RUN   TestErrorContextFields
+--- PASS: TestErrorContextFields (0.00s)
+=== RUN   TestNilErrorHandling
+--- PASS: TestNilErrorHandling (0.00s)
+=== RUN   TestStackTraceFormat
+--- PASS: TestStackTraceFormat (0.00s)
+=== RUN   TestLogEntry_ExtendedContextValidation
+=== RUN   TestLogEntry_ExtendedContextValidation/extended_context_with_UserID_only_-_should_pass
+[INGEST-LOG] 2026/08/07 23:26:30.253470 {"timestamp":"2026-08-07T23:26:30.253377204Z","event_type":"retry","user":{"user_id":"user-123","session_id":"","request_id":"","email":"","github_username":""},"endpoint":{"endpoint":"","method":"","path":"","url":"http://test:8080/resolve","attempt_number":1},"error":{"type":"","message":""},"max_retries":0}
+=== RUN   TestLogEntry_ExtendedContextValidation/extended_context_with_SessionID_only_-_should_pass
+[INGEST-LOG] 2026/08/07 23:26:30.253485 {"timestamp":"2026-08-07T23:26:30.253481071Z","event_type":"retry","user":{"user_id":"","session_id":"session-456","request_id":"","email":"","github_username":""},"endpoint":{"endpoint":"","method":"","path":"","url":"http://test:8080/resolve","attempt_number":1},"error":{"type":"","message":""},"max_retries":0}
+=== RUN   TestLogEntry_ExtendedContextValidation/extended_context_with_RequestID_only_-_should_pass
+[INGEST-LOG] 2026/08/07 23:26:30.253496 {"timestamp":"2026-08-07T23:26:30.253491966Z","event_type":"retry","user":{"user_id":"","session_id":"","request_id":"request-789","email":"","github_username":""},"endpoint":{"endpoint":"","method":"","path":"","url":"http://test:8080/resolve","attempt_number":1},"error":{"type":"","message":""},"max_retries":0}
+=== RUN   TestLogEntry_ExtendedContextValidation/extended_context_with_all_fields_-_should_pass
+[INGEST-LOG] 2026/08/07 23:26:30.253505 {"timestamp":"2026-08-07T23:26:30.25350279Z","event_type":"retry","user":{"user_id":"user-123","session_id":"session-456","request_id":"request-789","email":"","github_username":""},"endpoint":{"endpoint":"","method":"","path":"","url":"http://test:8080/resolve","attempt_number":1},"error":{"type":"","message":""},"max_retries":0}
+=== RUN   TestLogEntry_ExtendedContextValidation/mixed_context_-_extended_populated,_basic_empty_-_should_pass
+[INGEST-LOG] 2026/08/07 23:26:30.253519 {"timestamp":"2026-08-07T23:26:30.253515287Z","event_type":"retry","user":{"user_id":"user-123","session_id":"session-456","request_id":"","email":"","github_username":""},"endpoint":{"endpoint":"","method":"","path":"","url":"http://test:8080/resolve","attempt_number":1},"error":{"type":"","message":""},"max_retries":0}
+=== RUN   TestLogEntry_ExtendedContextValidation/basic_context_with_email_only_-_should_pass
+[INGEST-LOG] 2026/08/07 23:26:30.253532 {"timestamp":"2026-08-07T23:26:30.253527048Z","event_type":"retry","user":{"user_id":"","session_id":"","request_id":"","email":"user@example.com","github_username":""},"endpoint":{"endpoint":"","method":"","path":"","url":"http://test:8080/resolve","attempt_number":1},"error":{"type":"","message":""},"max_retries":0}
+=== RUN   TestLogEntry_ExtendedContextValidation/basic_context_with_github_username_only_-_should_pass
+[INGEST-LOG] 2026/08/07 23:26:30.253543 {"timestamp":"2026-08-07T23:26:30.253540306Z","event_type":"retry","user":{"user_id":"","session_id":"","request_id":"","email":"","github_username":"octocat"},"endpoint":{"endpoint":"","method":"","path":"","url":"http://test:8080/resolve","attempt_number":1},"error":{"type":"","message":""},"max_retries":0}
+=== RUN   TestLogEntry_ExtendedContextValidation/both_basic_and_extended_context_-_should_pass
+[INGEST-LOG] 2026/08/07 23:26:30.253554 {"timestamp":"2026-08-07T23:26:30.253550905Z","event_type":"retry","user":{"user_id":"user-123","session_id":"","request_id":"","email":"user@example.com","github_username":"octocat"},"endpoint":{"endpoint":"","method":"","path":"","url":"http://test:8080/resolve","attempt_number":1},"error":{"type":"","message":""},"max_retries":0}
+=== RUN   TestLogEntry_ExtendedContextValidation/no_user_identification_-_should_fail
+=== RUN   TestLogEntry_ExtendedContextValidation/missing_endpoint_URL_-_should_fail
+=== RUN   TestLogEntry_ExtendedContextValidation/missing_attempt_number_-_should_fail
+--- PASS: TestLogEntry_ExtendedContextValidation (0.00s)
+    --- PASS: TestLogEntry_ExtendedContextValidation/extended_context_with_UserID_only_-_should_pass (0.00s)
+    --- PASS: TestLogEntry_ExtendedContextValidation/extended_context_with_SessionID_only_-_should_pass (0.00s)
+    --- PASS: TestLogEntry_ExtendedContextValidation/extended_context_with_RequestID_only_-_should_pass (0.00s)
+    --- PASS: TestLogEntry_ExtendedContextValidation/extended_context_with_all_fields_-_should_pass (0.00s)
+    --- PASS: TestLogEntry_ExtendedContextValidation/mixed_context_-_extended_populated,_basic_empty_-_should_pass (0.00s)
+    --- PASS: TestLogEntry_ExtendedContextValidation/basic_context_with_email_only_-_should_pass (0.00s)
+    --- PASS: TestLogEntry_ExtendedContextValidation/basic_context_with_github_username_only_-_should_pass (0.00s)
+    --- PASS: TestLogEntry_ExtendedContextValidation/both_basic_and_extended_context_-_should_pass (0.00s)
+    --- PASS: TestLogEntry_ExtendedContextValidation/no_user_identification_-_should_fail (0.00s)
+    --- PASS: TestLogEntry_ExtendedContextValidation/missing_endpoint_URL_-_should_fail (0.00s)
+    --- PASS: TestLogEntry_ExtendedContextValidation/missing_attempt_number_-_should_fail (0.00s)
+=== RUN   TestLogEntry_ExtendedContextFullEntry
+[INGEST-LOG] 2026/08/07 23:26:30.253588 {"timestamp":"2026-08-07T23:26:30.253584Z","event_type":"retry","user":{"user_id":"user-abc-123","session_id":"session-xyz-789","request_id":"req-def-456","email":"user@example.com","github_username":"octocat"},"endpoint":{"endpoint":"","method":"","path":"","url":"http://queue-api:8080/email-resolution/resolve","attempt_number":2,"status_code":500,"response_body":"{\"error\": \"internal server error\"}"},"error":{"type":"server_error","message":"internal server error","stack_trace":"stacktrace here"},"max_retries":4,"retry_delay_ms":100,"total_duration_ms":250}
+--- PASS: TestLogEntry_ExtendedContextFullEntry (0.00s)
+=== RUN   TestLogStatsJSON
+--- PASS: TestLogStatsJSON (0.00s)
+=== RUN   TestLogStatsJSON_ZeroValues
+--- PASS: TestLogStatsJSON_ZeroValues (0.00s)
+=== RUN   TestLogStatsJSON_AllIngested
+--- PASS: TestLogStatsJSON_AllIngested (0.00s)
+=== RUN   TestLogStatsJSON_AllSkipped
+--- PASS: TestLogStatsJSON_AllSkipped (0.00s)
+=== RUN   TestLogStatsJSON_Mixed
+--- PASS: TestLogStatsJSON_Mixed (0.00s)
+=== RUN   TestLogStatsJSON_JSONValidity
+--- PASS: TestLogStatsJSON_JSONValidity (0.00s)
+=== RUN   TestEventFromError
+=== RUN   TestEventFromError/timeout_error
+=== RUN   TestEventFromError/network_error_-_connection_refused
+=== RUN   TestEventFromError/client_error_404
+=== RUN   TestEventFromError/server_error_500
+=== RUN   TestEventFromError/parse_error
+=== RUN   TestEventFromError/unknown_error
+=== RUN   TestEventFromError/nil_error
+--- PASS: TestEventFromError (0.00s)
+    --- PASS: TestEventFromError/timeout_error (0.00s)
+    --- PASS: TestEventFromError/network_error_-_connection_refused (0.00s)
+    --- PASS: TestEventFromError/client_error_404 (0.00s)
+    --- PASS: TestEventFromError/server_error_500 (0.00s)
+    --- PASS: TestEventFromError/parse_error (0.00s)
+    --- PASS: TestEventFromError/unknown_error (0.00s)
+    --- PASS: TestEventFromError/nil_error (0.00s)
+=== RUN   TestClassifyError
+=== RUN   TestClassifyError/timeout_error
+=== RUN   TestClassifyError/network_connection_refused
+=== RUN   TestClassifyError/network_connection_reset
+=== RUN   TestClassifyError/DNS_error
+=== RUN   TestClassifyError/parse_error_invalid
+=== RUN   TestClassifyError/parse_error_unmarshal
+=== RUN   TestClassifyError/client_error_from_status_code
+=== RUN   TestClassifyError/server_error_from_status_code
+=== RUN   TestClassifyError/unknown_error
+=== RUN   TestClassifyError/nil_error
+--- PASS: TestClassifyError (0.00s)
+    --- PASS: TestClassifyError/timeout_error (0.00s)
+    --- PASS: TestClassifyError/network_connection_refused (0.00s)
+    --- PASS: TestClassifyError/network_connection_reset (0.00s)
+    --- PASS: TestClassifyError/DNS_error (0.00s)
+    --- PASS: TestClassifyError/parse_error_invalid (0.00s)
+    --- PASS: TestClassifyError/parse_error_unmarshal (0.00s)
+    --- PASS: TestClassifyError/client_error_from_status_code (0.00s)
+    --- PASS: TestClassifyError/server_error_from_status_code (0.00s)
+    --- PASS: TestClassifyError/unknown_error (0.00s)
+    --- PASS: TestClassifyError/nil_error (0.00s)
+=== RUN   TestLogRetry
+[INGEST-LOG] 2026/08/07 23:26:30.254295 {"timestamp":"2026-08-07T23:26:30.254261283Z","event_type":"retry","email":"test@example.com","github_username":"testuser","endpoint_url":"http://test:8080/resolve","attempt_number":1,"max_retries":4,"status_code":429,"error_type":"client_error","error_message":"rate limit exceeded","retry_delay_ms":1000}
+--- PASS: TestLogRetry (0.00s)
+=== RUN   TestLogFailure
+[INGEST-LOG] 2026/08/07 23:26:30.254312 {"timestamp":"2026-08-07T23:26:30.254303834Z","event_type":"failure","email":"test@example.com","github_username":"testuser","endpoint_url":"http://test:8080/resolve","attempt_number":4,"max_retries":4,"status_code":500,"error_type":"server_error","error_message":"internal server error","total_duration_ms":5000}
+--- PASS: TestLogFailure (0.00s)
+=== RUN   TestLogEventValidation
+=== RUN   TestLogEventValidation/missing_email
+=== RUN   TestLogEventValidation/missing_github_username
+=== RUN   TestLogEventValidation/missing_endpoint_URL
+=== RUN   TestLogEventValidation/valid_event
+[INGEST-LOG] 2026/08/07 23:26:30.254357 {"timestamp":"2026-08-07T23:26:30.254352934Z","event_type":"retry","email":"test@example.com","github_username":"testuser","endpoint_url":"http://test:8080/resolve","attempt_number":0,"max_retries":0}
+--- PASS: TestLogEventValidation (0.00s)
+    --- PASS: TestLogEventValidation/missing_email (0.00s)
+    --- PASS: TestLogEventValidation/missing_github_username (0.00s)
+    --- PASS: TestLogEventValidation/missing_endpoint_URL (0.00s)
+    --- PASS: TestLogEventValidation/valid_event (0.00s)
+=== RUN   TestEventTimestamp
+[INGEST-LOG] 2026/08/07 23:26:30.254377 {"timestamp":"2026-08-07T23:26:30.254374774Z","event_type":"success","email":"test@example.com","github_username":"testuser","endpoint_url":"http://test:8080/resolve","attempt_number":0,"max_retries":0}
+--- PASS: TestEventTimestamp (0.00s)
+=== RUN   TestLogRetryInline
+[INGEST-LOG] 2026/08/07 23:26:30.254388 {"timestamp":"2026-08-07T23:26:30.254384867Z","event_type":"retry","email":"test@example.com","github_username":"testuser","endpoint_url":"http://test:8080/resolve","attempt_number":1,"max_retries":4,"status_code":429,"response_body":"rate limited","error_type":"client_error","error_message":"rate limit exceeded","stacktrace":"stacktrace here","retry_delay_ms":1000,"total_duration_ms":1500}
+--- PASS: TestLogRetryInline (0.00s)
+=== RUN   TestLogFailureInline
+[INGEST-LOG] 2026/08/07 23:26:30.254399 {"timestamp":"2026-08-07T23:26:30.254396269Z","event_type":"failure","email":"test@example.com","github_username":"testuser","endpoint_url":"http://test:8080/resolve","attempt_number":4,"max_retries":4,"status_code":500,"response_body":"internal error","error_type":"server_error","error_message":"server error","stacktrace":"stacktrace here","total_duration_ms":5000}
+--- PASS: TestLogFailureInline (0.00s)
+=== RUN   TestLogEntryStructure
+--- PASS: TestLogEntryStructure (0.00s)
+=== RUN   TestErrorContextStructure
+--- PASS: TestErrorContextStructure (0.00s)
+=== RUN   TestUserContextStructure
+--- PASS: TestUserContextStructure (0.00s)
+=== RUN   TestEndpointContextStructure
+--- PASS: TestEndpointContextStructure (0.00s)
+=== RUN   TestLogEntryJSONSerialization
+--- PASS: TestLogEntryJSONSerialization (0.00s)
+=== RUN   TestLogEntryFromError
+--- PASS: TestLogEntryFromError (0.00s)
+=== RUN   TestLogRetryWithEntry
+[INGEST-LOG] 2026/08/07 23:26:30.254499 {"timestamp":"2026-08-07T23:26:30.254496332Z","event_type":"retry","user":{"user_id":"","session_id":"","request_id":"","email":"test@example.com","github_username":"testuser"},"endpoint":{"endpoint":"","method":"","path":"","url":"http://test:8080/resolve","attempt_number":1,"status_code":429},"error":{"type":"client_error","message":"rate limit exceeded"},"max_retries":4,"retry_delay_ms":1000}
+--- PASS: TestLogRetryWithEntry (0.00s)
+=== RUN   TestLogFailureWithEntry
+[INGEST-LOG] 2026/08/07 23:26:30.254510 {"timestamp":"2026-08-07T23:26:30.254507122Z","event_type":"failure","user":{"user_id":"","session_id":"","request_id":"","email":"test@example.com","github_username":"testuser"},"endpoint":{"endpoint":"","method":"","path":"","url":"http://test:8080/resolve","attempt_number":4,"status_code":500},"error":{"type":"server_error","message":"internal server error"},"max_retries":4,"total_duration_ms":5000}
+--- PASS: TestLogFailureWithEntry (0.00s)
+=== RUN   TestLogEntryValidation
+=== RUN   TestLogEntryValidation/github_username_alone_is_sufficient_user_identification
+[INGEST-LOG] 2026/08/07 23:26:30.254528 {"timestamp":"2026-08-07T23:26:30.254525307Z","event_type":"retry","user":{"user_id":"","session_id":"","request_id":"","email":"","github_username":"testuser"},"endpoint":{"endpoint":"","method":"","path":"","url":"http://test:8080/resolve","attempt_number":1},"error":{"type":"","message":""},"max_retries":0}
+=== RUN   TestLogEntryValidation/email_alone_is_sufficient_user_identification
+[INGEST-LOG] 2026/08/07 23:26:30.254541 {"timestamp":"2026-08-07T23:26:30.254538496Z","event_type":"retry","user":{"user_id":"","session_id":"","request_id":"","email":"test@example.com","github_username":""},"endpoint":{"endpoint":"","method":"","path":"","url":"http://test:8080/resolve","attempt_number":1},"error":{"type":"","message":""},"max_retries":0}
+=== RUN   TestLogEntryValidation/no_user_identification_at_all
+=== RUN   TestLogEntryValidation/missing_endpoint_URL
+=== RUN   TestLogEntryValidation/missing_attempt_number
+=== RUN   TestLogEntryValidation/valid_entry
+[INGEST-LOG] 2026/08/07 23:26:30.254577 {"timestamp":"2026-08-07T23:26:30.254574889Z","event_type":"retry","user":{"user_id":"","session_id":"","request_id":"","email":"test@example.com","github_username":"testuser"},"endpoint":{"endpoint":"","method":"","path":"","url":"http://test:8080/resolve","attempt_number":1},"error":{"type":"","message":""},"max_retries":0}
+--- PASS: TestLogEntryValidation (0.00s)
+    --- PASS: TestLogEntryValidation/github_username_alone_is_sufficient_user_identification (0.00s)
+    --- PASS: TestLogEntryValidation/email_alone_is_sufficient_user_identification (0.00s)
+    --- PASS: TestLogEntryValidation/no_user_identification_at_all (0.00s)
+    --- PASS: TestLogEntryValidation/missing_endpoint_URL (0.00s)
+    --- PASS: TestLogEntryValidation/missing_attempt_number (0.00s)
+    --- PASS: TestLogEntryValidation/valid_entry (0.00s)
+=== RUN   TestEventToLogEntryConversion
+--- PASS: TestEventToLogEntryConversion (0.00s)
+=== RUN   TestCaptureUserContext
+=== RUN   TestCaptureUserContext/valid_user_context
+=== RUN   TestCaptureUserContext/empty_email
+=== RUN   TestCaptureUserContext/empty_github_username
+=== RUN   TestCaptureUserContext/both_empty
+--- PASS: TestCaptureUserContext (0.00s)
+    --- PASS: TestCaptureUserContext/valid_user_context (0.00s)
+    --- PASS: TestCaptureUserContext/empty_email (0.00s)
+    --- PASS: TestCaptureUserContext/empty_github_username (0.00s)
+    --- PASS: TestCaptureUserContext/both_empty (0.00s)
+=== RUN   TestCaptureEndpointContext
+=== RUN   TestCaptureEndpointContext/valid_endpoint_context_with_status_code
+=== RUN   TestCaptureEndpointContext/valid_endpoint_context_without_status_code
+=== RUN   TestCaptureEndpointContext/empty_endpoint
+=== RUN   TestCaptureEndpointContext/empty_method
+=== RUN   TestCaptureEndpointContext/empty_path
+=== RUN   TestCaptureEndpointContext/empty_url
+=== RUN   TestCaptureEndpointContext/zero_attempt_number
+=== RUN   TestCaptureEndpointContext/negative_attempt_number
+=== RUN   TestCaptureEndpointContext/large_response_body_gets_truncated
+=== RUN   TestCaptureEndpointContext/exactly_10KB_response_body
+--- PASS: TestCaptureEndpointContext (0.00s)
+    --- PASS: TestCaptureEndpointContext/valid_endpoint_context_with_status_code (0.00s)
+    --- PASS: TestCaptureEndpointContext/valid_endpoint_context_without_status_code (0.00s)
+    --- PASS: TestCaptureEndpointContext/empty_endpoint (0.00s)
+    --- PASS: TestCaptureEndpointContext/empty_method (0.00s)
+    --- PASS: TestCaptureEndpointContext/empty_path (0.00s)
+    --- PASS: TestCaptureEndpointContext/empty_url (0.00s)
+    --- PASS: TestCaptureEndpointContext/zero_attempt_number (0.00s)
+    --- PASS: TestCaptureEndpointContext/negative_attempt_number (0.00s)
+    --- PASS: TestCaptureEndpointContext/large_response_body_gets_truncated (0.00s)
+    --- PASS: TestCaptureEndpointContext/exactly_10KB_response_body (0.00s)
+=== RUN   TestCaptureContextIntegration
+[INGEST-LOG] 2026/08/07 23:26:30.254762 {"timestamp":"2026-08-07T23:26:30.254755801Z","event_type":"retry","user":{"user_id":"","session_id":"","request_id":"","email":"user@example.com","github_username":"octocat"},"endpoint":{"endpoint":"test-endpoint","method":"POST","path":"/test","url":"http://queue-api:8080/email-resolution/resolve","attempt_number":2,"status_code":500,"response_body":"{\"error\": \"internal server error\"}"},"error":{"type":"server_error","message":"internal server error"},"max_retries":4,"retry_delay_ms":200,"total_duration_ms":350}
+--- PASS: TestCaptureContextIntegration (0.00s)
+=== RUN   TestMetadataMergedIntoLogEntry
+[INGEST-LOG] 2026/08/07 23:26:30.254778 {"timestamp":"2026-08-07T23:26:30.254768955Z","event_type":"retry","user":{"user_id":"","session_id":"","request_id":"","email":"test@example.com","github_username":"testuser"},"endpoint":{"endpoint":"","method":"","path":"","url":"http://test:8080/resolve","attempt_number":1},"error":{"type":"","message":""},"max_retries":0,"metadata":{"batch_id":"batch-123","source_row":42}}
+--- PASS: TestMetadataMergedIntoLogEntry (0.00s)
+=== RUN   TestValidateMetadataKeys_RejectsCollisions
+=== RUN   TestValidateMetadataKeys_RejectsCollisions/nil_metadata_is_valid
+=== RUN   TestValidateMetadataKeys_RejectsCollisions/empty_metadata_is_valid
+=== RUN   TestValidateMetadataKeys_RejectsCollisions/non-colliding_key_is_valid
+=== RUN   TestValidateMetadataKeys_RejectsCollisions/colliding_with_'user'_is_rejected
+=== RUN   TestValidateMetadataKeys_RejectsCollisions/colliding_with_'endpoint'_is_rejected
+=== RUN   TestValidateMetadataKeys_RejectsCollisions/colliding_with_'metadata'_is_rejected
+--- PASS: TestValidateMetadataKeys_RejectsCollisions (0.00s)
+    --- PASS: TestValidateMetadataKeys_RejectsCollisions/nil_metadata_is_valid (0.00s)
+    --- PASS: TestValidateMetadataKeys_RejectsCollisions/empty_metadata_is_valid (0.00s)
+    --- PASS: TestValidateMetadataKeys_RejectsCollisions/non-colliding_key_is_valid (0.00s)
+    --- PASS: TestValidateMetadataKeys_RejectsCollisions/colliding_with_'user'_is_rejected (0.00s)
+    --- PASS: TestValidateMetadataKeys_RejectsCollisions/colliding_with_'endpoint'_is_rejected (0.00s)
+    --- PASS: TestValidateMetadataKeys_RejectsCollisions/colliding_with_'metadata'_is_rejected (0.00s)
+=== RUN   TestLogIngestError_MetadataMerging
+[INGEST-LOG] 2026/08/07 23:26:30.254872 {"timestamp":"2026-08-07T23:26:30.25486278Z","event_type":"failure","user":{"user_id":"user-123","session_id":"session-456","request_id":"req-789","email":"user@example.com","github_username":"octocat"},"endpoint":{"endpoint":"github-username-resolution","method":"POST","path":"/email-resolution/resolve","url":"http://queue-api:8080/email-resolution/resolve","attempt_number":1,"status_code":500,"response_body":"{\"error\":\"internal\"}"},"error":{"type":"errorString","message":"internal error","stack_trace":"/home/coding/commitgraph/pkg/ingestlog/error_serializer.go:35 github.com/jedarden/commitgraph/pkg/ingestlog.SerializeError\n/home/coding/commitgraph/pkg/ingestlog/logger.go:1174 github.com/jedarden/commitgraph/pkg/ingestlog.LogIngestError\n/home/coding/commitgraph/pkg/ingestlog/logger_test.go:1350 github.com/jedarden/commitgraph/pkg/ingestlog.TestLogIngestError_MetadataMerging\n/home/coding/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.0.linux-amd64/src/testing/testing.go:1934 testing.tRunner\n/home/coding/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.0.linux-amd64/src/runtime/asm_amd64.s:1693 runtime.goexit\n"},"max_retries":4,"retry_delay_ms":100,"total_duration_ms":250,"metadata":{"batch_id":"batch-42"}}
+--- PASS: TestLogIngestError_MetadataMerging (0.00s)
+=== RUN   TestLogEntry_ZeroValueValidation
+--- PASS: TestLogEntry_ZeroValueValidation (0.00s)
+=== RUN   TestLogIngestError_ContextPreservation
+=== RUN   TestLogIngestError_ContextPreservation/all_context_fields_populated_-_retry_event
+[INGEST-LOG] 2026/08/07 23:26:30.254929 {"timestamp":"2026-08-07T23:26:30.254922507Z","event_type":"retry","user":{"user_id":"user-abc-123","session_id":"session-xyz-789","request_id":"req-def-456","email":"user@example.com","github_username":"octocat"},"endpoint":{"endpoint":"github-username-resolution","method":"POST","path":"/email-resolution/resolve","url":"http://queue-api:8080/email-resolution/resolve","attempt_number":1,"status_code":503,"response_body":"{\"error\": \"service unavailable\"}"},"error":{"type":"errorString","message":"connection refused","stack_trace":"/home/coding/commitgraph/pkg/ingestlog/error_serializer.go:35 github.com/jedarden/commitgraph/pkg/ingestlog.SerializeError\n/home/coding/commitgraph/pkg/ingestlog/logger.go:1174 github.com/jedarden/commitgraph/pkg/ingestlog.LogIngestError\n/home/coding/commitgraph/pkg/ingestlog/logger_test.go:1511 github.com/jedarden/commitgraph/pkg/ingestlog.TestLogIngestError_ContextPreservation.func1\n/home/coding/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.0.linux-amd64/src/testing/testing.go:1934 testing.tRunner\n/home/coding/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.0.linux-amd64/src/runtime/asm_amd64.s:1693 runtime.goexit\n"},"max_retries":4,"retry_delay_ms":100,"total_duration_ms":250}
+=== RUN   TestLogIngestError_ContextPreservation/all_context_fields_populated_-_failure_event
+[INGEST-LOG] 2026/08/07 23:26:30.254977 {"timestamp":"2026-08-07T23:26:30.254973174Z","event_type":"failure","user":{"user_id":"user-abc-123","session_id":"session-xyz-789","request_id":"req-def-456","email":"user@example.com","github_username":"octocat"},"endpoint":{"endpoint":"github-username-resolution","method":"POST","path":"/email-resolution/resolve","url":"http://queue-api:8080/email-resolution/resolve","attempt_number":1,"status_code":504,"response_body":"{\"error\": \"gateway timeout\"}"},"error":{"type":"errorString","message":"context deadline exceeded","stack_trace":"/home/coding/commitgraph/pkg/ingestlog/error_serializer.go:35 github.com/jedarden/commitgraph/pkg/ingestlog.SerializeError\n/home/coding/commitgraph/pkg/ingestlog/logger.go:1174 github.com/jedarden/commitgraph/pkg/ingestlog.LogIngestError\n/home/coding/commitgraph/pkg/ingestlog/logger_test.go:1511 github.com/jedarden/commitgraph/pkg/ingestlog.TestLogIngestError_ContextPreservation.func1\n/home/coding/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.0.linux-amd64/src/testing/testing.go:1934 testing.tRunner\n/home/coding/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.0.linux-amd64/src/runtime/asm_amd64.s:1693 runtime.goexit\n"},"max_retries":4,"retry_delay_ms":100,"total_duration_ms":250}
+=== RUN   TestLogIngestError_ContextPreservation/empty_context_fields_-_should_still_work
+[INGEST-LOG] 2026/08/07 23:26:30.255019 {"timestamp":"2026-08-07T23:26:30.25501232Z","event_type":"failure","user":{"user_id":"","session_id":"","request_id":"","email":"user@example.com","github_username":"octocat"},"endpoint":{"endpoint":"github-username-resolution","method":"POST","path":"/email-resolution/resolve","url":"http://queue-api:8080/email-resolution/resolve","attempt_number":1,"status_code":500,"response_body":"{\"error\": \"internal error\"}"},"error":{"type":"errorString","message":"internal server error","stack_trace":"/home/coding/commitgraph/pkg/ingestlog/error_serializer.go:35 github.com/jedarden/commitgraph/pkg/ingestlog.SerializeError\n/home/coding/commitgraph/pkg/ingestlog/logger.go:1174 github.com/jedarden/commitgraph/pkg/ingestlog.LogIngestError\n/home/coding/commitgraph/pkg/ingestlog/logger_test.go:1511 github.com/jedarden/commitgraph/pkg/ingestlog.TestLogIngestError_ContextPreservation.func1\n/home/coding/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.0.linux-amd64/src/testing/testing.go:1934 testing.tRunner\n/home/coding/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.0.linux-amd64/src/runtime/asm_amd64.s:1693 runtime.goexit\n"},"max_retries":4,"retry_delay_ms":100,"total_duration_ms":250}
+=== RUN   TestLogIngestError_ContextPreservation/partial_context_fields_-_only_userID
+[INGEST-LOG] 2026/08/07 23:26:30.255063 {"timestamp":"2026-08-07T23:26:30.255057689Z","event_type":"retry","user":{"user_id":"user-abc-123","session_id":"","request_id":"","email":"user@example.com","github_username":"octocat"},"endpoint":{"endpoint":"github-username-resolution","method":"POST","path":"/email-resolution/resolve","url":"http://queue-api:8080/email-resolution/resolve","attempt_number":1,"status_code":429,"response_body":"{\"error\": \"rate limited\"}"},"error":{"type":"errorString","message":"rate limit exceeded","stack_trace":"/home/coding/commitgraph/pkg/ingestlog/error_serializer.go:35 github.com/jedarden/commitgraph/pkg/ingestlog.SerializeError\n/home/coding/commitgraph/pkg/ingestlog/logger.go:1174 github.com/jedarden/commitgraph/pkg/ingestlog.LogIngestError\n/home/coding/commitgraph/pkg/ingestlog/logger_test.go:1511 github.com/jedarden/commitgraph/pkg/ingestlog.TestLogIngestError_ContextPreservation.func1\n/home/coding/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.0.linux-amd64/src/testing/testing.go:1934 testing.tRunner\n/home/coding/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.0.linux-amd64/src/runtime/asm_amd64.s:1693 runtime.goexit\n"},"max_retries":4,"retry_delay_ms":100,"total_duration_ms":250}
+=== RUN   TestLogIngestError_ContextPreservation/partial_context_fields_-_only_sessionID_and_requestID
+[INGEST-LOG] 2026/08/07 23:26:30.255100 {"timestamp":"2026-08-07T23:26:30.25509606Z","event_type":"failure","user":{"user_id":"","session_id":"session-xyz-789","request_id":"req-def-456","email":"user@example.com","github_username":"octocat"},"endpoint":{"endpoint":"github-username-resolution","method":"POST","path":"/email-resolution/resolve","url":"http://queue-api:8080/email-resolution/resolve","attempt_number":1,"status_code":400,"response_body":"{\"error\": \"bad request\"}"},"error":{"type":"errorString","message":"bad request","stack_trace":"/home/coding/commitgraph/pkg/ingestlog/error_serializer.go:35 github.com/jedarden/commitgraph/pkg/ingestlog.SerializeError\n/home/coding/commitgraph/pkg/ingestlog/logger.go:1174 github.com/jedarden/commitgraph/pkg/ingestlog.LogIngestError\n/home/coding/commitgraph/pkg/ingestlog/logger_test.go:1511 github.com/jedarden/commitgraph/pkg/ingestlog.TestLogIngestError_ContextPreservation.func1\n/home/coding/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.0.linux-amd64/src/testing/testing.go:1934 testing.tRunner\n/home/coding/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.0.linux-amd64/src/runtime/asm_amd64.s:1693 runtime.goexit\n"},"max_retries":4,"retry_delay_ms":100,"total_duration_ms":250}
+--- PASS: TestLogIngestError_ContextPreservation (0.00s)
+    --- PASS: TestLogIngestError_ContextPreservation/all_context_fields_populated_-_retry_event (0.00s)
+    --- PASS: TestLogIngestError_ContextPreservation/all_context_fields_populated_-_failure_event (0.00s)
+    --- PASS: TestLogIngestError_ContextPreservation/empty_context_fields_-_should_still_work (0.00s)
+    --- PASS: TestLogIngestError_ContextPreservation/partial_context_fields_-_only_userID (0.00s)
+    --- PASS: TestLogIngestError_ContextPreservation/partial_context_fields_-_only_sessionID_and_requestID (0.00s)
+=== RUN   TestLogIngestErrorExtended_ContextPreservation
+=== RUN   TestLogIngestErrorExtended_ContextPreservation/all_extended_context_fields_populated
+[INGEST-LOG] 2026/08/07 23:26:30.255148 {"timestamp":"2026-08-07T23:26:30.25514445Z","event_type":"failure","user":{"user_id":"user-abc-123","session_id":"session-xyz-789","request_id":"req-def-456","email":"user@example.com","github_username":"octocat"},"endpoint":{"endpoint":"","method":"","path":"","url":"http://queue-api:8080/email-resolution/resolve","attempt_number":1,"status_code":500,"response_body":"{\"error\": \"internal server error\"}"},"error":{"type":"errorString","message":"internal server error","stack_trace":"/home/coding/commitgraph/pkg/ingestlog/error_serializer.go:35 github.com/jedarden/commitgraph/pkg/ingestlog.SerializeError\n/home/coding/commitgraph/pkg/ingestlog/logger.go:1353 github.com/jedarden/commitgraph/pkg/ingestlog.LogIngestErrorExtended\n/home/coding/commitgraph/pkg/ingestlog/logger_test.go:1655 github.com/jedarden/commitgraph/pkg/ingestlog.TestLogIngestErrorExtended_ContextPreservation.func1\n/home/coding/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.0.linux-amd64/src/testing/testing.go:1934 testing.tRunner\n/home/coding/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.0.linux-amd64/src/runtime/asm_amd64.s:1693 runtime.goexit\n"},"max_retries":0}
+=== RUN   TestLogIngestErrorExtended_ContextPreservation/minimal_extended_context_with_required_fields
+[INGEST-LOG] 2026/08/07 23:26:30.255175 {"timestamp":"2026-08-07T23:26:30.25516883Z","event_type":"success","user":{"user_id":"user-min-123","session_id":"session-min-456","request_id":"req-min-789","email":"","github_username":""},"endpoint":{"endpoint":"","method":"","path":"","url":"http://test:8080/test","attempt_number":1,"status_code":200},"error":{"type":"","message":""},"max_retries":0}
+--- PASS: TestLogIngestErrorExtended_ContextPreservation (0.00s)
+    --- PASS: TestLogIngestErrorExtended_ContextPreservation/all_extended_context_fields_populated (0.00s)
+    --- PASS: TestLogIngestErrorExtended_ContextPreservation/minimal_extended_context_with_required_fields (0.00s)
+=== RUN   TestLogIngestError_EndpointContextCapture
+=== RUN   TestLogIngestError_EndpointContextCapture/github-username-resolution_endpoint
+[INGEST-LOG] 2026/08/07 23:26:30.255198 {"timestamp":"2026-08-07T23:26:30.255196548Z","event_type":"retry","user":{"user_id":"","session_id":"","request_id":"","email":"test@example.com","github_username":"testuser"},"endpoint":{"endpoint":"github-username-resolution","method":"POST","path":"/email-resolution/resolve","url":"http://queue-api:8080/email-resolution/resolve","attempt_number":1,"status_code":200,"response_body":"{\"success\": true}"},"error":{"type":"server_error","message":"test error"},"max_retries":4,"retry_delay_ms":100,"total_duration_ms":250}
+=== RUN   TestLogIngestError_EndpointContextCapture/user-validation_endpoint
+[INGEST-LOG] 2026/08/07 23:26:30.255227 {"timestamp":"2026-08-07T23:26:30.255225914Z","event_type":"retry","user":{"user_id":"","session_id":"","request_id":"","email":"test@example.com","github_username":"testuser"},"endpoint":{"endpoint":"user-validation","method":"GET","path":"/users/validate","url":"http://auth-api:8080/users/validate","attempt_number":1,"status_code":200,"response_body":"{\"success\": true}"},"error":{"type":"server_error","message":"test error"},"max_retries":4,"retry_delay_ms":100,"total_duration_ms":250}
+=== RUN   TestLogIngestError_EndpointContextCapture/email-lookup_endpoint
+[INGEST-LOG] 2026/08/07 23:26:30.255258 {"timestamp":"2026-08-07T23:26:30.255256734Z","event_type":"retry","user":{"user_id":"","session_id":"","request_id":"","email":"test@example.com","github_username":"testuser"},"endpoint":{"endpoint":"email-lookup","method":"GET","path":"/email/lookup","url":"http://user-api:8080/email/lookup","attempt_number":1,"status_code":200,"response_body":"{\"success\": true}"},"error":{"type":"server_error","message":"test error"},"max_retries":4,"retry_delay_ms":100,"total_duration_ms":250}
+--- PASS: TestLogIngestError_EndpointContextCapture (0.00s)
+    --- PASS: TestLogIngestError_EndpointContextCapture/github-username-resolution_endpoint (0.00s)
+    --- PASS: TestLogIngestError_EndpointContextCapture/user-validation_endpoint (0.00s)
+    --- PASS: TestLogIngestError_EndpointContextCapture/email-lookup_endpoint (0.00s)
+=== RUN   TestLogIngestError_EndpointContextIntegration
+=== RUN   TestLogIngestError_EndpointContextIntegration/endpoint_context_captured_in_retry_event
+[INGEST-LOG] 2026/08/07 23:26:30.255305 {"timestamp":"2026-08-07T23:26:30.255299788Z","event_type":"retry","user":{"user_id":"user-abc-123","session_id":"session-xyz-789","request_id":"req-def-456","email":"user@example.com","github_username":"octocat"},"endpoint":{"endpoint":"github-username-resolution","method":"POST","path":"/email-resolution/resolve","url":"http://queue-api:8080/email-resolution/resolve","attempt_number":1,"status_code":503,"response_body":"{\"error\": \"service unavailable\"}"},"error":{"type":"errorString","message":"connection refused","stack_trace":"/home/coding/commitgraph/pkg/ingestlog/error_serializer.go:35 github.com/jedarden/commitgraph/pkg/ingestlog.SerializeError\n/home/coding/commitgraph/pkg/ingestlog/logger.go:1174 github.com/jedarden/commitgraph/pkg/ingestlog.LogIngestError\n/home/coding/commitgraph/pkg/ingestlog/logger_test.go:1935 github.com/jedarden/commitgraph/pkg/ingestlog.TestLogIngestError_EndpointContextIntegration.func1\n/home/coding/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.0.linux-amd64/src/testing/testing.go:1934 testing.tRunner\n/home/coding/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.0.linux-amd64/src/runtime/asm_amd64.s:1693 runtime.goexit\n"},"max_retries":4,"retry_delay_ms":100,"total_duration_ms":250}
+=== RUN   TestLogIngestError_EndpointContextIntegration/endpoint_context_captured_in_failure_event
+[INGEST-LOG] 2026/08/07 23:26:30.255344 {"timestamp":"2026-08-07T23:26:30.255340095Z","event_type":"failure","user":{"user_id":"user-abc-123","session_id":"session-xyz-789","request_id":"req-def-456","email":"user@example.com","github_username":"octocat"},"endpoint":{"endpoint":"email-validation","method":"GET","path":"/validate/email","url":"http://auth-api:8080/validate/email","attempt_number":1,"status_code":504,"response_body":"{\"error\": \"gateway timeout\"}"},"error":{"type":"errorString","message":"timeout","stack_trace":"/home/coding/commitgraph/pkg/ingestlog/error_serializer.go:35 github.com/jedarden/commitgraph/pkg/ingestlog.SerializeError\n/home/coding/commitgraph/pkg/ingestlog/logger.go:1174 github.com/jedarden/commitgraph/pkg/ingestlog.LogIngestError\n/home/coding/commitgraph/pkg/ingestlog/logger_test.go:1935 github.com/jedarden/commitgraph/pkg/ingestlog.TestLogIngestError_EndpointContextIntegration.func1\n/home/coding/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.0.linux-amd64/src/testing/testing.go:1934 testing.tRunner\n/home/coding/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.0.linux-amd64/src/runtime/asm_amd64.s:1693 runtime.goexit\n"},"max_retries":4,"retry_delay_ms":100,"total_duration_ms":250}
+--- PASS: TestLogIngestError_EndpointContextIntegration (0.00s)
+    --- PASS: TestLogIngestError_EndpointContextIntegration/endpoint_context_captured_in_retry_event (0.00s)
+    --- PASS: TestLogIngestError_EndpointContextIntegration/endpoint_context_captured_in_failure_event (0.00s)
+=== RUN   TestUserContext_FieldsVerification
+--- PASS: TestUserContext_FieldsVerification (0.00s)
+=== RUN   TestAggregateStats
+[INGEST-LOG] 2026/08/07 23:26:30.255388 {"timestamp":"2026-08-07T23:26:30.255384141Z","event_type":"success","user":{"user_id":"","session_id":"","request_id":"","email":"test@example.com","github_username":"testuser"},"endpoint":{"endpoint":"","method":"","path":"","url":"http://test:8080/resolve","attempt_number":1},"error":{"type":"","message":""},"max_retries":0}
+[INGEST-LOG] 2026/08/07 23:26:30.255390 SKIP: empty login | Total skipped: 1
+[INGEST-LOG] 2026/08/07 23:26:30.255392 {"timestamp":"2026-08-07T23:26:30.255384141Z","event_type":"retry","user":{"user_id":"","session_id":"","request_id":"","email":"test@example.com","github_username":"testuser"},"endpoint":{"endpoint":"","method":"","path":"","url":"http://test:8080/resolve","attempt_number":1},"error":{"type":"","message":""},"max_retries":0}
+[INGEST-LOG] 2026/08/07 23:26:30.255394 {"timestamp":"2026-08-07T23:26:30.255384141Z","event_type":"failure","user":{"user_id":"","session_id":"","request_id":"","email":"test@example.com","github_username":"testuser"},"endpoint":{"endpoint":"","method":"","path":"","url":"http://test:8080/resolve","attempt_number":1},"error":{"type":"","message":""},"max_retries":0}
+--- PASS: TestAggregateStats (0.00s)
+=== RUN   TestRecordProcessedIncrementsCounter
+--- PASS: TestRecordProcessedIncrementsCounter (0.00s)
+=== RUN   TestRecordProcessedMultipleCalls
+--- PASS: TestRecordProcessedMultipleCalls (0.00s)
+=== RUN   TestRecordProcessedUpdatesTimestamp
+--- PASS: TestRecordProcessedUpdatesTimestamp (0.00s)
+=== RUN   TestRecordProcessedInStats
+--- PASS: TestRecordProcessedInStats (0.00s)
+=== RUN   TestRecordProcessedIsolation
+--- PASS: TestRecordProcessedIsolation (0.00s)
+=== RUN   TestBatchProgressLogging
+[INGEST-LOG] 2026/08/07 23:26:30.256582   Progress: 5/10 batches (5000 rows, 50.0%) | Rate: 500 rows/sec | ETA: 10s (batch took: 2s)
+--- PASS: TestBatchProgressLogging (0.00s)
+=== RUN   TestGetErrorRecovery
+=== RUN   TestGetErrorRecovery/timeout_error
+=== RUN   TestGetErrorRecovery/network_error
+=== RUN   TestGetErrorRecovery/client_error_404
+=== RUN   TestGetErrorRecovery/server_error_500
+=== RUN   TestGetErrorRecovery/parse_error
+=== RUN   TestGetErrorRecovery/unknown_error
+--- PASS: TestGetErrorRecovery (0.00s)
+    --- PASS: TestGetErrorRecovery/timeout_error (0.00s)
+    --- PASS: TestGetErrorRecovery/network_error (0.00s)
+    --- PASS: TestGetErrorRecovery/client_error_404 (0.00s)
+    --- PASS: TestGetErrorRecovery/server_error_500 (0.00s)
+    --- PASS: TestGetErrorRecovery/parse_error (0.00s)
+    --- PASS: TestGetErrorRecovery/unknown_error (0.00s)
+=== RUN   TestLogErrorWithRecovery
+[INGEST-LOG] 2026/08/07 23:26:30.256778 {"timestamp":"2026-08-07T23:26:30.256769984Z","event_type":"","user":{"user_id":"","session_id":"","request_id":"","email":"test@example.com","github_username":"testuser"},"endpoint":{"endpoint":"","method":"","path":"","url":"http://test:8080/resolve","attempt_number":1,"status_code":500},"error":{"type":"server_error","message":"internal server error"},"max_retries":0}
+[INGEST-LOG] 2026/08/07 23:26:30.256782 RECOVERY [medium severity]: Server error 500 - service unavailable or overloaded, implement retry with exponential backoff
+--- PASS: TestLogErrorWithRecovery (0.00s)
+=== RUN   TestStatusReport
+[INGEST-LOG] 2026/08/07 23:26:30.256799 SKIP: empty login | Total skipped: 1
+[INGEST-LOG] 2026/08/07 23:26:30.256827 {"timestamp":"2026-08-07T23:26:30.256806225Z","event_type":"success","user":{"user_id":"","session_id":"","request_id":"","email":"test@example.com","github_username":"testuser"},"endpoint":{"endpoint":"","method":"","path":"","url":"http://test:8080/resolve","attempt_number":1},"error":{"type":"","message":""},"max_retries":0}
+[INGEST-LOG] 2026/08/07 23:26:30.256830 
+=== Production Ingest Status ===
+[INGEST-LOG] 2026/08/07 23:26:30.256832 Timestamp: 2026-08-07T23:26:30Z
+[INGEST-LOG] 2026/08/07 23:26:30.256834 Records processed:   1
+[INGEST-LOG] 2026/08/07 23:26:30.256835  (10.0% of 1000 total)
+[INGEST-LOG] 2026/08/07 23:26:30.256843 
+[INGEST-LOG] 2026/08/07 23:26:30.256845 Records skipped:     1
+[INGEST-LOG] 2026/08/07 23:26:30.256846 Records ingested:    1
+[INGEST-LOG] 2026/08/07 23:26:30.256847 Retry attempts:      0
+[INGEST-LOG] 2026/08/07 23:26:30.256849 Final failures:      0
+[INGEST-LOG] 2026/08/07 23:26:30.256850 Batch progress:     1/10 batches completed
+[INGEST-LOG] 2026/08/07 23:26:30.256852 Elapsed time:       0s
+[INGEST-LOG] 2026/08/07 23:26:30.256856 Average rate:       19092.35 records/sec
+[INGEST-LOG] 2026/08/07 23:26:30.256859 Estimated complete: 2026-08-07T23:26:30Z
+[INGEST-LOG] 2026/08/07 23:26:30.256860 ETA remaining:      0s
+[INGEST-LOG] 2026/08/07 23:26:30.256862 ===
+--- PASS: TestStatusReport (0.00s)
+=== RUN   TestPeriodicReporter
+[INGEST-LOG] 2026/08/07 23:26:30.357092 
+=== Periodic Test Report ===
+[INGEST-LOG] 2026/08/07 23:26:30.357121 Timestamp: 2026-08-07T23:26:30Z
+[INGEST-LOG] 2026/08/07 23:26:30.357125 Records processed:   0
+[INGEST-LOG] 2026/08/07 23:26:30.357128  (50.0% of 1000 total)
+[INGEST-LOG] 2026/08/07 23:26:30.357147 
+[INGEST-LOG] 2026/08/07 23:26:30.357148 Records skipped:     0
+[INGEST-LOG] 2026/08/07 23:26:30.357150 Records ingested:    0
+[INGEST-LOG] 2026/08/07 23:26:30.357152 Retry attempts:      0
+[INGEST-LOG] 2026/08/07 23:26:30.357153 Final failures:      0
+[INGEST-LOG] 2026/08/07 23:26:30.357154 Batch progress:     5/10 batches completed
+[INGEST-LOG] 2026/08/07 23:26:30.357156 Recent errors:      2 since last report
+[INGEST-LOG] 2026/08/07 23:26:30.357194 Last error:         test error 2 (at 2026-08-07T19:26:30-04:00)
+[INGEST-LOG] 2026/08/07 23:26:30.357198 Elapsed time:       100ms
+[INGEST-LOG] 2026/08/07 23:26:30.357206 Estimated complete: 2026-08-07T23:26:30Z
+[INGEST-LOG] 2026/08/07 23:26:30.357207 ETA remaining:      0s
+[INGEST-LOG] 2026/08/07 23:26:30.357209 ===
+[INGEST-LOG] 2026/08/07 23:26:30.407194 
+=== Periodic Test Report ===
+[INGEST-LOG] 2026/08/07 23:26:30.407209 Timestamp: 2026-08-07T23:26:30Z
+[INGEST-LOG] 2026/08/07 23:26:30.407212 Records processed:   0
+[INGEST-LOG] 2026/08/07 23:26:30.407215  (50.0% of 1000 total)
+[INGEST-LOG] 2026/08/07 23:26:30.407237 
+[INGEST-LOG] 2026/08/07 23:26:30.407238 Records skipped:     0
+[INGEST-LOG] 2026/08/07 23:26:30.407240 Records ingested:    0
+[INGEST-LOG] 2026/08/07 23:26:30.407241 Retry attempts:      0
+[INGEST-LOG] 2026/08/07 23:26:30.407242 Final failures:      0
+[INGEST-LOG] 2026/08/07 23:26:30.407244 Batch progress:     5/10 batches completed
+[INGEST-LOG] 2026/08/07 23:26:30.407245 Recent errors:      2 since last report
+[INGEST-LOG] 2026/08/07 23:26:30.407248 Last error:         test error 2 (at 2026-08-07T19:26:30-04:00)
+[INGEST-LOG] 2026/08/07 23:26:30.407250 Elapsed time:       150ms
+[INGEST-LOG] 2026/08/07 23:26:30.407258 Estimated complete: 2026-08-07T23:26:30Z
+[INGEST-LOG] 2026/08/07 23:26:30.407259 ETA remaining:      0s
+[INGEST-LOG] 2026/08/07 23:26:30.407260 ===
+--- PASS: TestPeriodicReporter (0.15s)
+=== RUN   TestLogIngestError_Integration
+=== RUN   TestLogIngestError_Integration/complete_retry_event_with_all_context
+[INGEST-LOG] 2026/08/07 23:26:30.407425 {"timestamp":"2026-08-07T23:26:30.407388542Z","event_type":"retry","user":{"user_id":"user-abc-123","session_id":"session-xyz-789","request_id":"req-def-456","email":"user@example.com","github_username":"octocat"},"endpoint":{"endpoint":"github-username-resolution","method":"POST","path":"/email-resolution/resolve","url":"http://queue-api:8080/email-resolution/resolve","attempt_number":1,"status_code":503,"response_body":"{\"error\": \"service unavailable\"}"},"error":{"type":"errorString","message":"connection refused","stack_trace":"/home/coding/commitgraph/pkg/ingestlog/error_serializer.go:35 github.com/jedarden/commitgraph/pkg/ingestlog.SerializeError\n/home/coding/commitgraph/pkg/ingestlog/logger.go:1174 github.com/jedarden/commitgraph/pkg/ingestlog.LogIngestError\n/home/coding/commitgraph/pkg/ingestlog/logger_test.go:2522 github.com/jedarden/commitgraph/pkg/ingestlog.TestLogIngestError_Integration.func1\n/home/coding/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.0.linux-amd64/src/testing/testing.go:1934 testing.tRunner\n/home/coding/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.0.linux-amd64/src/runtime/asm_amd64.s:1693 runtime.goexit\n"},"max_retries":4,"retry_delay_ms":100,"total_duration_ms":250,"metadata":{"batch_id":"test-batch-123"}}
+=== RUN   TestLogIngestError_Integration/complete_failure_event_with_all_context
+[INGEST-LOG] 2026/08/07 23:26:30.407551 {"timestamp":"2026-08-07T23:26:30.407541984Z","event_type":"failure","user":{"user_id":"user-abc-123","session_id":"session-xyz-789","request_id":"req-def-456","email":"user@example.com","github_username":"octocat"},"endpoint":{"endpoint":"github-username-resolution","method":"POST","path":"/email-resolution/resolve","url":"http://queue-api:8080/email-resolution/resolve","attempt_number":1,"status_code":504,"response_body":"{\"error\": \"gateway timeout\"}"},"error":{"type":"errorString","message":"context deadline exceeded","stack_trace":"/home/coding/commitgraph/pkg/ingestlog/error_serializer.go:35 github.com/jedarden/commitgraph/pkg/ingestlog.SerializeError\n/home/coding/commitgraph/pkg/ingestlog/logger.go:1174 github.com/jedarden/commitgraph/pkg/ingestlog.LogIngestError\n/home/coding/commitgraph/pkg/ingestlog/logger_test.go:2522 github.com/jedarden/commitgraph/pkg/ingestlog.TestLogIngestError_Integration.func1\n/home/coding/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.0.linux-amd64/src/testing/testing.go:1934 testing.tRunner\n/home/coding/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.0.linux-amd64/src/runtime/asm_amd64.s:1693 runtime.goexit\n"},"max_retries":4,"retry_delay_ms":100,"total_duration_ms":250,"metadata":{"source":"live-enrichment"}}
+=== RUN   TestLogIngestError_Integration/complete_success_event_with_all_context
+[INGEST-LOG] 2026/08/07 23:26:30.407639 {"timestamp":"2026-08-07T23:26:30.40762165Z","event_type":"success","user":{"user_id":"user-abc-123","session_id":"session-xyz-789","request_id":"req-def-456","email":"user@example.com","github_username":"octocat"},"endpoint":{"endpoint":"github-username-resolution","method":"POST","path":"/email-resolution/resolve","url":"http://queue-api:8080/email-resolution/resolve","attempt_number":1,"status_code":200,"response_body":"{\"success\": true}"},"error":{"type":"","message":""},"max_retries":4,"retry_delay_ms":100,"total_duration_ms":250,"metadata":{"attempt":"1"}}
+=== RUN   TestLogIngestError_Integration/minimal_context_-_no_extended_user_IDs
+[INGEST-LOG] 2026/08/07 23:26:30.407706 {"timestamp":"2026-08-07T23:26:30.407698407Z","event_type":"failure","user":{"user_id":"","session_id":"","request_id":"","email":"minimal@example.com","github_username":"minimal-user"},"endpoint":{"endpoint":"test-endpoint","method":"GET","path":"/test","url":"http://test-api:8080/test","attempt_number":1,"status_code":504},"error":{"type":"errorString","message":"timeout","stack_trace":"/home/coding/commitgraph/pkg/ingestlog/error_serializer.go:35 github.com/jedarden/commitgraph/pkg/ingestlog.SerializeError\n/home/coding/commitgraph/pkg/ingestlog/logger.go:1174 github.com/jedarden/commitgraph/pkg/ingestlog.LogIngestError\n/home/coding/commitgraph/pkg/ingestlog/logger_test.go:2522 github.com/jedarden/commitgraph/pkg/ingestlog.TestLogIngestError_Integration.func1\n/home/coding/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.0.linux-amd64/src/testing/testing.go:1934 testing.tRunner\n/home/coding/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.0.linux-amd64/src/runtime/asm_amd64.s:1693 runtime.goexit\n"},"max_retries":4,"retry_delay_ms":100,"total_duration_ms":250}
+--- PASS: TestLogIngestError_Integration (0.00s)
+    --- PASS: TestLogIngestError_Integration/complete_retry_event_with_all_context (0.00s)
+    --- PASS: TestLogIngestError_Integration/complete_failure_event_with_all_context (0.00s)
+    --- PASS: TestLogIngestError_Integration/complete_success_event_with_all_context (0.00s)
+    --- PASS: TestLogIngestError_Integration/minimal_context_-_no_extended_user_IDs (0.00s)
+=== RUN   TestLogIngestError_ErrorHandlingFallback
+=== RUN   TestLogIngestError_ErrorHandlingFallback/successful_logger_write
+[INGEST-LOG] 2026/08/07 23:26:30.407832 {"timestamp":"2026-08-07T23:26:30.407817021Z","event_type":"failure","user":{"user_id":"user-123","session_id":"session-456","request_id":"request-789","email":"test@example.com","github_username":"testuser"},"endpoint":{"endpoint":"test-endpoint","method":"POST","path":"/test","url":"http://test:8080/test","attempt_number":1,"status_code":500,"response_body":"{\"error\": \"test\"}"},"error":{"type":"errorString","message":"test error","stack_trace":"/home/coding/commitgraph/pkg/ingestlog/error_serializer.go:35 github.com/jedarden/commitgraph/pkg/ingestlog.SerializeError\n/home/coding/commitgraph/pkg/ingestlog/logger.go:1174 github.com/jedarden/commitgraph/pkg/ingestlog.LogIngestError\n/home/coding/commitgraph/pkg/ingestlog/logger_test.go:2724 github.com/jedarden/commitgraph/pkg/ingestlog.TestLogIngestError_ErrorHandlingFallback.func3\n/home/coding/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.0.linux-amd64/src/testing/testing.go:1934 testing.tRunner\n/home/coding/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.0.linux-amd64/src/runtime/asm_amd64.s:1693 runtime.goexit\n"},"max_retries":4,"retry_delay_ms":100,"total_duration_ms":250}
+=== RUN   TestLogIngestError_ErrorHandlingFallback/nil_logger_falls_back_to_default_logger
+[INGEST-LOG] 2026/08/07 23:26:30.407872 {"timestamp":"2026-08-07T23:26:30.407862116Z","event_type":"failure","user":{"user_id":"user-123","session_id":"session-456","request_id":"request-789","email":"test@example.com","github_username":"testuser"},"endpoint":{"endpoint":"test-endpoint","method":"POST","path":"/test","url":"http://test:8080/test","attempt_number":1,"status_code":500,"response_body":"{\"error\": \"test\"}"},"error":{"type":"errorString","message":"test error","stack_trace":"/home/coding/commitgraph/pkg/ingestlog/error_serializer.go:35 github.com/jedarden/commitgraph/pkg/ingestlog.SerializeError\n/home/coding/commitgraph/pkg/ingestlog/logger.go:1174 github.com/jedarden/commitgraph/pkg/ingestlog.LogIngestError\n/home/coding/commitgraph/pkg/ingestlog/logger_test.go:2724 github.com/jedarden/commitgraph/pkg/ingestlog.TestLogIngestError_ErrorHandlingFallback.func3\n/home/coding/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.0.linux-amd64/src/testing/testing.go:1934 testing.tRunner\n/home/coding/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.0.linux-amd64/src/runtime/asm_amd64.s:1693 runtime.goexit\n"},"max_retries":4,"retry_delay_ms":100,"total_duration_ms":250}
+--- PASS: TestLogIngestError_ErrorHandlingFallback (0.00s)
+    --- PASS: TestLogIngestError_ErrorHandlingFallback/successful_logger_write (0.00s)
+    --- PASS: TestLogIngestError_ErrorHandlingFallback/nil_logger_falls_back_to_default_logger (0.00s)
+=== RUN   TestLogStatsOutput
+[INGEST-LOG] 2026/08/07 23:26:30.407895 SKIP: empty login | Total skipped: 1
+[INGEST-LOG] 2026/08/07 23:26:30.407907 {"timestamp":"2026-08-07T23:26:30.407901673Z","event_type":"success","user":{"user_id":"","session_id":"","request_id":"","email":"test@example.com","github_username":"testuser"},"endpoint":{"endpoint":"","method":"","path":"","url":"http://test:8080/resolve","attempt_number":1},"error":{"type":"","message":""},"max_retries":0}
+[INGEST-LOG] 2026/08/07 23:26:30.407912 {"timestamp":"2026-08-07T23:26:30.407901673Z","event_type":"retry","user":{"user_id":"","session_id":"","request_id":"","email":"test@example.com","github_username":"testuser"},"endpoint":{"endpoint":"","method":"","path":"","url":"http://test:8080/resolve","attempt_number":1},"error":{"type":"","message":""},"max_retries":0}
+[INGEST-LOG] 2026/08/07 23:26:30.407916 {"timestamp":"2026-08-07T23:26:30.407901673Z","event_type":"failure","user":{"user_id":"","session_id":"","request_id":"","email":"test@example.com","github_username":"testuser"},"endpoint":{"endpoint":"","method":"","path":"","url":"http://test:8080/resolve","attempt_number":1},"error":{"type":"","message":""},"max_retries":0}
+[INGEST-LOG] 2026/08/07 23:26:30.407918 
+=== Test Summary ===
+[INGEST-LOG] 2026/08/07 23:26:30.407919 Records processed:    3
+[INGEST-LOG] 2026/08/07 23:26:30.407921 Records skipped:      1 (33.3%)
+[INGEST-LOG] 2026/08/07 23:26:30.407929 Records ingested:     1 (33.3%)
+[INGEST-LOG] 2026/08/07 23:26:30.407931 Retry attempts:       1
+[INGEST-LOG] 2026/08/07 23:26:30.407932 Final failures:       1
+[INGEST-LOG] 2026/08/07 23:26:30.407933 Elapsed time:         0s
+[INGEST-LOG] 2026/08/07 23:26:30.407936 Average rate:         155617.80 records/sec
+--- PASS: TestLogStatsOutput (0.00s)
+=== RUN   TestCaptureUserID
+=== RUN   TestCaptureUserID/valid_user_ID
+=== RUN   TestCaptureUserID/empty_user_ID
+=== RUN   TestCaptureUserID/user_ID_with_special_characters
+=== RUN   TestCaptureUserID/user_ID_with_UUID_format
+=== RUN   TestCaptureUserID/numeric_user_ID
+--- PASS: TestCaptureUserID (0.00s)
+    --- PASS: TestCaptureUserID/valid_user_ID (0.00s)
+    --- PASS: TestCaptureUserID/empty_user_ID (0.00s)
+    --- PASS: TestCaptureUserID/user_ID_with_special_characters (0.00s)
+    --- PASS: TestCaptureUserID/user_ID_with_UUID_format (0.00s)
+    --- PASS: TestCaptureUserID/numeric_user_ID (0.00s)
+=== RUN   TestCaptureSessionID
+=== RUN   TestCaptureSessionID/valid_session_ID
+=== RUN   TestCaptureSessionID/empty_session_ID
+=== RUN   TestCaptureSessionID/session_ID_with_UUID_format
+=== RUN   TestCaptureSessionID/session_ID_with_timestamp
+=== RUN   TestCaptureSessionID/session_ID_with_special_characters
+--- PASS: TestCaptureSessionID (0.00s)
+    --- PASS: TestCaptureSessionID/valid_session_ID (0.00s)
+    --- PASS: TestCaptureSessionID/empty_session_ID (0.00s)
+    --- PASS: TestCaptureSessionID/session_ID_with_UUID_format (0.00s)
+    --- PASS: TestCaptureSessionID/session_ID_with_timestamp (0.00s)
+    --- PASS: TestCaptureSessionID/session_ID_with_special_characters (0.00s)
+=== RUN   TestCaptureRequestID
+=== RUN   TestCaptureRequestID/valid_request_ID
+=== RUN   TestCaptureRequestID/empty_request_ID
+=== RUN   TestCaptureRequestID/request_ID_with_UUID_format
+=== RUN   TestCaptureRequestID/request_ID_with_timestamp
+=== RUN   TestCaptureRequestID/request_ID_with_special_characters
+--- PASS: TestCaptureRequestID (0.00s)
+    --- PASS: TestCaptureRequestID/valid_request_ID (0.00s)
+    --- PASS: TestCaptureRequestID/empty_request_ID (0.00s)
+    --- PASS: TestCaptureRequestID/request_ID_with_UUID_format (0.00s)
+    --- PASS: TestCaptureRequestID/request_ID_with_timestamp (0.00s)
+    --- PASS: TestCaptureRequestID/request_ID_with_special_characters (0.00s)
+=== RUN   TestCaptureEndpointName
+=== RUN   TestCaptureEndpointName/valid_endpoint_name
+=== RUN   TestCaptureEndpointName/valid_endpoint_with_numbers
+=== RUN   TestCaptureEndpointName/valid_endpoint_with_underscores
+=== RUN   TestCaptureEndpointName/empty_endpoint_name
+=== RUN   TestCaptureEndpointName/endpoint_with_path
+=== RUN   TestCaptureEndpointName/endpoint_with_hyphen_and_underscore
+--- PASS: TestCaptureEndpointName (0.00s)
+    --- PASS: TestCaptureEndpointName/valid_endpoint_name (0.00s)
+    --- PASS: TestCaptureEndpointName/valid_endpoint_with_numbers (0.00s)
+    --- PASS: TestCaptureEndpointName/valid_endpoint_with_underscores (0.00s)
+    --- PASS: TestCaptureEndpointName/empty_endpoint_name (0.00s)
+    --- PASS: TestCaptureEndpointName/endpoint_with_path (0.00s)
+    --- PASS: TestCaptureEndpointName/endpoint_with_hyphen_and_underscore (0.00s)
+=== RUN   TestCaptureMethod
+=== RUN   TestCaptureMethod/valid_GET_method
+=== RUN   TestCaptureMethod/valid_POST_method
+=== RUN   TestCaptureMethod/valid_PUT_method
+=== RUN   TestCaptureMethod/valid_DELETE_method
+=== RUN   TestCaptureMethod/valid_PATCH_method
+=== RUN   TestCaptureMethod/valid_HEAD_method
+=== RUN   TestCaptureMethod/valid_OPTIONS_method
+=== RUN   TestCaptureMethod/empty_method
+=== RUN   TestCaptureMethod/lowercase_method
+=== RUN   TestCaptureMethod/mixed_case_method
+--- PASS: TestCaptureMethod (0.00s)
+    --- PASS: TestCaptureMethod/valid_GET_method (0.00s)
+    --- PASS: TestCaptureMethod/valid_POST_method (0.00s)
+    --- PASS: TestCaptureMethod/valid_PUT_method (0.00s)
+    --- PASS: TestCaptureMethod/valid_DELETE_method (0.00s)
+    --- PASS: TestCaptureMethod/valid_PATCH_method (0.00s)
+    --- PASS: TestCaptureMethod/valid_HEAD_method (0.00s)
+    --- PASS: TestCaptureMethod/valid_OPTIONS_method (0.00s)
+    --- PASS: TestCaptureMethod/empty_method (0.00s)
+    --- PASS: TestCaptureMethod/lowercase_method (0.00s)
+    --- PASS: TestCaptureMethod/mixed_case_method (0.00s)
+=== RUN   TestCapturePath
+=== RUN   TestCapturePath/valid_simple_path
+=== RUN   TestCapturePath/valid_path_with_segments
+=== RUN   TestCapturePath/valid_path_with_query_parameters
+=== RUN   TestCapturePath/valid_path_with_fragment
+=== RUN   TestCapturePath/valid_path_with_ID
+=== RUN   TestCapturePath/valid_path_with_UUID
+=== RUN   TestCapturePath/empty_path
+=== RUN   TestCapturePath/valid_complex_path
+=== RUN   TestCapturePath/valid_path_with_special_characters
+--- PASS: TestCapturePath (0.00s)
+    --- PASS: TestCapturePath/valid_simple_path (0.00s)
+    --- PASS: TestCapturePath/valid_path_with_segments (0.00s)
+    --- PASS: TestCapturePath/valid_path_with_query_parameters (0.00s)
+    --- PASS: TestCapturePath/valid_path_with_fragment (0.00s)
+    --- PASS: TestCapturePath/valid_path_with_ID (0.00s)
+    --- PASS: TestCapturePath/valid_path_with_UUID (0.00s)
+    --- PASS: TestCapturePath/empty_path (0.00s)
+    --- PASS: TestCapturePath/valid_complex_path (0.00s)
+    --- PASS: TestCapturePath/valid_path_with_special_characters (0.00s)
+=== RUN   TestUserContextHelperFunctionsEdgeCases
+=== RUN   TestUserContextHelperFunctionsEdgeCases/CaptureUserID_with_whitespace
+=== RUN   TestUserContextHelperFunctionsEdgeCases/CaptureSessionID_with_whitespace
+=== RUN   TestUserContextHelperFunctionsEdgeCases/CaptureRequestID_with_whitespace
+=== RUN   TestUserContextHelperFunctionsEdgeCases/CaptureEndpointName_with_very_long_name
+=== RUN   TestUserContextHelperFunctionsEdgeCases/CaptureMethod_with_custom_method
+=== RUN   TestUserContextHelperFunctionsEdgeCases/CapturePath_with_encoded_characters
+--- PASS: TestUserContextHelperFunctionsEdgeCases (0.00s)
+    --- PASS: TestUserContextHelperFunctionsEdgeCases/CaptureUserID_with_whitespace (0.00s)
+    --- PASS: TestUserContextHelperFunctionsEdgeCases/CaptureSessionID_with_whitespace (0.00s)
+    --- PASS: TestUserContextHelperFunctionsEdgeCases/CaptureRequestID_with_whitespace (0.00s)
+    --- PASS: TestUserContextHelperFunctionsEdgeCases/CaptureEndpointName_with_very_long_name (0.00s)
+    --- PASS: TestUserContextHelperFunctionsEdgeCases/CaptureMethod_with_custom_method (0.00s)
+    --- PASS: TestUserContextHelperFunctionsEdgeCases/CapturePath_with_encoded_characters (0.00s)
+=== RUN   TestUserContextHelperFunctionsIntegration
+=== RUN   TestUserContextHelperFunctionsIntegration/all_ID_capture_functions_together
+=== RUN   TestUserContextHelperFunctionsIntegration/endpoint_helpers_together
+=== RUN   TestUserContextHelperFunctionsIntegration/empty_IDs_are_valid
+--- PASS: TestUserContextHelperFunctionsIntegration (0.00s)
+    --- PASS: TestUserContextHelperFunctionsIntegration/all_ID_capture_functions_together (0.00s)
+    --- PASS: TestUserContextHelperFunctionsIntegration/endpoint_helpers_together (0.00s)
+    --- PASS: TestUserContextHelperFunctionsIntegration/empty_IDs_are_valid (0.00s)
+=== RUN   TestIngestEndpointDataFormatCompatibility
+--- PASS: TestIngestEndpointDataFormatCompatibility (0.00s)
+=== RUN   TestIngestEndpointAcceptsAllSourceTypes
+=== RUN   TestIngestEndpointAcceptsAllSourceTypes/seed
+=== RUN   TestIngestEndpointAcceptsAllSourceTypes/live
+=== RUN   TestIngestEndpointAcceptsAllSourceTypes/manual
+--- PASS: TestIngestEndpointAcceptsAllSourceTypes (0.00s)
+    --- PASS: TestIngestEndpointAcceptsAllSourceTypes/seed (0.00s)
+    --- PASS: TestIngestEndpointAcceptsAllSourceTypes/live (0.00s)
+    --- PASS: TestIngestEndpointAcceptsAllSourceTypes/manual (0.00s)
+=== RUN   TestIngestEndpointTimestampCompatibility
+--- PASS: TestIngestEndpointTimestampCompatibility (0.00s)
+PASS
+coverage: 87.2% of statements
+ok  	github.com/jedarden/commitgraph/pkg/ingestlog	(cached)	coverage: 87.2% of statements

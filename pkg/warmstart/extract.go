@@ -857,15 +857,15 @@ func ExtractWarmStart(tarballPath, targetDir string) error {
 	// Validate tarball path exists
 	if _, err := os.Stat(tarballPath); err != nil {
 		if os.IsNotExist(err) {
-			return NewIOError("tarball file not found", err, "")
+			return NewIOError("tarball file not found", err)
 		}
-		return NewIOError("cannot access tarball file", err, "")
+		return NewIOError("cannot access tarball file", err)
 	}
 
 	// Read tarball file from disk
 	tarballData, err := os.ReadFile(tarballPath)
 	if err != nil {
-		return NewIOError("failed to read tarball file", err, "")
+		return NewIOError("failed to read tarball file", err)
 	}
 
 	// Initialize empty git directory structure

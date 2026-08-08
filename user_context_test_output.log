@@ -1,0 +1,38 @@
+=== RUN   TestUserContextStructure
+--- PASS: TestUserContextStructure (0.00s)
+=== RUN   TestCaptureUserContext
+=== RUN   TestCaptureUserContext/valid_user_context
+=== RUN   TestCaptureUserContext/empty_email
+=== RUN   TestCaptureUserContext/empty_github_username
+=== RUN   TestCaptureUserContext/both_empty
+--- PASS: TestCaptureUserContext (0.00s)
+    --- PASS: TestCaptureUserContext/valid_user_context (0.00s)
+    --- PASS: TestCaptureUserContext/empty_email (0.00s)
+    --- PASS: TestCaptureUserContext/empty_github_username (0.00s)
+    --- PASS: TestCaptureUserContext/both_empty (0.00s)
+=== RUN   TestUserContext_FieldsVerification
+--- PASS: TestUserContext_FieldsVerification (0.00s)
+=== RUN   TestUserContextHelperFunctionsEdgeCases
+=== RUN   TestUserContextHelperFunctionsEdgeCases/CaptureUserID_with_whitespace
+=== RUN   TestUserContextHelperFunctionsEdgeCases/CaptureSessionID_with_whitespace
+=== RUN   TestUserContextHelperFunctionsEdgeCases/CaptureRequestID_with_whitespace
+=== RUN   TestUserContextHelperFunctionsEdgeCases/CaptureEndpointName_with_very_long_name
+=== RUN   TestUserContextHelperFunctionsEdgeCases/CaptureMethod_with_custom_method
+=== RUN   TestUserContextHelperFunctionsEdgeCases/CapturePath_with_encoded_characters
+--- PASS: TestUserContextHelperFunctionsEdgeCases (0.00s)
+    --- PASS: TestUserContextHelperFunctionsEdgeCases/CaptureUserID_with_whitespace (0.00s)
+    --- PASS: TestUserContextHelperFunctionsEdgeCases/CaptureSessionID_with_whitespace (0.00s)
+    --- PASS: TestUserContextHelperFunctionsEdgeCases/CaptureRequestID_with_whitespace (0.00s)
+    --- PASS: TestUserContextHelperFunctionsEdgeCases/CaptureEndpointName_with_very_long_name (0.00s)
+    --- PASS: TestUserContextHelperFunctionsEdgeCases/CaptureMethod_with_custom_method (0.00s)
+    --- PASS: TestUserContextHelperFunctionsEdgeCases/CapturePath_with_encoded_characters (0.00s)
+=== RUN   TestUserContextHelperFunctionsIntegration
+=== RUN   TestUserContextHelperFunctionsIntegration/all_ID_capture_functions_together
+=== RUN   TestUserContextHelperFunctionsIntegration/endpoint_helpers_together
+=== RUN   TestUserContextHelperFunctionsIntegration/empty_IDs_are_valid
+--- PASS: TestUserContextHelperFunctionsIntegration (0.00s)
+    --- PASS: TestUserContextHelperFunctionsIntegration/all_ID_capture_functions_together (0.00s)
+    --- PASS: TestUserContextHelperFunctionsIntegration/endpoint_helpers_together (0.00s)
+    --- PASS: TestUserContextHelperFunctionsIntegration/empty_IDs_are_valid (0.00s)
+PASS
+ok  	github.com/jedarden/commitgraph/pkg/ingestlog	0.003s

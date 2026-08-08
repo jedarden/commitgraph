@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -109,7 +110,8 @@ func TestIngestEmailResolution_DatabaseError(t *testing.T) {
 	if result != nil {
 		t.Error("expected nil result on error, got non-nil")
 	}
-	if err.Error() != "bulk upsert failed (batch size 1): test error" {
+	// The error now comes from fetching existing rows before the bulk upsert
+	if !strings.Contains(err.Error(), "failed to fetch existing rows") {
 		t.Errorf("unexpected error message: %v", err)
 	}
 }

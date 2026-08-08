@@ -1,0 +1,113 @@
+# Error Handling Survey Results
+
+## Current Error Types and Systems
+
+### 1. Primary Error System: pkg/errors/
+**Location**: /home/coding/commitgraph/pkg/errors/
+
+**Error Categories** (12 types):
+- ValidationError, ParseError, DatabaseError, NetworkError, TimeoutError
+- ClientError (4xx), ServerError (5xx), AuthError
+- ConfigError, ResourceError, ConcurrencyError
+- UnknownError (fallback)
+
+**Severity Levels** (5 levels):
+- SeverityCritical, SeverityHigh, SeverityMedium, SeverityLow, SeverityInfo
+
+**StructuredError Type** includes:
+- Type, Severity, Message, Code, Component, Operation
+- Context (UserID, RequestID, Endpoint, Query, Package, File, Line, Extra)
+- Domain-specific: CommitSHA, Position, Email, TraceID, RecordKey
+- Technical: Cause (underlying error), StackTrace, Timestamp
+- Retry/Recovery: Retryable, RetryPolicy, RecoverySuggestion
+- Metadata map for extensibility
+
+### 2. Secondary Error System: pkg/warmstart/error.go
+**Purpose**: Domain-specific errors for tarball/warmstart operations
+
+**Error Types**:
+- Truncated, MissingMember, CorruptPack, IO, Other
+- Deprecated types: CorruptionError, NotAGitRepoError
+
+**Sentinel Errors**:
+- ErrTruncatedFile, ErrMissingRequiredFile, ErrNotAGitRepo
+
+### 3. Traditional Error Handling
+**Still used extensively**:
+- fmt.Errorf with wrapping (245 occurrences in pkg/)
+- errors.New (103 occurrences in pkg/)
+- Standard error interface implementation
+
+## Current Error Propagation Patterns
+
+### Service Layer Patterns
+1. **Return value propagation**: All service functions return (result, error) tuples
+2. **Error wrapping via fmt.Errorf**: Common pattern for wrapping errors
+3. **Structured error wrapping**: WrapError function for structured errors
+4. **Context-based tracing**: Errors include context (CommitSHA, Email, TraceID, RecordKey)
+
+### CLI Layer Patterns
+1. **Modern CLIHandler**: Used in get-audit-logs
+   - HandleError method exits with appropriate code
+   - Structured error printing with verbose mode
+   - Automatic error classification and hints
+
+2. **Legacy log.Fatal**: Still used in many older commands
+   - log.Fatalf with no structured classification
+   - Direct os.Exit calls with hardcoded exit codes
+   - Missing error context and classification
+
+## Error Catching/Loss Locations
+
+### Resource Cleanup
+- **70 defer patterns** for cleanup (defer Close, defer rollback)
+- Proper transaction rollback handling
+- Database connection cleanup patterns
+
+### Error Checking
+- **603 if err != nil checks** across pkg/
+- Consistent error checking after operations
+- Some errors may be lost in complex control flow
+
+### No Panic/Recover Patterns Found
+- **56 total panic/recover occurrences** (mostly in tests)
+- No production panic/recover patterns observed
+- Clean error propagation without runtime exceptions
+
+## Exit Codes and Usage
+
+### Defined Exit Codes
+0 = ExitCodeSuccess
+1 = ExitCodeError (general)
+2 = ExitCodeInvalidInput (CLI args)
+3 = ExitCodeDatabaseError
+4 = ExitCodeNetworkError
+5 = ExitCodeTimeoutError
+6 = ExitCodeAuthenticationError
+7 = ExitCodeConfigError
+8 = ExitCodeValidationError
+9 = ExitCodeParseError
+10 = ExitCodeResourceError
+11 = ExitCodeConcurrencyError
+12 = ExitCodeServerError
+
+### Exit Code Mapping
+- Automatic mapping from ErrorCategory to exit codes
+- Structured errors use ExitCodeForStructuredError()
+- Generic errors classified via classifyError() then mapped
+
+### CLI Exit Patterns
+**Modern** (get-audit-logs): CLIHandler handles all exit codes
+**Legacy** (seed-email-resolution, investigate-email-resolution): Direct log.Fatal
+**Inconsistent**: Different exit patterns across 20 CLI commands
+
+## Key Findings
+
+1. **Two parallel error systems** exist (structured + warmstart-specific)
+2. **Inconsistent CLI error handling** - mix of modern CLIHandler and legacy log.Fatal
+3. **Comprehensive error metadata** in structured system (context, retry, recovery)
+4. **Well-defined exit codes** with automatic categorization
+5. **Traditional error wrapping still dominant** in service layer
+6. **No error loss patterns detected** - consistent error checking
+7. **Context tracking** for distributed tracing (TraceID, RequestID)
+8. **Retry policies** embedded in errors (exponential backoff configuration)

@@ -8,20 +8,26 @@ import (
 	"time"
 
 	_ "github.com/lib/pq"
+
+	"github.com/jedarden/commitgraph/pkg/clierror"
 )
 
 func main() {
+	clierror.Run(run)
+}
+
+func run() error {
 	// Connect to PostgreSQL
 	connStr := "host=localhost port=5432 dbname=commitgraph user=coding password='password' sslmode=disable"
 	db, err := sql.Open("postgres", connStr)
 	if err != nil {
-		log.Fatalf("error: failed to connect to PostgreSQL: %v\n", err)
+		return fmt.Errorf("failed to connect to PostgreSQL: %w", err)
 	}
 	defer db.Close()
 
 	// Verify connection works
 	if err := db.Ping(); err != nil {
-		log.Fatalf("error: PostgreSQL ping failed: %v\n", err)
+		return fmt.Errorf("PostgreSQL ping failed: %w", err)
 	}
 
 	fmt.Println("=== Detailed Data Validation for Seed Ingest ===\n")

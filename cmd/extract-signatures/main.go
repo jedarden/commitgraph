@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/jedarden/commitgraph/pkg/clierror"
 )
 
 // FunctionSignature represents a complete function signature
@@ -68,10 +70,17 @@ type Summary struct {
 }
 
 func main() {
+	clierror.Run(run)
+}
+
+func run() error {
 	fmt.Println("=== Signature Extraction Tool ===")
 
 	// Get the workspace root
-	workspaceRoot := getWorkspaceRoot()
+	workspaceRoot, err := getWorkspaceRoot()
+	if err != nil {
+		return fmt.Errorf("failed to get workspace root: %w", err)
+	}
 	fmt.Printf("Workspace root: %s\n", workspaceRoot)
 
 	// Read existing parse_entry_point_signatures.json
@@ -110,26 +119,28 @@ func main() {
 	outputFile := filepath.Join(workspaceRoot, "signatures.json")
 	fmt.Printf("\nWriting signatures to: %s\n", outputFile)
 	if err := writeSignatures(data, outputFile); err != nil {
-		log.Fatalf("Failed to write signatures: %v", err)
+		return fmt.Errorf("failed to write signatures: %w", err)
 	}
 
 	// Validate the output
 	if err := validateSignatures(outputFile); err != nil {
-		log.Fatalf("Validation failed: %v", err)
+		return fmt.Errorf("validation failed: %w", err)
 	}
 
 	fmt.Println("\n✅ Signature extraction complete!")
 	fmt.Printf("Total signatures: %d\n", len(allSignatures))
 	fmt.Printf("Output file: %s\n", outputFile)
+
+	return nil
 }
 
-func getWorkspaceRoot() string {
+func getWorkspaceRoot() (string, error) {
 	// Get current working directory
 	cwd, err := os.Getwd()
 	if err != nil {
-		log.Fatalf("Failed to get working directory: %v", err)
+		return "", fmt.Errorf("failed to get working directory: %w", err)
 	}
-	return cwd
+	return cwd, nil
 }
 
 func readParseSignatures(filePath string) ([]FunctionSignature, error) {

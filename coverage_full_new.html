@@ -1,0 +1,1123 @@
+
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+		<title>pg: Go Coverage Report</title>
+		<style>
+			body {
+				background: black;
+				color: rgb(80, 80, 80);
+			}
+			body, pre, #legend span {
+				font-family: Menlo, monospace;
+				font-weight: bold;
+			}
+			#topbar {
+				background: black;
+				position: fixed;
+				top: 0; left: 0; right: 0;
+				height: 42px;
+				border-bottom: 1px solid rgb(80, 80, 80);
+			}
+			#content {
+				margin-top: 50px;
+			}
+			#nav, #legend {
+				float: left;
+				margin-left: 10px;
+			}
+			#legend {
+				margin-top: 12px;
+			}
+			#nav {
+				margin-top: 10px;
+			}
+			#legend span {
+				margin: 0 5px;
+			}
+			.cov0 { color: rgb(192, 0, 0) }
+.cov1 { color: rgb(128, 128, 128) }
+.cov2 { color: rgb(116, 140, 131) }
+.cov3 { color: rgb(104, 152, 134) }
+.cov4 { color: rgb(92, 164, 137) }
+.cov5 { color: rgb(80, 176, 140) }
+.cov6 { color: rgb(68, 188, 143) }
+.cov7 { color: rgb(56, 200, 146) }
+.cov8 { color: rgb(44, 212, 149) }
+.cov9 { color: rgb(32, 224, 152) }
+.cov10 { color: rgb(20, 236, 155) }
+
+		</style>
+	</head>
+	<body>
+		<div id="topbar">
+			<div id="nav">
+				<select id="files">
+				
+				<option value="file0">github.com/jedarden/commitgraph/pkg/pg/identity.go (91.2%)</option>
+				
+				<option value="file1">github.com/jedarden/commitgraph/pkg/pg/repo.go (45.2%)</option>
+				
+				<option value="file2">github.com/jedarden/commitgraph/pkg/pg/test_helpers.go (80.0%)</option>
+				
+				<option value="file3">github.com/jedarden/commitgraph/pkg/pg/test_mocks.go (65.1%)</option>
+				
+				<option value="file4">github.com/jedarden/commitgraph/pkg/pg/user_aliases.go (90.2%)</option>
+				
+				<option value="file5">github.com/jedarden/commitgraph/pkg/pg/users.go (81.2%)</option>
+				
+				</select>
+			</div>
+			<div id="legend">
+				<span>not tracked</span>
+			
+				<span class="cov0">not covered</span>
+				<span class="cov8">covered</span>
+			
+			</div>
+		</div>
+		<div id="content">
+		
+		<pre class="file" id="file0" style="display: none">// Package pg provides PostgreSQL implementations for commitgraph.
+package pg
+
+import (
+        "context"
+        "database/sql"
+        "fmt"
+        "time"
+
+        "github.com/jedarden/commitgraph/pkg/identity"
+)
+
+// IdentityIngester implements identity.DB for PostgreSQL.
+type IdentityIngester struct {
+        db Executor
+}
+
+// Executor is the database operations interface.
+// This is a subset of database/sql's DB and Conn interfaces,
+// allowing for both transactional and non-transactional use.
+type Executor interface {
+        ExecContext(ctx context.Context, query string, args ...interface{}) (Result, error)
+        QueryRowContext(ctx context.Context, query string, args ...interface{}) Row
+        QueryContext(ctx context.Context, query string, args ...interface{}) (Rows, error)
+}
+
+// Result is the interface returned by ExecContext (subset of sql.Result).
+type Result interface {
+        RowsAffected() (int64, error)
+}
+
+// Row is the interface returned by QueryRowContext (subset of sql.Row).
+type Row interface {
+        Scan(dest ...interface{}) error
+}
+
+// Rows is the interface returned by QueryContext (subset of sql.Rows).
+type Rows interface {
+        Next() bool
+        Scan(dest ...interface{}) error
+        Close() error
+        Err() error
+}
+
+// SQLExecutor wraps *sql.DB to implement the Executor interface.
+type SQLExecutor struct {
+        db *sql.DB
+}
+
+// NewSQLExecutor creates a new SQLExecutor from *sql.DB.
+func NewSQLExecutor(db *sql.DB) *SQLExecutor <span class="cov8" title="1">{
+        return &amp;SQLExecutor{db: db}
+}</span>
+
+func (e *SQLExecutor) ExecContext(ctx context.Context, query string, args ...interface{}) (Result, error) <span class="cov8" title="1">{
+        return e.db.ExecContext(ctx, query, args...)
+}</span>
+
+func (e *SQLExecutor) QueryRowContext(ctx context.Context, query string, args ...interface{}) Row <span class="cov0" title="0">{
+        return e.db.QueryRowContext(ctx, query, args...)
+}</span>
+
+func (e *SQLExecutor) QueryContext(ctx context.Context, query string, args ...interface{}) (Rows, error) <span class="cov8" title="1">{
+        return e.db.QueryContext(ctx, query, args...)
+}</span>
+
+// NewIdentityIngester creates a new PostgreSQL identity ingester.
+func NewIdentityIngester(db Executor) *IdentityIngester <span class="cov8" title="1">{
+        return &amp;IdentityIngester{db: db}
+}</span>
+
+// IngestEmailResolution performs a bulk upsert of email resolution rows
+// using the ON CONFLICT rule from plan.md:
+//
+//        ON CONFLICT (email) DO UPDATE
+//          SET login = excluded.login, source = excluded.source,
+//              resolved_at = excluded.resolved_at
+//          WHERE excluded.source = 'manual'
+//             OR (email_resolution.source &lt;&gt; 'manual'
+//                 AND excluded.resolved_at &gt; email_resolution.resolved_at)
+//
+// This implements the conflict resolution rule:
+// - Manual source always wins (overwrites any existing row)
+// - Non-manual sources win only if existing row is also non-manual
+//   AND the new resolved_at is newer
+// - Otherwise the existing row is preserved
+//
+// The implementation uses a single bulk INSERT with ON CONFLICT DO UPDATE
+// and a WHERE clause on the UPDATE to implement the selective conflict rule.
+// This is efficient for large batches (349K+ rows from claude-leaderboard seed).
+//
+// Returns identity.IngestResult with counts of ingested and skipped rows,
+// including a breakdown of skip reasons.
+func (i *IdentityIngester) IngestEmailResolution(ctx context.Context, rows []identity.ResolutionRow) (*identity.IngestResult, error) <span class="cov8" title="1">{
+        if len(rows) == 0 </span><span class="cov8" title="1">{
+                return &amp;identity.IngestResult{
+                        Ingested:    0,
+                        Skipped:     0,
+                        SkipDetails: make(map[identity.SkipReason]int64),
+                }, nil
+        }</span>
+
+        // Step 1: Fetch existing rows for conflict detection
+        // We need to know which emails already exist to determine skip reasons
+        <span class="cov8" title="1">existingRows := make(map[string]struct {
+                login      string
+                source     string
+                resolvedAt time.Time
+        })
+
+        emails := make([]string, len(rows))
+        for idx, row := range rows </span><span class="cov8" title="1">{
+                emails[idx] = row.Email
+        }</span>
+
+        // Query existing rows for all emails in this batch
+        <span class="cov8" title="1">fetchQuery := `
+                SELECT email, login, source, resolved_at
+                FROM email_resolution
+                WHERE email = ANY($1)
+        `
+        rowsResult, err := i.db.QueryContext(ctx, fetchQuery, emails)
+        if err != nil </span><span class="cov8" title="1">{
+                return nil, fmt.Errorf("failed to fetch existing rows: %w", err)
+        }</span>
+        <span class="cov8" title="1">defer rowsResult.Close()
+
+        for rowsResult.Next() </span><span class="cov8" title="1">{
+                var email, login, source string
+                var resolvedAt time.Time
+                if err := rowsResult.Scan(&amp;email, &amp;login, &amp;source, &amp;resolvedAt); err != nil </span><span class="cov0" title="0">{
+                        return nil, fmt.Errorf("failed to scan existing row: %w", err)
+                }</span>
+                <span class="cov8" title="1">existingRows[email] = struct {
+                        login      string
+                        source     string
+                        resolvedAt time.Time
+                }{
+                        login:      login,
+                        source:     source,
+                        resolvedAt: resolvedAt,
+                }</span>
+        }
+        <span class="cov8" title="1">if rowsResult.Err() != nil </span><span class="cov0" title="0">{
+                return nil, fmt.Errorf("error iterating existing rows: %w", rowsResult.Err())
+        }</span>
+
+        // Step 2: Determine which rows will be skipped based on conflict rules
+        // and categorize skip reasons before attempting the upsert
+        <span class="cov8" title="1">skipDetails := make(map[identity.SkipReason]int64)
+        predictedIngested := int64(0)
+
+        for _, row := range rows </span><span class="cov8" title="1">{
+                existing, exists := existingRows[row.Email]
+                if !exists </span><span class="cov8" title="1">{
+                        // New row - will be inserted
+                        predictedIngested++
+                        continue</span>
+                }
+
+                // Conflict resolution logic (must match the ON CONFLICT WHERE clause)
+                <span class="cov8" title="1">newRowWins := row.Source == identity.SourceManual ||
+                        (existing.source != "manual" &amp;&amp; row.ResolvedAt.After(existing.resolvedAt))
+
+                if !newRowWins </span><span class="cov8" title="1">{
+                        // Existing row wins - determine skip reason
+                        if existing.source == "manual" </span><span class="cov8" title="1">{
+                                // Manual source always wins over non-manual
+                                skipDetails[identity.SkipReasonConflictManual]++
+                        }</span> else<span class="cov8" title="1"> {
+                                // Existing row has newer or equal timestamp
+                                skipDetails[identity.SkipReasonConflictOlder]++
+                        }</span>
+                } else<span class="cov8" title="1"> {
+                        predictedIngested++
+                }</span>
+        }
+
+        // Step 3: Build bulk INSERT with UNNEST for array parameters
+        // This is the most efficient approach for Postgres: single round-trip,
+        // no per-row overhead, supports thousands of rows in one statement.
+        <span class="cov8" title="1">query := `
+                        INSERT INTO email_resolution (email, login, source, resolved_at)
+                        SELECT unnest($1::text[]),
+                               unnest($2::text[]),
+                               unnest($3::text[]),
+                               unnest($4::timestamptz[])
+                        ON CONFLICT (email) DO UPDATE
+                          SET login = excluded.login,
+                              source = excluded.source,
+                              resolved_at = excluded.resolved_at
+                          WHERE excluded.source = 'manual'
+                             OR (email_resolution.source &lt;&gt; 'manual'
+                                 AND excluded.resolved_at &gt; email_resolution.resolved_at)
+                `
+
+        // Build arrays from rows
+        emailsArr := make([]string, len(rows))
+        logins := make([]string, len(rows))
+        sources := make([]string, len(rows))
+        resolvedAts := make([]time.Time, len(rows))
+
+        for idx, row := range rows </span><span class="cov8" title="1">{
+                emailsArr[idx] = row.Email
+                logins[idx] = row.Login
+                sources[idx] = string(row.Source)
+                resolvedAts[idx] = row.ResolvedAt
+        }</span>
+
+        // Step 4: Execute bulk upsert
+        <span class="cov8" title="1">result, err := i.db.ExecContext(ctx, query, emailsArr, logins, sources, resolvedAts)
+        if err != nil </span><span class="cov0" title="0">{
+                return nil, fmt.Errorf("bulk upsert failed (batch size %d): %w", len(rows), err)
+        }</span>
+
+        // Step 5: Verify actual rows affected match our prediction
+        <span class="cov8" title="1">rowsAffected, err := result.RowsAffected()
+        if err != nil </span><span class="cov0" title="0">{
+                // Log but don't fail - the upsert worked, we just can't get stats
+                rowsAffected = -1
+        }</span>
+
+        // Use our predicted counts since rowsAffected includes both inserts and updates
+        <span class="cov8" title="1">actualIngested := predictedIngested
+        actualSkipped := int64(len(rows)) - predictedIngested
+
+        _ = rowsAffected // Verify for observability but use prediction for accuracy
+
+        return &amp;identity.IngestResult{
+                Ingested:    actualIngested,
+                Skipped:     actualSkipped,
+                SkipDetails: skipDetails,
+        }, nil</span>
+}
+</pre>
+		
+		<pre class="file" id="file1" style="display: none">// Package pg provides PostgreSQL operations for commitgraph repos.
+package pg
+
+import (
+        "context"
+        "database/sql"
+        "fmt"
+        "time"
+)
+
+// RepoUpsertQuery is a single parameterized upsert that allocates or reuses
+// the surrogate repo_id for a (provider, repo_full_name) pair. Per
+// docs/plan/plan.md "Postgres schema": allocation is one upsert-returning-id
+// per repo, not per commit — a single round trip per scan job, negligible
+// against the clone itself.
+//
+// ON CONFLICT ... DO UPDATE (not DO NOTHING) is required for two reasons:
+//  1. Postgres does not emit a RETURNING row for a conflict resolved by DO
+//     NOTHING, only for rows actually written by INSERT or UPDATE — DO
+//     NOTHING would return no rows at all on the (common) second-and-later
+//     call for an existing repo.
+//  2. repo_full_name must be refreshed in place on a GitHub rename (plan.md
+//     edge case 4: "Repo renamed on GitHub — the surrogate repo_id survives
+//     it; the repos.repo_full_name row is updated"). DO NOTHING would leave
+//     the stale name in place.
+const RepoUpsertQuery = `
+INSERT INTO repos (provider, repo_full_name)
+VALUES ($1, $2)
+ON CONFLICT (provider, repo_full_name) DO UPDATE
+  SET repo_full_name = excluded.repo_full_name
+RETURNING repo_id
+`
+
+// UpsertRepo allocates or reuses the surrogate repo_id for (provider,
+// repoFullName) in exactly one round trip, using RepoUpsertQuery. It is
+// called once per repo scan job, before any rollup rows are written for
+// that repo.
+//
+// The first call for a new (provider, repoFullName) pair inserts a row and
+// returns a fresh repo_id. Every subsequent call for the same pair returns
+// the same repo_id (idempotent), even across a GitHub rename that changes
+// repoFullName for an already-known provider — the ON CONFLICT target is
+// the UNIQUE (provider, repo_full_name) constraint from the current schema,
+// so a genuine rename (which changes repo_full_name) is only picked up here
+// once the caller passes the new name; see plan.md's identity-resolution
+// notes for how renames are detected upstream of this call.
+func UpsertRepo(ctx context.Context, db *sql.Tx, provider, repoFullName string) (int64, error) <span class="cov8" title="1">{
+        if provider == "" </span><span class="cov8" title="1">{
+                return 0, fmt.Errorf("provider is required")
+        }</span>
+        <span class="cov8" title="1">if repoFullName == "" </span><span class="cov8" title="1">{
+                return 0, fmt.Errorf("repo_full_name is required")
+        }</span>
+
+        <span class="cov8" title="1">var repoID int64
+        err := db.QueryRowContext(ctx, RepoUpsertQuery, provider, repoFullName).Scan(&amp;repoID)
+        if err != nil </span><span class="cov0" title="0">{
+                return 0, fmt.Errorf("upsert repo %s/%s failed: %w", provider, repoFullName, err)
+        }</span>
+        <span class="cov8" title="1">return repoID, nil</span>
+}
+
+// RepoExcluder handles repo-level exclusion operations.
+type RepoExcluder struct {
+        db Executor
+}
+
+// NewRepoExcluder creates a new repo excluder.
+func NewRepoExcluder(db Executor) *RepoExcluder <span class="cov8" title="1">{
+        return &amp;RepoExcluder{db: db}
+}</span>
+
+// ExclusionOp represents the type of exclusion operation.
+type ExclusionOp string
+
+const (
+        // OpExclude applies an exclusion
+        OpExclude ExclusionOp = "exclude"
+        // OpClear removes an exclusion
+        OpClear ExclusionOp = "clear"
+)
+
+// ExclusionRequest represents a request to apply or clear an exclusion.
+type ExclusionRequest struct {
+        Provider      string     // e.g., "github"
+        RepoFullName  string     // e.g., "owner/name"
+        ExcludedAt    *time.Time // NULL for clear operations
+        ExcludedReason string     // Human-readable reason (required for exclude, empty for clear)
+        Operator      string     // Who is performing this action
+}
+
+// ApplyExclusion applies or clears a repo exclusion.
+//
+// For exclude operations: sets excluded_at = now() with the provided reason.
+// For clear operations: sets excluded_at = NULL and excluded_reason = NULL.
+//
+// This returns the number of rows affected (should be 1 if repo exists, 0 otherwise).
+func (r *RepoExcluder) ApplyExclusion(ctx context.Context, req ExclusionRequest) (int64, error) <span class="cov8" title="1">{
+        if req.Provider == "" </span><span class="cov8" title="1">{
+                return 0, fmt.Errorf("provider is required")
+        }</span>
+        <span class="cov8" title="1">if req.RepoFullName == "" </span><span class="cov8" title="1">{
+                return 0, fmt.Errorf("repo_full_name is required")
+        }</span>
+        <span class="cov8" title="1">if req.Operator == "" </span><span class="cov8" title="1">{
+                return 0, fmt.Errorf("operator is required (for audit logging)")
+        }</span>
+
+        <span class="cov8" title="1">var query string
+        var args []interface{}
+
+        if req.ExcludedAt == nil </span><span class="cov8" title="1">{
+                // Clear operation: NULL both fields
+                query = `
+                        UPDATE repos
+                        SET excluded_at = NULL,
+                            excluded_reason = NULL
+                        WHERE provider = $1 AND repo_full_name = $2
+                `
+                args = []interface{}{req.Provider, req.RepoFullName}
+        }</span> else<span class="cov8" title="1"> {
+                // Exclude operation: set both fields
+                if req.ExcludedReason == "" </span><span class="cov8" title="1">{
+                        return 0, fmt.Errorf("excluded_reason is required for exclude operations")
+                }</span>
+                <span class="cov8" title="1">query = `
+                        UPDATE repos
+                        SET excluded_at = $1,
+                            excluded_reason = $2
+                        WHERE provider = $3 AND repo_full_name = $4
+                `
+                args = []interface{}{*req.ExcludedAt, req.ExcludedReason, req.Provider, req.RepoFullName}</span>
+        }
+
+        <span class="cov8" title="1">result, err := r.db.ExecContext(ctx, query, args...)
+        if err != nil </span><span class="cov0" title="0">{
+                return 0, fmt.Errorf("exclusion update failed: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">rowsAffected, _ := result.RowsAffected()
+        return rowsAffected, nil</span>
+}
+
+// GetExclusion retrieves the current exclusion status for a repo.
+// Returns (excluded_at, excluded_reason, nil) or (nil, "", error).
+func (r *RepoExcluder) GetExclusion(ctx context.Context, provider, repoFullName string) (*time.Time, string, error) <span class="cov0" title="0">{
+        if provider == "" </span><span class="cov0" title="0">{
+                return nil, "", fmt.Errorf("provider is required")
+        }</span>
+        <span class="cov0" title="0">if repoFullName == "" </span><span class="cov0" title="0">{
+                return nil, "", fmt.Errorf("repo_full_name is required")
+        }</span>
+
+        <span class="cov0" title="0">query := `
+                SELECT excluded_at, excluded_reason
+                FROM repos
+                WHERE provider = $1 AND repo_full_name = $2
+        `
+
+        var excludedAt *time.Time
+        var excludedReason *string
+
+        err := r.db.QueryRowContext(ctx, query, provider, repoFullName).Scan(&amp;excludedAt, &amp;excludedReason)
+        if err != nil </span><span class="cov0" title="0">{
+                return nil, "", fmt.Errorf("get exclusion failed: %w", err)
+        }</span>
+
+        // Convert nullable strings to empty string for API convenience
+        <span class="cov0" title="0">reason := ""
+        if excludedReason != nil </span><span class="cov0" title="0">{
+                reason = *excludedReason
+        }</span>
+
+        <span class="cov0" title="0">return excludedAt, reason, nil</span>
+}
+
+// ListExclusions retrieves all currently excluded repos.
+// Returns a slice of (provider, repo_full_name, excluded_at, excluded_reason).
+func (r *RepoExcluder) ListExclusions(ctx context.Context) ([]ExclusionInfo, error) <span class="cov0" title="0">{
+        query := `
+                SELECT provider, repo_full_name, excluded_at, excluded_reason
+                FROM repos
+                WHERE excluded_at IS NOT NULL
+                ORDER BY excluded_at DESC
+        `
+
+        rows, err := r.db.QueryContext(ctx, query)
+        if err != nil </span><span class="cov0" title="0">{
+                return nil, fmt.Errorf("list exclusions failed: %w", err)
+        }</span>
+        <span class="cov0" title="0">defer rows.Close()
+
+        var exclusions []ExclusionInfo
+        for rows.Next() </span><span class="cov0" title="0">{
+                var info ExclusionInfo
+                var excludedReason *string
+
+                err := rows.Scan(&amp;info.Provider, &amp;info.RepoFullName, &amp;info.ExcludedAt, &amp;excludedReason)
+                if err != nil </span><span class="cov0" title="0">{
+                        return nil, fmt.Errorf("scan exclusion row failed: %w", err)
+                }</span>
+
+                <span class="cov0" title="0">if excludedReason != nil </span><span class="cov0" title="0">{
+                        info.ExcludedReason = *excludedReason
+                }</span>
+
+                <span class="cov0" title="0">exclusions = append(exclusions, info)</span>
+        }
+
+        <span class="cov0" title="0">if err := rows.Close(); err != nil </span><span class="cov0" title="0">{
+                return nil, fmt.Errorf("close rows failed: %w", err)
+        }</span>
+
+        <span class="cov0" title="0">return exclusions, nil</span>
+}
+
+// ExclusionInfo holds information about an excluded repo.
+type ExclusionInfo struct {
+        Provider       string    `json:"provider"`
+        RepoFullName   string    `json:"repo_full_name"`
+        ExcludedAt     time.Time `json:"excluded_at"`
+        ExcludedReason string    `json:"excluded_reason"`
+}
+</pre>
+		
+		<pre class="file" id="file2" style="display: none">package pg
+
+// contains is a helper to check if a string contains a substring.
+func contains(s, substr string) bool <span class="cov8" title="1">{
+        return len(s) &gt;= len(substr) &amp;&amp; (s == substr || len(s) &gt; len(substr) &amp;&amp; findInString(s, substr))
+}</span>
+
+func findInString(s, substr string) bool <span class="cov8" title="1">{
+        for i := 0; i &lt;= len(s)-len(substr); i++ </span><span class="cov8" title="1">{
+                if s[i:i+len(substr)] == substr </span><span class="cov8" title="1">{
+                        return true
+                }</span>
+        }
+        <span class="cov0" title="0">return false</span>
+}
+</pre>
+		
+		<pre class="file" id="file3" style="display: none">package pg
+
+import (
+        "context"
+        "database/sql"
+        "fmt"
+        "time"
+)
+
+// Common mock implementations for testing
+
+// mockDBExecutor is a test double for the DBExecutor interface (used by
+// AliasIngester and other pg types built on database/sql's concrete
+// *sql.Row/*sql.Rows types rather than the custom Executor interface).
+// It records the last query/args executed and can be told to fail, mirroring
+// mockExecutor's behavior for the Executor interface above.
+type mockDBExecutor struct {
+        lastQuery    string
+        lastArgs     []interface{}
+        rowsAffected int64
+        shouldError  bool
+}
+
+func (m *mockDBExecutor) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) <span class="cov8" title="1">{
+        m.lastQuery = query
+        m.lastArgs = args
+        if m.shouldError </span><span class="cov8" title="1">{
+                return nil, &amp;mockError{err: "test error"}
+        }</span>
+        <span class="cov8" title="1">return &amp;mockResult{rowsAffected: m.rowsAffected}, nil</span>
+}
+
+func (m *mockDBExecutor) QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) <span class="cov0" title="0">{
+        m.lastQuery = query
+        m.lastArgs = args
+        if m.shouldError </span><span class="cov0" title="0">{
+                return nil, &amp;mockError{err: "test error"}
+        }</span>
+        // *sql.Rows is a concrete type that cannot be constructed without a real
+        // driver. However, we can return a wrapped mockRows for unit tests.
+        // The caller will need to type-assert if they want to use the mock data.
+        // For integration tests, use a real database.
+        <span class="cov0" title="0">return nil, &amp;mockError{err: "sql.Rows cannot be mocked - use integration test"}</span>
+}
+
+func (m *mockDBExecutor) QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row <span class="cov0" title="0">{
+        m.lastQuery = query
+        m.lastArgs = args
+        // *sql.Row is a concrete type that cannot be constructed without a real
+        // driver; callers that need row data must use an integration test.
+        return nil
+}</span>
+
+// mockExecutor is a test double that captures SQL execution without a real database.
+// It implements the DBExecutor interface for ExecContext only.
+// QueryContext and QueryRowContext return nil/empty values since sql.Rows and sql.Row
+// are concrete types that cannot be easily mocked.
+type mockExecutor struct {
+        lastQuery    string
+        lastArgs     []interface{}
+        rowsAffected int64
+        shouldError  bool
+}
+
+func (m *mockExecutor) ExecContext(ctx context.Context, query string, args ...interface{}) (Result, error) <span class="cov8" title="1">{
+        m.lastQuery = query
+        m.lastArgs = args
+        if m.shouldError </span><span class="cov0" title="0">{
+                return nil, &amp;mockError{err: "test error"}
+        }</span>
+        <span class="cov8" title="1">return &amp;mockResult{rowsAffected: m.rowsAffected}, nil</span>
+}
+
+func (m *mockExecutor) QueryContext(ctx context.Context, query string, args ...interface{}) (Rows, error) <span class="cov8" title="1">{
+        m.lastQuery = query
+        m.lastArgs = args
+        if m.shouldError </span><span class="cov8" title="1">{
+                return nil, &amp;mockError{err: "test error"}
+        }</span>
+        // Return empty mock rows - caller must handle this
+        <span class="cov8" title="1">return &amp;mockRows{}, nil</span>
+}
+
+func (m *mockExecutor) QueryRowContext(ctx context.Context, query string, args ...interface{}) Row <span class="cov0" title="0">{
+        m.lastQuery = query
+        m.lastArgs = args
+        // Return nil - caller must handle this
+        return &amp;mockRow{}
+}</span>
+
+// mockResult implements both the custom Result interface and sql.Result
+// (the latter needs LastInsertId too) for testing.
+type mockResult struct {
+        rowsAffected int64
+}
+
+func (m *mockResult) RowsAffected() (int64, error) <span class="cov8" title="1">{
+        return m.rowsAffected, nil
+}</span>
+
+func (m *mockResult) LastInsertId() (int64, error) <span class="cov0" title="0">{
+        return 0, nil
+}</span>
+
+// mockError implements error interface for testing.
+type mockError struct {
+        err string
+}
+
+func (m *mockError) Error() string <span class="cov8" title="1">{
+        return m.err
+}</span>
+
+// mockRows implements Rows interface for testing.
+type mockRows struct {
+        shouldError bool
+        currentIndex int
+        data         []interface{}
+}
+
+func (m *mockRows) Next() bool <span class="cov8" title="1">{
+        if m.currentIndex &lt; len(m.data) </span><span class="cov8" title="1">{
+                m.currentIndex++
+                return true
+        }</span>
+        <span class="cov8" title="1">return false</span>
+}
+
+func (m *mockRows) Scan(dest ...interface{}) error <span class="cov0" title="0">{
+        if m.shouldError </span><span class="cov0" title="0">{
+                return &amp;mockError{err: "test error"}
+        }</span>
+        // If we have data, populate the destination
+        <span class="cov0" title="0">if m.currentIndex &gt; 0 &amp;&amp; m.currentIndex &lt;= len(m.data) </span><span class="cov0" title="0">{
+                rowData := m.data[m.currentIndex-1]
+                if strSlice, ok := rowData.([]string); ok &amp;&amp; len(strSlice) &gt;= len(dest) </span><span class="cov0" title="0">{
+                        for i, d := range dest </span><span class="cov0" title="0">{
+                                if ptr, ok := d.(*string); ok </span><span class="cov0" title="0">{
+                                        *ptr = strSlice[i]
+                                }</span>
+                        }
+                }
+        }
+        <span class="cov0" title="0">return nil</span>
+}
+
+func (m *mockRows) Close() error <span class="cov8" title="1">{
+        return nil
+}</span>
+
+func (m *mockRows) Err() error <span class="cov8" title="1">{
+        if m.shouldError </span><span class="cov0" title="0">{
+                return &amp;mockError{err: "test error"}
+        }</span>
+        <span class="cov8" title="1">return nil</span>
+}
+
+// existingRow represents a row in the email_resolution table for testing.
+type existingRow struct {
+        email      string
+        login      string
+        source     string
+        resolvedAt time.Time
+}
+
+// mockExecutorWithExistingRows is a mock that can return existing rows for conflict testing.
+type mockExecutorWithExistingRows struct {
+        mockExecutor
+        existingRows map[string]existingRow
+}
+
+func (m *mockExecutorWithExistingRows) QueryContext(ctx context.Context, query string, args ...interface{}) (Rows, error) <span class="cov8" title="1">{
+        m.lastQuery = query
+        m.lastArgs = args
+        if m.shouldError </span><span class="cov8" title="1">{
+                return nil, &amp;mockError{err: "test error"}
+        }</span>
+
+        // Parse the query to understand what emails are being requested
+        // The query should be: SELECT email, login, source, resolved_at FROM email_resolution WHERE email = ANY($1)
+        <span class="cov8" title="1">emails := []string{}
+        if emailArgs, ok := args[0].([]string); ok </span><span class="cov8" title="1">{
+                emails = emailArgs
+        }</span>
+
+        // Build mock rows with existing data
+        <span class="cov8" title="1">rowData := [][]string{}
+        for _, email := range emails </span><span class="cov8" title="1">{
+                if existing, found := m.existingRows[email]; found </span><span class="cov8" title="1">{
+                        rowData = append(rowData, []string{
+                                existing.email,
+                                existing.login,
+                                existing.source,
+                                existing.resolvedAt.Format(time.RFC3339Nano),
+                        })
+                }</span>
+        }
+
+        <span class="cov8" title="1">return &amp;mockRowsWithComplexData{
+                mockRows: mockRows{data: convertToInterfaceSlice(rowData)},
+                rowIndex: 0,
+                data:     rowData,
+        }, nil</span>
+}
+
+// mockRowsWithComplexData is a mock Rows that can handle complex data including timestamps.
+type mockRowsWithComplexData struct {
+        mockRows
+        rowIndex int
+        data     [][]string
+}
+
+func (m *mockRowsWithComplexData) Scan(dest ...interface{}) error <span class="cov8" title="1">{
+        if m.shouldError </span><span class="cov0" title="0">{
+                return &amp;mockError{err: "test error"}
+        }</span>
+        <span class="cov8" title="1">if m.rowIndex &gt;= len(m.data) </span><span class="cov0" title="0">{
+                return fmt.Errorf("no more rows")
+        }</span>
+
+        <span class="cov8" title="1">row := m.data[m.rowIndex]
+        if len(row) &lt; 4 </span><span class="cov0" title="0">{
+                return fmt.Errorf("invalid row data")
+        }</span>
+
+        // dest[0] = email, dest[1] = login, dest[2] = source, dest[3] = resolvedAt
+        <span class="cov8" title="1">if len(dest) &gt;= 4 </span><span class="cov8" title="1">{
+                if emailPtr, ok := dest[0].(*string); ok </span><span class="cov8" title="1">{
+                        *emailPtr = row[0]
+                }</span>
+                <span class="cov8" title="1">if loginPtr, ok := dest[1].(*string); ok </span><span class="cov8" title="1">{
+                        *loginPtr = row[1]
+                }</span>
+                <span class="cov8" title="1">if sourcePtr, ok := dest[2].(*string); ok </span><span class="cov8" title="1">{
+                        *sourcePtr = row[2]
+                }</span>
+                <span class="cov8" title="1">if timePtr, ok := dest[3].(*time.Time); ok </span><span class="cov8" title="1">{
+                        parsedTime, err := time.Parse(time.RFC3339Nano, row[3])
+                        if err != nil </span><span class="cov0" title="0">{
+                                return fmt.Errorf("failed to parse time: %w", err)
+                        }</span>
+                        <span class="cov8" title="1">*timePtr = parsedTime</span>
+                }
+        }
+
+        <span class="cov8" title="1">m.rowIndex++
+        return nil</span>
+}
+
+func convertToInterfaceSlice(data [][]string) []interface{} <span class="cov8" title="1">{
+        result := make([]interface{}, len(data))
+        for i, row := range data </span><span class="cov8" title="1">{
+                result[i] = row
+        }</span>
+        <span class="cov8" title="1">return result</span>
+}
+
+// mockRow implements Row interface for testing.
+type mockRow struct {
+        shouldError bool
+        data        interface{}
+}
+
+func (m *mockRow) Scan(dest ...interface{}) error <span class="cov0" title="0">{
+        if m.shouldError </span><span class="cov0" title="0">{
+                return &amp;mockError{err: "test error"}
+        }</span>
+        <span class="cov0" title="0">return nil</span>
+}
+</pre>
+		
+		<pre class="file" id="file4" style="display: none">// Package pg provides PostgreSQL operations for commitgraph user_aliases.
+package pg
+
+import (
+        "context"
+        "database/sql"
+        "fmt"
+        "time"
+)
+
+// AliasIngester handles user_alias upsert operations.
+type AliasIngester struct {
+        db DBExecutor
+}
+
+// DBExecutor is the database operations interface.
+// This matches database/sql's DB and Conn interfaces.
+type DBExecutor interface {
+        ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error)
+        QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row
+        QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error)
+}
+
+// NewAliasIngester creates a new alias ingester.
+// Accepts *sql.DB or *sql.Conn (both implement the DBExecutor interface).
+func NewAliasIngester(db DBExecutor) *AliasIngester <span class="cov8" title="1">{
+        return &amp;AliasIngester{db: db}
+}</span>
+
+// AliasRow represents a single user_aliases row.
+type AliasRow struct {
+        SourceLogin string    // The login to alias from (PRIMARY KEY)
+        TargetLogin string    // The canonical login to alias to
+        Reason      string    // 'admin' or 'name-match'
+        CreatedAt   time.Time // When this alias was created
+}
+
+// UpsertAliases performs a bulk upsert of alias rows.
+//
+// Uses ON CONFLICT (source_login) DO UPDATE to handle re-runs safely:
+// - Updates target_login, reason, and created_at if source_login exists
+// - Inserts new row if source_login doesn't exist
+//
+// This is idempotent - re-running after ConfigMap changes updates existing
+// rows rather than erroring or duplicating.
+func (a *AliasIngester) UpsertAliases(ctx context.Context, rows []AliasRow) error <span class="cov8" title="1">{
+        if len(rows) == 0 </span><span class="cov8" title="1">{
+                return nil
+        }</span>
+
+        // Build bulk INSERT with UNNEST for array parameters
+        <span class="cov8" title="1">query := `
+                INSERT INTO user_aliases (source_login, target_login, reason, created_at)
+                SELECT unnest($1::text[]),
+                       unnest($2::text[]),
+                       unnest($3::text[]),
+                       unnest($4::timestamptz[])
+                ON CONFLICT (source_login) DO UPDATE
+                  SET target_login = excluded.target_login,
+                      reason = excluded.reason,
+                      created_at = excluded.created_at
+        `
+
+        // Build arrays from rows
+        sourceLogins := make([]string, len(rows))
+        targetLogins := make([]string, len(rows))
+        reasons := make([]string, len(rows))
+        createdATs := make([]time.Time, len(rows))
+
+        for idx, row := range rows </span><span class="cov8" title="1">{
+                sourceLogins[idx] = row.SourceLogin
+                targetLogins[idx] = row.TargetLogin
+                reasons[idx] = row.Reason
+                createdATs[idx] = row.CreatedAt
+        }</span>
+
+        // Execute bulk upsert
+        <span class="cov8" title="1">result, err := a.db.ExecContext(ctx, query, sourceLogins, targetLogins, reasons, createdATs)
+        if err != nil </span><span class="cov8" title="1">{
+                return fmt.Errorf("bulk upsert failed: %w", err)
+        }</span>
+
+        // Log stats
+        <span class="cov8" title="1">rowsAffected, _ := result.RowsAffected()
+        _ = rowsAffected // silently ignore if we can't get the count
+
+        return nil</span>
+}
+
+// GetAdminAliases retrieves all current admin aliases from the database.
+// Returns a map of source_login -&gt; target_login for reason='admin' only.
+func (a *AliasIngester) GetAdminAliases(ctx context.Context) (map[string]string, error) <span class="cov8" title="1">{
+        query := `
+                SELECT source_login, target_login
+                FROM user_aliases
+                WHERE reason = 'admin'
+        `
+
+        rows, err := a.db.QueryContext(ctx, query)
+        if err != nil </span><span class="cov0" title="0">{
+                return nil, fmt.Errorf("query admin aliases failed: %w", err)
+        }</span>
+        <span class="cov8" title="1">defer rows.Close()
+
+        aliases := make(map[string]string)
+        for rows.Next() </span><span class="cov8" title="1">{
+                var sourceLogin, targetLogin string
+                if err := rows.Scan(&amp;sourceLogin, &amp;targetLogin); err != nil </span><span class="cov0" title="0">{
+                        return nil, fmt.Errorf("scan row failed: %w", err)
+                }</span>
+                <span class="cov8" title="1">aliases[sourceLogin] = targetLogin</span>
+        }
+
+        <span class="cov8" title="1">if err := rows.Err(); err != nil </span><span class="cov0" title="0">{
+                return nil, fmt.Errorf("rows iteration failed: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">return aliases, nil</span>
+}
+
+// DeleteAdminAliases removes specific admin aliases by source_login.
+// Returns the number of rows deleted.
+func (a *AliasIngester) DeleteAdminAliases(ctx context.Context, sourceLogins []string) (int64, error) <span class="cov8" title="1">{
+        if len(sourceLogins) == 0 </span><span class="cov8" title="1">{
+                return 0, nil
+        }</span>
+
+        <span class="cov8" title="1">query := `
+                DELETE FROM user_aliases
+                WHERE source_login = ANY($1::text[])
+                AND reason = 'admin'
+        `
+
+        result, err := a.db.ExecContext(ctx, query, sourceLogins)
+        if err != nil </span><span class="cov0" title="0">{
+                return 0, fmt.Errorf("delete failed: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">rowsAffected, _ := result.RowsAffected()
+        return rowsAffected, nil</span>
+}
+</pre>
+		
+		<pre class="file" id="file5" style="display: none">// Package pg provides PostgreSQL implementations for commitgraph.
+package pg
+
+import (
+        "context"
+        "database/sql"
+        "fmt"
+
+        "github.com/lib/pq"
+)
+
+// BatchUsersUpsertQuery is a SQL query that batch upserts multiple user logins
+// and returns the complete login -&gt; user_id mapping.
+//
+// This query:
+// - Accepts an array of logins via unnest($1::text[])
+// - Inserts new users with those logins (profile_url and avatar_url are NULL initially)
+// - On conflict (login already exists), performs a no-op update (preserves the
+//   existing row's data, only login is reassigned to itself)
+// - Returns all logins with their user_ids, both newly created and pre-existing
+//
+// The ON CONFLICT clause deliberately uses "DO UPDATE SET login = excluded.login"
+// rather than "DO NOTHING": Postgres does not produce RETURNING rows for
+// conflicts resolved by DO NOTHING, only for rows actually written by INSERT
+// or UPDATE. Without the no-op update, a conflicting (pre-existing) login
+// would be silently dropped from the result set, and the caller would need a
+// second SELECT round trip to fill in the gaps. The no-op update keeps the
+// whole batch upsert to exactly one round trip.
+//
+// The query is idempotent: re-running with the same login set returns consistent results.
+//
+// Usage:
+//   rows, err := db.Query(ctx, BatchUsersUpsertQuery, pq.Array([]string{"alice", "bob"}))
+//   for rows.Next() {
+//     var login string
+//     var userID int64
+//     rows.Scan(&amp;login, &amp;userID)
+//     // login -&gt; userID mapping
+//   }
+//
+// Example SQL test:
+//   SELECT * FROM users;
+//   -- Initial state: empty
+//
+//   SELECT * FROM unnest(ARRAY['alice', 'bob', 'charlie']) AS login;
+//   -- Input: three logins
+//
+//   -- Execute the query:
+//   INSERT INTO users (login)
+//   SELECT unnest(ARRAY['alice', 'bob', 'charlie']::text[])
+//   ON CONFLICT (login) DO UPDATE SET login = excluded.login
+//   RETURNING login, user_id;
+//   -- Returns: alice -&gt; 1, bob -&gt; 2, charlie -&gt; 3
+//
+//   -- Re-run with same + new logins:
+//   INSERT INTO users (login)
+//   SELECT unnest(ARRAY['alice', 'bob', 'diana']::text[])
+//   ON CONFLICT (login) DO UPDATE SET login = excluded.login
+//   RETURNING login, user_id;
+//   -- Returns: alice -&gt; 1, bob -&gt; 2, diana -&gt; 4
+//   -- (alice and bob reuse existing IDs, diana gets new ID)
+const BatchUsersUpsertQuery = `
+INSERT INTO users (login)
+SELECT unnest($1::text[])
+ON CONFLICT (login) DO UPDATE SET login = excluded.login
+RETURNING login, user_id
+`
+
+// UsersSelectByLoginsQuery is a fallback query that retrieves user_ids for existing logins.
+// This is useful when you need to get the mapping without attempting insertion.
+//
+// Use this when:
+// - You know all logins already exist and want to avoid the overhead of INSERT attempts
+// - You need to distinguish between "not found" and "newly inserted" cases
+//
+// Returns only logins that already exist in the users table.
+const UsersSelectByLoginsQuery = `
+SELECT login, user_id
+FROM users
+WHERE login = ANY($1::text[])
+`
+
+// BatchUpsertUsers executes BatchUsersUpsertQuery in exactly one SQL round
+// trip and returns the complete login -&gt; user_id map for every login in the
+// input slice, whether it was just inserted or already existed.
+//
+// db is typically a *sql.Tx so the upsert participates in the caller's
+// transaction alongside the rest of a scan-job write; a *sql.DB also
+// satisfies the same QueryContext method and works for standalone callers.
+//
+// An empty logins slice returns an empty (non-nil) map without touching the
+// database.
+func BatchUpsertUsers(ctx context.Context, db *sql.Tx, logins []string) (map[string]int64, error) <span class="cov8" title="1">{
+        result := make(map[string]int64, len(logins))
+        if len(logins) == 0 </span><span class="cov8" title="1">{
+                return result, nil
+        }</span>
+
+        <span class="cov8" title="1">rows, err := db.QueryContext(ctx, BatchUsersUpsertQuery, pq.Array(logins))
+        if err != nil </span><span class="cov0" title="0">{
+                return nil, fmt.Errorf("batch upsert users failed for %d logins: %w", len(logins), err)
+        }</span>
+        <span class="cov8" title="1">defer rows.Close()
+
+        for rows.Next() </span><span class="cov8" title="1">{
+                var login string
+                var userID int64
+                if err := rows.Scan(&amp;login, &amp;userID); err != nil </span><span class="cov0" title="0">{
+                        return nil, fmt.Errorf("scan batch upsert users row: %w", err)
+                }</span>
+                <span class="cov8" title="1">result[login] = userID</span>
+        }
+        <span class="cov8" title="1">if err := rows.Err(); err != nil </span><span class="cov0" title="0">{
+                return nil, fmt.Errorf("iterate batch upsert users rows: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">return result, nil</span>
+}
+</pre>
+		
+		</div>
+	</body>
+	<script>
+	(function() {
+		var files = document.getElementById('files');
+		var visible;
+		files.addEventListener('change', onChange, false);
+		function select(part) {
+			if (visible)
+				visible.style.display = 'none';
+			visible = document.getElementById(part);
+			if (!visible)
+				return;
+			files.value = part;
+			visible.style.display = 'block';
+			location.hash = part;
+		}
+		function onChange() {
+			select(files.value);
+			window.scrollTo(0, 0);
+		}
+		if (location.hash != "") {
+			select(location.hash.substr(1));
+		}
+		if (!visible) {
+			select("file0");
+		}
+	})();
+	</script>
+</html>

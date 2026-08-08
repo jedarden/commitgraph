@@ -29,6 +29,7 @@ import (
 
 	_ "github.com/lib/pq"
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/jedarden/commitgraph/pkg/cli"
 	"github.com/jedarden/commitgraph/pkg/identity"
 	"github.com/jedarden/commitgraph/pkg/ingestlog"
 	"github.com/jedarden/commitgraph/pkg/pg"

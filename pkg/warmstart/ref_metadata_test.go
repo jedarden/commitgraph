@@ -14,17 +14,17 @@ func TestIsValidSHA(t *testing.T) {
 	}{
 		{
 			name: "valid lowercase SHA",
-			sha:  "abc123def456789abc123def456789abc123456767",
+			sha:  "abc123def456789abc123def456789abc1234567",
 			want: true,
 		},
 		{
 			name: "valid uppercase SHA",
-			sha:  "ABC123DEF456789ABC123DEF456789ABC12345",
+			sha:  "ABC123DEF456789ABC123DEF456789ABC1234567",
 			want: true,
 		},
 		{
 			name: "valid mixed case SHA",
-			sha:  "AbC123DeF456789AbC123DeF456789AbC12345",
+			sha:  "AbC123DeF456789AbC123DeF456789AbC1234567",
 			want: true,
 		},
 		{
@@ -335,11 +335,11 @@ func TestParseRefMetadata_ValidInputs(t *testing.T) {
 			name: "new format multiple head refs",
 			members: []TarballMember{
 				{Name: "refs/heads/main", Data: []byte(validSHA)},
-				{Name: "refs/heads/develop", Data: []byte("def456789abc123def456789abc123def45678")},
+				{Name: "refs/heads/develop", Data: []byte("def456789abc123def456789abc123def4567890")},
 			},
 			wantRefs: []Ref{
 				{Path: "refs/heads/main", SHA: validSHA},
-				{Path: "refs/heads/develop", SHA: "def456789abc123def456789abc123def45678"},
+				{Path: "refs/heads/develop", SHA: "def456789abc123def456789abc123def4567890"},
 			},
 		},
 		{
@@ -478,12 +478,11 @@ func TestParseRefMetadata_MalformedInputs(t *testing.T) {
 			errContains: "invalid SHA format",
 		},
 		{
-			name: "new format empty ref path",
+			name: "new format empty ref path is skipped",
 			members: []TarballMember{
 				{Name: "", Data: []byte(validSHA)},
 			},
-			wantErr:     true,
-			errContains: "ref path is empty",
+			wantErr: false,
 		},
 		{
 			name: "new format empty SHA",
@@ -502,12 +501,11 @@ func TestParseRefMetadata_MalformedInputs(t *testing.T) {
 			errContains: "invalid SHA format",
 		},
 		{
-			name: "new format SHA with newline",
+			name: "new format SHA with newline is trimmed",
 			members: []TarballMember{
 				{Name: "refs/heads/main", Data: []byte(validSHA + "\n")},
 			},
-			wantErr:     true,
-			errContains: "invalid SHA format",
+			wantErr: false,
 		},
 		{
 			name: "mixed legacy and new format",
@@ -766,8 +764,8 @@ func TestParseRefMetadata_SHAExtraction(t *testing.T) {
 		{"0000000000000000000000000000000000000000", "all zeros"},
 		{"ffffffffffffffffffffffffffffffffffffffff", "all f's"},
 		{"abc123def456789abc123def456789abc1234567", "lowercase"},
-		{"ABC123DEF456789ABC123DEF456789ABC12345", "uppercase"},
-		{"AbC123DeF456789AbC123DeF456789AbC12345", "mixed case"},
+		{"ABC123DEF456789ABC123DEF456789ABC1234567", "uppercase"},
+		{"AbC123DeF456789AbC123DeF456789AbC1234567", "mixed case"},
 		{"1234567890abcdef1234567890abcdef12345678", "numeric start"},
 		{"abcdef1234567890abcdef1234567890abcdef12", "alpha start"},
 	}

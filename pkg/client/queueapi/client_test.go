@@ -3,13 +3,17 @@ package queueapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/jedarden/commitgraph/pkg/ingestlog"
 )
 
 // mockTimeoutTransport simulates a timeout error.
@@ -516,5 +520,92 @@ func TestPostResolution_RequestTimeout(t *testing.T) {
 	// Verify error mentions timeout
 	if !strings.Contains(err.Error(), "timeout") && !strings.Contains(err.Error(), "deadline exceeded") {
 		t.Logf("Note: error type: %v", err)
+	}
+}
+
+// TestPostResolution_ContextCancellationLogging tests that context cancellation is logged as a failure.
+func TestPostResolution_ContextCancellationLogging(t *testing.T) {
+	// Use a custom logger that captures output to a buffer for inspection
+	var logBuf strings.Builder
+	customLogger := log.New(&logBuf, "[INGEST-LOG] ", 0)
+	testLogger := ingestlog.NewLoggerWithOutput(customLogger)
+
+	transport := &mockFlakyTransport{failCount: 10, delay: 30 * time.Millisecond} // Will always fail with delays
+	client := &Client{
+		baseURL:    "http://test",
+		httpClient: &http.Client{Transport: transport, Timeout: 100 * time.Millisecond},
+		authToken:  "",
+		maxRetries: DefaultMaxRetries,
+		logger:     testLogger,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Cancel after the first attempt + first retry backoff starts
+	// Initial attempt (30ms) + backoff sleep (100ms) = ~130ms minimum
+	go func() {
+		time.Sleep(80 * time.Millisecond) // Cancel during the first backoff sleep
+		cancel()
+	}()
+
+	err := client.PostResolution(ctx, "test@example.com", "testuser")
+
+	// Should fail due to context cancellation
+	if err == nil {
+		t.Fatal("expected error on context cancellation, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "context cancelled") {
+		t.Errorf("error should mention context cancellation, got: %v", err)
+	}
+
+	// Verify that a failure log entry was captured
+	logOutput := logBuf.String()
+	t.Logf("Captured log output:\n%s", logOutput)
+
+	// Parse the log output to find the failure entry
+	// Each line is prefixed with "[INGEST-LOG] " so we need to strip that
+	lines := strings.Split(strings.TrimSpace(logOutput), "\n")
+	var failureFound bool
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// Strip the "[INGEST-LOG] " prefix to get the JSON
+		jsonStr := strings.TrimPrefix(line, "[INGEST-LOG] ")
+		if jsonStr == line {
+			// Prefix not found, skip this line
+			t.Logf("Skipping line without [INGEST-LOG] prefix: %s", line)
+			continue
+		}
+		// Parse the JSON log entry
+		var entry ingestlog.Event
+		if err := json.Unmarshal([]byte(jsonStr), &entry); err != nil {
+			t.Logf("Failed to parse log line: %s (error: %v)", jsonStr, err)
+			continue
+		}
+		// Check if this is a failure event
+		if entry.EventType == "failure" {
+			failureFound = true
+			// Verify the failure contains expected context
+			if entry.Email != "test@example.com" {
+				t.Errorf("Expected email 'test@example.com', got '%s'", entry.Email)
+			}
+			if entry.GithubUsername != "testuser" {
+				t.Errorf("Expected github_username 'testuser', got '%s'", entry.GithubUsername)
+			}
+			// The error message should mention context cancellation
+			if !strings.Contains(strings.ToLower(entry.ErrorMessage), "context") &&
+				!strings.Contains(strings.ToLower(entry.ErrorMessage), "cancelled") {
+				t.Errorf("Expected error message to mention context cancellation, got: %s", entry.ErrorMessage)
+			}
+			t.Logf("Found failure log entry: event_type=%s, email=%s, github_username=%s, error_message=%s",
+				entry.EventType, entry.Email, entry.GithubUsername, entry.ErrorMessage)
+		}
+	}
+
+	if !failureFound {
+		t.Errorf("No failure log entry was captured. Log output:\n%s", logOutput)
 	}
 }

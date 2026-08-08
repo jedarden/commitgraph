@@ -146,6 +146,27 @@ func (c *Client) PostResolution(ctx context.Context, email, githubUsername strin
 			// Check if context is cancelled before sleeping
 			select {
 			case <-ctx.Done():
+				// Log the failure before returning due to context cancellation
+				totalDurationMs := time.Since(startTime).Milliseconds()
+				event := ingestlog.EventFromError(
+					email,
+					githubUsername,
+					fmt.Sprintf("%s/email-resolution/resolve", c.baseURL),
+					ctx.Err(),
+					lastStatusCode,
+					lastResponseBody,
+					attempt, // Current attempt when cancelled
+					c.maxRetries,
+					0, // No retry delay on cancellation
+					totalDurationMs,
+				)
+
+				if err := c.log().LogFailure(&event); err != nil {
+					// Fallback to basic log if structured logging fails
+					log.Printf("[QUEUE-INGEST-FAILURE] email=%s github_username=%s error=%q (structured logging failed: %v)",
+						email, githubUsername, ctx.Err(), err)
+				}
+
 				return fmt.Errorf("context cancelled during retry backoff: %w", ctx.Err())
 			default:
 			}

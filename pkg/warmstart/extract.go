@@ -755,3 +755,134 @@ func RunSanityChecks(gitDir string) error {
 
 	return nil
 }
+
+// initEmptyGitDirectory creates a minimal empty git directory structure.
+// It creates the essential directories and files required for a git repository,
+// including .git/objects, .git/refs, .git/refs/heads, .git/refs/tags, and .git/HEAD.
+//
+// Parameters:
+//   - gitDir: Path where the git directory should be created (e.g., "/path/to/repo.git")
+//
+// Returns:
+//   - error: nil if directory structure created successfully, error otherwise
+//
+// Example:
+//   if err := initEmptyGitDirectory("/path/to/repo.git"); err != nil {
+//       return fmt.Errorf("failed to initialize git directory: %w", err)
+//   }
+func initEmptyGitDirectory(gitDir string) error {
+	// Create base git directory
+	if err := os.MkdirAll(gitDir, 0755); err != nil {
+		return fmt.Errorf("failed to create git directory: %w", err)
+	}
+
+	// Create objects directory structure
+	objectsDir := filepath.Join(gitDir, "objects")
+	if err := os.MkdirAll(objectsDir, 0755); err != nil {
+		return fmt.Errorf("failed to create objects directory: %w", err)
+	}
+
+	packDir := filepath.Join(objectsDir, "pack")
+	if err := os.MkdirAll(packDir, 0755); err != nil {
+		return fmt.Errorf("failed to create pack directory: %w", err)
+	}
+
+	infoDir := filepath.Join(objectsDir, "info")
+	if err := os.MkdirAll(infoDir, 0755); err != nil {
+		return fmt.Errorf("failed to create info directory: %w", err)
+	}
+
+	// Create refs directory structure
+	refsDir := filepath.Join(gitDir, "refs")
+	if err := os.MkdirAll(refsDir, 0755); err != nil {
+		return fmt.Errorf("failed to create refs directory: %w", err)
+	}
+
+	headsDir := filepath.Join(refsDir, "heads")
+	if err := os.MkdirAll(headsDir, 0755); err != nil {
+		return fmt.Errorf("failed to create heads directory: %w", err)
+	}
+
+	tagsDir := filepath.Join(refsDir, "tags")
+	if err := os.MkdirAll(tagsDir, 0755); err != nil {
+		return fmt.Errorf("failed to create tags directory: %w", err)
+	}
+
+	// Create .git/HEAD file with default reference
+	headPath := filepath.Join(gitDir, "HEAD")
+	headContent := []byte("ref: refs/heads/master\n")
+	if err := os.WriteFile(headPath, headContent, 0444); err != nil {
+		return fmt.Errorf("failed to create HEAD file: %w", err)
+	}
+
+	// Create minimal .git/config file
+	configPath := filepath.Join(gitDir, "config")
+	configContent := []byte("[core]\nrepositoryformatversion = 0\n")
+	if err := os.WriteFile(configPath, configContent, 0644); err != nil {
+		return fmt.Errorf("failed to create config file: %w", err)
+	}
+
+	return nil
+}
+
+// ExtractWarmStart extracts a warm-start tarball to a target directory.
+//
+// This function combines git directory initialization, tarball reading, parsing,
+// and materialization into a single operation. It creates a minimal empty git
+// directory structure at targetDir, then extracts and materializes the warm-start
+// snapshot from the tarball file at tarballPath.
+//
+// Parameters:
+//   - tarballPath: Path to the warm-start tarball file on disk
+//   - targetDir: Path where the git directory should be created/initialized
+//
+// Returns:
+//   - error: nil if extraction succeeds, error otherwise
+//
+// Error types returned:
+//   - *Error with Kind=IO: file I/O errors (reading tarball, creating directories)
+//   - *Error with Kind=Truncated: tarball is truncated or corrupted
+//   - *Error with Kind=MissingMember: required tarball members are missing
+//   - ErrInvalidTarball: tarball format is invalid
+//   - ErrMissingConfig, ErrMissingRef, ErrMissingPackFiles: validation failures
+//
+// Example:
+//   if err := ExtractWarmStart("/path/to/snapshot.tar", "/path/to/repo.git"); err != nil {
+//       return fmt.Errorf("warm-start extraction failed: %w", err)
+//   }
+//
+// No network access: This function performs only local filesystem operations.
+// It does not make any HTTP requests or network calls.
+func ExtractWarmStart(tarballPath, targetDir string) error {
+	// Validate tarball path exists
+	if _, err := os.Stat(tarballPath); err != nil {
+		if os.IsNotExist(err) {
+			return NewIOError("tarball file not found", err, "")
+		}
+		return NewIOError("cannot access tarball file", err, "")
+	}
+
+	// Read tarball file from disk
+	tarballData, err := os.ReadFile(tarballPath)
+	if err != nil {
+		return NewIOError("failed to read tarball file", err, "")
+	}
+
+	// Initialize empty git directory structure
+	if err := initEmptyGitDirectory(targetDir); err != nil {
+		return fmt.Errorf("failed to initialize git directory: %w", err)
+	}
+
+	// Parse tarball
+	snapshot, err := ParseTarball(tarballData)
+	if err != nil {
+		return err
+	}
+
+	// Materialize snapshot to target directory
+	if err := Materialize(targetDir, snapshot); err != nil {
+		return err
+	}
+
+	return nil
+}

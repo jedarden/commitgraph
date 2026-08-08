@@ -138,6 +138,10 @@ func TestExtractKeyIDsFromSampleManifests(t *testing.T) {
 
 // TestRunWithCorpus verifies the full run function with a test corpus
 func TestRunWithCorpus(t *testing.T) {
+	// Save original args and restore them after the test
+	oldArgs := os.Args
+	defer func() { os.Args = oldArgs }()
+
 	// Create a temporary corpus directory
 	tmpDir := t.TempDir()
 	corpusPath := filepath.Join(tmpDir, "corpus")
@@ -190,8 +194,11 @@ func TestRunWithCorpus(t *testing.T) {
 		}
 	}
 
+	// Set up command-line arguments for run()
+	os.Args = []string{"enum-key-ids", "--corpus", corpusPath, "--output", outputPath}
+
 	// Run the enumeration
-	if err := run(corpusPath, outputPath); err != nil {
+	if err := run(); err != nil {
 		t.Fatalf("run failed: %v", err)
 	}
 

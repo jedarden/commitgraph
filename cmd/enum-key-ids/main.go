@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+
+	"github.com/jedarden/commitgraph/pkg/clierror"
 )
 
 // Manifest represents the structure of a manifest file
@@ -25,29 +27,23 @@ type EncryptionKey struct {
 }
 
 func main() {
+	clierror.Run(run)
+}
+
+func run() error {
 	corpusPath := flag.String("corpus", "", "Path to the corpus directory containing manifest files")
-	outputPath := flag.String("output", "", "Optional path to write output file (default: stdout)")
+	outputPath := flag.String("output", "", "Optional path to write output file (default: stdout")
 	flag.Parse()
 
 	if *corpusPath == "" {
-		fmt.Fprintln(os.Stderr, "Error: --corpus path is required")
-		flag.Usage()
-		os.Exit(1)
+		return fmt.Errorf("--corpus path is required")
 	}
-
-	if err := run(*corpusPath, *outputPath); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-}
-
-func run(corpusPath, outputPath string) error {
 	// Track unique key_ids
 	keyIDSet := make(map[string]struct{})
 	manifestCount := 0
 
 	// Walk the corpus directory
-	err := filepath.WalkDir(corpusPath, func(path string, d fs.DirEntry, err error) error {
+	err := filepath.WalkDir(*corpusPath, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -90,7 +86,7 @@ func run(corpusPath, outputPath string) error {
 	// Prepare output
 	output := fmt.Sprintf("Manifest Key ID Enumeration\n")
 	output += fmt.Sprintf("===========================\n")
-	output += fmt.Sprintf("Corpus path: %s\n", corpusPath)
+	output += fmt.Sprintf("Corpus path: %s\n", *corpusPath)
 	output += fmt.Sprintf("Manifests scanned: %d\n", manifestCount)
 	output += fmt.Sprintf("Unique key_ids found: %d\n", len(keyIDs))
 	output += fmt.Sprintf("\nKey IDs:\n")
@@ -99,13 +95,13 @@ func run(corpusPath, outputPath string) error {
 	}
 
 	// Write output
-	if outputPath == "" {
+	if *outputPath == "" {
 		fmt.Println(output)
 	} else {
-		if err := os.WriteFile(outputPath, []byte(output), 0644); err != nil {
+		if err := os.WriteFile(*outputPath, []byte(output), 0644); err != nil {
 			return fmt.Errorf("writing output file: %w", err)
 		}
-		fmt.Printf("Output written to: %s\n", outputPath)
+		fmt.Printf("Output written to: %s\n", *outputPath)
 	}
 
 	return nil

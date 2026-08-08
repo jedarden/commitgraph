@@ -1,0 +1,317 @@
+{
+  "parse_entry_points": [
+    {
+      "name": "parseDate",
+      "package": "cmd/audit-logs",
+      "file": "cmd/audit-logs/main.go",
+      "line": 211,
+      "signature": "func parseDate(dateStr string) (*time.Time, error)",
+      "parameters": [
+        {
+          "name": "dateStr",
+          "type": "string"
+        }
+      ],
+      "return_type": "(*time.Time, error)",
+      "return_components": [
+        {
+          "type": "*time.Time",
+          "description": "Parsed date or nil if invalid"
+        },
+        {
+          "type": "error",
+          "description": "Error if parsing fails"
+        }
+      ]
+    },
+    {
+      "name": "parseAliasesFromConfigMap",
+      "package": "cmd/load-admin-aliases",
+      "file": "cmd/load-admin-aliases/main.go",
+      "line": 227,
+      "signature": "func parseAliasesFromConfigMap(configMap *ConfigMap) ([]AliasEntry, error)",
+      "parameters": [
+        {
+          "name": "configMap",
+          "type": "*ConfigMap"
+        }
+      ],
+      "return_type": "([]AliasEntry, error)",
+      "return_components": [
+        {
+          "type": "[]AliasEntry",
+          "description": "Slice of alias entries"
+        },
+        {
+          "type": "error",
+          "description": "Error if parsing fails"
+        }
+      ],
+      "custom_types": [
+        {
+          "name": "ConfigMap",
+          "kind": "struct",
+          "file": "cmd/load-admin-aliases/main.go",
+          "line": 185
+        },
+        {
+          "name": "AliasEntry",
+          "kind": "struct",
+          "file": "cmd/load-admin-aliases/main.go",
+          "line": 196
+        }
+      ]
+    },
+    {
+      "name": "parseInsertLine",
+      "package": "cmd/verify-email-resolution-dump",
+      "file": "cmd/verify-email-resolution-dump/main.go",
+      "line": 65,
+      "signature": "func parseInsertLine(line string) (status, attemptedAt, updatedAt string)",
+      "parameters": [
+        {
+          "name": "line",
+          "type": "string"
+        }
+      ],
+      "return_type": "(status, attemptedAt, updatedAt string)",
+      "return_components": [
+        {
+          "name": "status",
+          "type": "string"
+        },
+        {
+          "name": "attemptedAt",
+          "type": "string"
+        },
+        {
+          "name": "updatedAt",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "name": "parseDump",
+      "package": "cmd/load-email-resolution-from-queue-api",
+      "file": "cmd/load-email-resolution-from-queue-api/main.go",
+      "line": 163,
+      "signature": "func parseDump(dump string) ([]QueueAPIRow, error)",
+      "parameters": [
+        {
+          "name": "dump",
+          "type": "string"
+        }
+      ],
+      "return_type": "([]QueueAPIRow, error)",
+      "return_components": [
+        {
+          "type": "[]QueueAPIRow",
+          "description": "Slice of parsed queue API rows"
+        },
+        {
+          "type": "error",
+          "description": "Error if parsing fails"
+        }
+      ],
+      "custom_types": [
+        {
+          "name": "QueueAPIRow",
+          "kind": "struct",
+          "file": "cmd/load-email-resolution-from-queue-api/main.go",
+          "line": 147
+        }
+      ]
+    },
+    {
+      "name": "parseValuesString",
+      "package": "cmd/load-email-resolution-from-queue-api",
+      "file": "cmd/load-email-resolution-from-queue-api/main.go",
+      "line": 197,
+      "signature": "func parseValuesString(valuesStr string) (QueueAPIRow, error)",
+      "parameters": [
+        {
+          "name": "valuesStr",
+          "type": "string"
+        }
+      ],
+      "return_type": "(QueueAPIRow, error)",
+      "return_components": [
+        {
+          "type": "QueueAPIRow",
+          "description": "Parsed queue API row"
+        },
+        {
+          "type": "error",
+          "description": "Error if parsing fails"
+        }
+      ]
+    },
+    {
+      "name": "parseTime",
+      "package": "cmd/load-email-resolution-from-queue-api",
+      "file": "cmd/load-email-resolution-from-queue-api/main.go",
+      "line": 290,
+      "signature": "func parseTime(s string) (time.Time, error)",
+      "parameters": [
+        {
+          "name": "s",
+          "type": "string"
+        }
+      ],
+      "return_type": "(time.Time, error)",
+      "return_components": [
+        {
+          "type": "time.Time",
+          "description": "Parsed timestamp"
+        },
+        {
+          "type": "error",
+          "description": "Error if parsing fails"
+        }
+      ]
+    },
+    {
+      "name": "parseTimePtr",
+      "package": "cmd/load-email-resolution-from-queue-api",
+      "file": "cmd/load-email-resolution-from-queue-api/main.go",
+      "line": 312,
+      "signature": "func parseTimePtr(s string) *time.Time",
+      "parameters": [
+        {
+          "name": "s",
+          "type": "string"
+        }
+      ],
+      "return_type": "*time.Time",
+      "return_components": [
+        {
+          "type": "*time.Time",
+          "description": "Parsed timestamp or nil for NULL/empty"
+        }
+      ]
+    },
+    {
+      "name": "parseDate",
+      "package": "cmd/get-audit-logs",
+      "file": "cmd/get-audit-logs/main.go",
+      "line": 219,
+      "signature": "func parseDate(dateStr string) (time.Time, error)",
+      "parameters": [
+        {
+          "name": "dateStr",
+          "type": "string"
+        }
+      ],
+      "return_type": "(time.Time, error)",
+      "return_components": [
+        {
+          "type": "time.Time",
+          "description": "Parsed date"
+        },
+        {
+          "type": "error",
+          "description": "Error if parsing fails"
+        }
+      ]
+    },
+    {
+      "name": "parseConfigKey",
+      "package": "pkg/warmstart",
+      "file": "pkg/warmstart/extract.go",
+      "line": 465,
+      "signature": "func parseConfigKey(key string) (string, string)",
+      "parameters": [
+        {
+          "name": "key",
+          "type": "string"
+        }
+      ],
+      "return_type": "(string, string)",
+      "return_components": [
+        {
+          "type": "string",
+          "description": "Section name (e.g., '[remote \"origin\"]')"
+        },
+        {
+          "type": "string",
+          "description": "Key name within section"
+        }
+      ]
+    },
+    {
+      "name": "parseQueryParams",
+      "package": "pkg/handler",
+      "file": "pkg/handler/audit_logs.go",
+      "line": 107,
+      "signature": "func parseQueryParams(r *http.Request) (queryParams, error)",
+      "parameters": [
+        {
+          "name": "r",
+          "type": "*http.Request"
+        }
+      ],
+      "return_type": "(queryParams, error)",
+      "return_components": [
+        {
+          "type": "queryParams",
+          "description": "Parsed query parameters"
+        },
+        {
+          "type": "error",
+          "description": "Error if parsing fails"
+        }
+      ],
+      "custom_types": [
+        {
+          "name": "queryParams",
+          "kind": "struct",
+          "file": "pkg/handler/audit_logs.go",
+          "line": 96
+        }
+      ]
+    },
+    {
+      "name": "parseDate",
+      "package": "pkg/handler",
+      "file": "pkg/handler/audit_logs.go",
+      "line": 174,
+      "signature": "func parseDate(dateStr string) (*time.Time, error)",
+      "parameters": [
+        {
+          "name": "dateStr",
+          "type": "string"
+        }
+      ],
+      "return_type": "(*time.Time, error)",
+      "return_components": [
+        {
+          "type": "*time.Time",
+          "description": "Parsed date or nil if invalid"
+        },
+        {
+          "type": "error",
+          "description": "Error if parsing fails"
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "total_functions": 11,
+    "unique_names": 7,
+    "packages": [
+      "cmd/audit-logs",
+      "cmd/load-admin-aliases",
+      "cmd/verify-email-resolution-dump",
+      "cmd/load-email-resolution-from-queue-api",
+      "cmd/get-audit-logs",
+      "pkg/warmstart",
+      "pkg/handler"
+    ],
+    "custom_types_referenced": [
+      "ConfigMap",
+      "AliasEntry",
+      "QueueAPIRow",
+      "queryParams"
+    ]
+  }
+}

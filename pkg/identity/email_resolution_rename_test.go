@@ -10,12 +10,79 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
 	_ "github.com/lib/pq"
 	"github.com/jedarden/commitgraph/pkg/client/github"
+	"github.com/jedarden/commitgraph/pkg/revalidation"
 )
+
+// mockQueueAPIClient is a mock implementation of the queue-api client for testing.
+// It tracks PostResolution calls without making actual HTTP requests.
+type mockQueueAPIClient struct {
+	mu           sync.Mutex
+	calls        []postResolutionCall
+	shouldFail   bool // If true, PostResolution returns an error
+}
+
+type postResolutionCall struct {
+	email       string
+	login       string
+	timestamp   time.Time
+}
+
+// newMockQueueAPIClient creates a new mock queue-api client.
+func newMockQueueAPIClient() *mockQueueAPIClient {
+	return &mockQueueAPIClient{
+		calls: make([]postResolutionCall, 0),
+	}
+}
+
+// PostResolution records the call without making an HTTP request.
+// Implements the revalidation.Client interface.
+func (m *mockQueueAPIClient) PostResolution(ctx context.Context, email, login string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.shouldFail {
+		return fmt.Errorf("mock queue-api client error")
+	}
+
+	m.calls = append(m.calls, postResolutionCall{
+		email:     email,
+		login:     login,
+		timestamp: time.Now(),
+	})
+	return nil
+}
+
+// CallCount returns the number of times PostResolution was called.
+func (m *mockQueueAPIClient) CallCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.calls)
+}
+
+// WasCalledWith checks if PostResolution was called with the given email and login.
+func (m *mockQueueAPIClient) WasCalledWith(email, login string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, call := range m.calls {
+		if call.email == email && call.login == login {
+			return true
+		}
+	}
+	return false
+}
+
+// setShouldFail configures whether PostResolution should return an error.
+func (m *mockQueueAPIClient) setShouldFail(shouldFail bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.shouldFail = shouldFail
+}
 
 // TestEmailResolutionLoginUpdateOnRename verifies that email_resolution.login is updated
 // when the revalidation worker detects a GitHub login rename via the mock GitHub client.
@@ -73,6 +140,10 @@ func TestEmailResolutionLoginUpdateOnRename(t *testing.T) {
 
 	t.Run("idempotent rename handling", func(t *testing.T) {
 		testEmailResolutionRenameIdempotency(ctx, t, db)
+	})
+
+	t.Run("worker error handling", func(t *testing.T) {
+		testRevalidationWorkerErrorHandling(ctx, t, db)
 	})
 }
 
@@ -141,40 +212,42 @@ func testEmailResolutionRenameUpdate(ctx context.Context, t *testing.T, db *sql.
 		t.Fatalf("Failed to seed email_resolution: %v", err)
 	}
 
-	// Create mock GitHub client (from cg-4rhpp)
-	mockClient := github.NewMockClient()
-	mockClient.SetResponse(oldLogin, &github.LoginResult{
+	// Create mock GitHub client configured to return rename: old-name -> new-name
+	mockGitHubClient := github.NewMockClient()
+	mockGitHubClient.SetResponse(oldLogin, &github.LoginResult{
 		Status:   github.StatusRenamed,
 		NewLogin: &newLogin,
 	})
 
-	// Simulate revalidation worker detecting rename
-	result, err := mockClient.CheckLogin(ctx, oldLogin)
-	if err != nil {
-		t.Fatalf("Mock client CheckLogin failed: %v", err)
-	}
-	if result.Status != github.StatusRenamed {
-		t.Fatalf("Expected StatusRenamed, got %s", result.Status)
-	}
-	if result.NewLogin == nil || *result.NewLogin != newLogin {
-		t.Fatalf("Expected new_login=%s, got %v", newLogin, result.NewLogin)
+	// Create mock queue-api client
+	mockQueueClient := newMockQueueAPIClient()
+
+	// Create revalidation worker config
+	cfg := &revalidation.Config{
+		QueueAPIClient: mockQueueClient,
+		GitHubClient:   mockGitHubClient,
 	}
 
-	// Update email_resolution (simulating queue-api call)
-	now := time.Now()
-	_, err = db.ExecContext(ctx, `
-		INSERT INTO email_resolution (email, login, source, resolved_at)
-		VALUES ($1, $2, $3, $4)
-		ON CONFLICT (email) DO UPDATE
-		  SET login = excluded.login,
-		      source = excluded.source,
-		      resolved_at = excluded.resolved_at
-		  WHERE excluded.source = 'manual'
-		     OR (email_resolution.source <> 'manual'
-		         AND excluded.resolved_at > email_resolution.resolved_at)
-	`, email, newLogin, "live", now)
-	if err != nil {
-		t.Fatalf("Failed to update email_resolution: %v", err)
+	// Create a revalidation row for processing
+	row := revalidation.Row{
+		Email:         email,
+		Login:         oldLogin,
+		LastCheckedAt: resolvedAt,
+		NextCheckAt:   nil, // Being checked now
+		Status:        "pending",
+		NewLogin:      nil,
+		CheckError:    nil,
+		CreatedAt:     resolvedAt,
+	}
+
+	// Invoke the revalidation worker with mock clients
+	if err := revalidation.ProcessRow(ctx, db, cfg, row); err != nil {
+		t.Fatalf("Revalidation worker ProcessRow failed: %v", err)
+	}
+
+	// Verify queue-api client was called with the new login
+	if !mockQueueClient.WasCalledWith(email, newLogin) {
+		t.Errorf("Expected queue-api PostResolution to be called with email=%s, login=%s", email, newLogin)
 	}
 
 	// Verify email_resolution.login is updated
@@ -314,4 +387,68 @@ func testEmailResolutionRenameIdempotency(ctx context.Context, t *testing.T, db 
 	}
 
 	t.Logf("✓ Idempotent rename handling verified")
+}
+
+// testRevalidationWorkerErrorHandling verifies that worker errors are properly handled.
+// This test ensures that when the queue-api client returns an error during a rename operation,
+// the worker propagates the error and fails the test rather than silently continuing.
+func testRevalidationWorkerErrorHandling(ctx context.Context, t *testing.T, db *sql.DB) {
+	t.Helper()
+
+	email := "error@example.com"
+	oldLogin := "error-old"
+	newLogin := "error-new"
+
+	// Seed email_resolution row with old login
+	resolvedAt := time.Now().UTC().Add(-24 * time.Hour)
+	_, err := db.ExecContext(ctx,
+		`INSERT INTO email_resolution (email, login, source, resolved_at) VALUES ($1, $2, $3, $4)`,
+		email, oldLogin, "seed", resolvedAt)
+	if err != nil {
+		t.Fatalf("Failed to seed email_resolution: %v", err)
+	}
+
+	// Create mock GitHub client configured to return rename: old-login -> new-login
+	mockGitHubClient := github.NewMockClient()
+	mockGitHubClient.SetResponse(oldLogin, &github.LoginResult{
+		Status:   github.StatusRenamed,
+		NewLogin: &newLogin,
+	})
+
+	// Create mock queue-api client configured to fail
+	mockQueueClient := newMockQueueAPIClient()
+	mockQueueClient.setShouldFail(true)
+
+	// Create revalidation worker config with failing queue-api client
+	cfg := &revalidation.Config{
+		QueueAPIClient: mockQueueClient,
+		GitHubClient:   mockGitHubClient,
+	}
+
+	// Create a revalidation row for processing
+	row := revalidation.Row{
+		Email:         email,
+		Login:         oldLogin,
+		LastCheckedAt: resolvedAt,
+		NextCheckAt:   nil,
+		Status:        "pending",
+		NewLogin:      nil,
+		CheckError:    nil,
+		CreatedAt:     resolvedAt,
+	}
+
+	// Invoke the revalidation worker - it should fail due to queue-api error
+	err = revalidation.ProcessRow(ctx, db, cfg, row)
+	if err == nil {
+		t.Error("Expected ProcessRow to fail when queue-api returns error, but it succeeded")
+	} else {
+		t.Logf("✓ Worker error properly propagated: %v", err)
+	}
+
+	// Verify that queue-api client was actually called before failing
+	if mockQueueClient.CallCount() == 0 {
+		t.Error("Expected queue-api client to be called before error, but it wasn't")
+	} else {
+		t.Logf("✓ Queue-api client called %d time(s) before error", mockQueueClient.CallCount())
+	}
 }

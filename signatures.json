@@ -1,0 +1,562 @@
+{
+  "signatures": [
+    {
+      "name": "parseDate",
+      "package": "cmd/audit-logs",
+      "file": "cmd/audit-logs/main.go",
+      "line": 211,
+      "signature": "func parseDate(dateStr string) (*time.Time, error)",
+      "parameters": [
+        {
+          "name": "dateStr",
+          "type": "string"
+        }
+      ],
+      "return_type": "(*time.Time, error)",
+      "return_components": [
+        {
+          "type": "*time.Time",
+          "description": "Parsed date or nil if invalid"
+        },
+        {
+          "type": "error",
+          "description": "Error if parsing fails"
+        }
+      ],
+      "category": "parse"
+    },
+    {
+      "name": "parseAliasesFromConfigMap",
+      "package": "cmd/load-admin-aliases",
+      "file": "cmd/load-admin-aliases/main.go",
+      "line": 227,
+      "signature": "func parseAliasesFromConfigMap(configMap *ConfigMap) ([]AliasEntry, error)",
+      "parameters": [
+        {
+          "name": "configMap",
+          "type": "*ConfigMap"
+        }
+      ],
+      "return_type": "([]AliasEntry, error)",
+      "return_components": [
+        {
+          "type": "[]AliasEntry",
+          "description": "Slice of alias entries"
+        },
+        {
+          "type": "error",
+          "description": "Error if parsing fails"
+        }
+      ],
+      "custom_types": [
+        {
+          "name": "ConfigMap",
+          "kind": "struct",
+          "file": "cmd/load-admin-aliases/main.go",
+          "line": 185
+        },
+        {
+          "name": "AliasEntry",
+          "kind": "struct",
+          "file": "cmd/load-admin-aliases/main.go",
+          "line": 196
+        }
+      ],
+      "category": "parse"
+    },
+    {
+      "name": "parseInsertLine",
+      "package": "cmd/verify-email-resolution-dump",
+      "file": "cmd/verify-email-resolution-dump/main.go",
+      "line": 65,
+      "signature": "func parseInsertLine(line string) (status, attemptedAt, updatedAt string)",
+      "parameters": [
+        {
+          "name": "line",
+          "type": "string"
+        }
+      ],
+      "return_type": "(status, attemptedAt, updatedAt string)",
+      "return_components": [
+        {
+          "name": "status",
+          "type": "string"
+        },
+        {
+          "name": "attemptedAt",
+          "type": "string"
+        },
+        {
+          "name": "updatedAt",
+          "type": "string"
+        }
+      ],
+      "category": "parse"
+    },
+    {
+      "name": "parseDump",
+      "package": "cmd/load-email-resolution-from-queue-api",
+      "file": "cmd/load-email-resolution-from-queue-api/main.go",
+      "line": 163,
+      "signature": "func parseDump(dump string) ([]QueueAPIRow, error)",
+      "parameters": [
+        {
+          "name": "dump",
+          "type": "string"
+        }
+      ],
+      "return_type": "([]QueueAPIRow, error)",
+      "return_components": [
+        {
+          "type": "[]QueueAPIRow",
+          "description": "Slice of parsed queue API rows"
+        },
+        {
+          "type": "error",
+          "description": "Error if parsing fails"
+        }
+      ],
+      "custom_types": [
+        {
+          "name": "QueueAPIRow",
+          "kind": "struct",
+          "file": "cmd/load-email-resolution-from-queue-api/main.go",
+          "line": 147
+        }
+      ],
+      "category": "parse"
+    },
+    {
+      "name": "parseValuesString",
+      "package": "cmd/load-email-resolution-from-queue-api",
+      "file": "cmd/load-email-resolution-from-queue-api/main.go",
+      "line": 197,
+      "signature": "func parseValuesString(valuesStr string) (QueueAPIRow, error)",
+      "parameters": [
+        {
+          "name": "valuesStr",
+          "type": "string"
+        }
+      ],
+      "return_type": "(QueueAPIRow, error)",
+      "return_components": [
+        {
+          "type": "QueueAPIRow",
+          "description": "Parsed queue API row"
+        },
+        {
+          "type": "error",
+          "description": "Error if parsing fails"
+        }
+      ],
+      "category": "parse"
+    },
+    {
+      "name": "parseTime",
+      "package": "cmd/load-email-resolution-from-queue-api",
+      "file": "cmd/load-email-resolution-from-queue-api/main.go",
+      "line": 290,
+      "signature": "func parseTime(s string) (time.Time, error)",
+      "parameters": [
+        {
+          "name": "s",
+          "type": "string"
+        }
+      ],
+      "return_type": "(time.Time, error)",
+      "return_components": [
+        {
+          "type": "time.Time",
+          "description": "Parsed timestamp"
+        },
+        {
+          "type": "error",
+          "description": "Error if parsing fails"
+        }
+      ],
+      "category": "parse"
+    },
+    {
+      "name": "parseTimePtr",
+      "package": "cmd/load-email-resolution-from-queue-api",
+      "file": "cmd/load-email-resolution-from-queue-api/main.go",
+      "line": 312,
+      "signature": "func parseTimePtr(s string) *time.Time",
+      "parameters": [
+        {
+          "name": "s",
+          "type": "string"
+        }
+      ],
+      "return_type": "*time.Time",
+      "return_components": [
+        {
+          "type": "*time.Time",
+          "description": "Parsed timestamp or nil for NULL/empty"
+        }
+      ],
+      "category": "parse"
+    },
+    {
+      "name": "parseDate",
+      "package": "cmd/get-audit-logs",
+      "file": "cmd/get-audit-logs/main.go",
+      "line": 219,
+      "signature": "func parseDate(dateStr string) (time.Time, error)",
+      "parameters": [
+        {
+          "name": "dateStr",
+          "type": "string"
+        }
+      ],
+      "return_type": "(time.Time, error)",
+      "return_components": [
+        {
+          "type": "time.Time",
+          "description": "Parsed date"
+        },
+        {
+          "type": "error",
+          "description": "Error if parsing fails"
+        }
+      ],
+      "category": "parse"
+    },
+    {
+      "name": "parseConfigKey",
+      "package": "pkg/warmstart",
+      "file": "pkg/warmstart/extract.go",
+      "line": 465,
+      "signature": "func parseConfigKey(key string) (string, string)",
+      "parameters": [
+        {
+          "name": "key",
+          "type": "string"
+        }
+      ],
+      "return_type": "(string, string)",
+      "return_components": [
+        {
+          "type": "string",
+          "description": "Section name (e.g., '[remote \"origin\"]')"
+        },
+        {
+          "type": "string",
+          "description": "Key name within section"
+        }
+      ],
+      "category": "parse"
+    },
+    {
+      "name": "parseQueryParams",
+      "package": "pkg/handler",
+      "file": "pkg/handler/audit_logs.go",
+      "line": 107,
+      "signature": "func parseQueryParams(r *http.Request) (queryParams, error)",
+      "parameters": [
+        {
+          "name": "r",
+          "type": "*http.Request"
+        }
+      ],
+      "return_type": "(queryParams, error)",
+      "return_components": [
+        {
+          "type": "queryParams",
+          "description": "Parsed query parameters"
+        },
+        {
+          "type": "error",
+          "description": "Error if parsing fails"
+        }
+      ],
+      "custom_types": [
+        {
+          "name": "queryParams",
+          "kind": "struct",
+          "file": "pkg/handler/audit_logs.go",
+          "line": 96
+        }
+      ],
+      "category": "parse"
+    },
+    {
+      "name": "parseDate",
+      "package": "pkg/handler",
+      "file": "pkg/handler/audit_logs.go",
+      "line": 174,
+      "signature": "func parseDate(dateStr string) (*time.Time, error)",
+      "parameters": [
+        {
+          "name": "dateStr",
+          "type": "string"
+        }
+      ],
+      "return_type": "(*time.Time, error)",
+      "return_components": [
+        {
+          "type": "*time.Time",
+          "description": "Parsed date or nil if invalid"
+        },
+        {
+          "type": "error",
+          "description": "Error if parsing fails"
+        }
+      ],
+      "category": "parse"
+    },
+    {
+      "name": "CaptureUserContext",
+      "package": "pkg/ingestlog",
+      "file": "pkg/ingestlog/logger.go",
+      "line": 910,
+      "signature": "func CaptureUserContext(email, githubUsername string) (UserContext, error)",
+      "parameters": [
+        {
+          "name": "email",
+          "type": "string"
+        },
+        {
+          "name": "githubUsername",
+          "type": "string"
+        }
+      ],
+      "return_type": "UserContext, error",
+      "return_components": null,
+      "category": "stream",
+      "purpose": "Captures and validates user context data during stream processing"
+    },
+    {
+      "name": "CaptureUserID",
+      "package": "pkg/ingestlog",
+      "file": "pkg/ingestlog/logger.go",
+      "line": 934,
+      "signature": "func CaptureUserID(userID string) string",
+      "parameters": [
+        {
+          "name": "userID",
+          "type": "string"
+        }
+      ],
+      "return_type": "string",
+      "return_components": null,
+      "category": "stream",
+      "purpose": "Captures and validates user ID from stream"
+    },
+    {
+      "name": "CaptureSessionID",
+      "package": "pkg/ingestlog",
+      "file": "pkg/ingestlog/logger.go",
+      "line": 950,
+      "signature": "func CaptureSessionID(sessionID string) string",
+      "parameters": [
+        {
+          "name": "sessionID",
+          "type": "string"
+        }
+      ],
+      "return_type": "string",
+      "return_components": null,
+      "category": "stream",
+      "purpose": "Captures and validates session ID from stream"
+    },
+    {
+      "name": "CaptureRequestID",
+      "package": "pkg/ingestlog",
+      "file": "pkg/ingestlog/logger.go",
+      "line": 966,
+      "signature": "func CaptureRequestID(requestID string) string",
+      "parameters": [
+        {
+          "name": "requestID",
+          "type": "string"
+        }
+      ],
+      "return_type": "string",
+      "return_components": null,
+      "category": "stream",
+      "purpose": "Captures and validates request ID from stream"
+    },
+    {
+      "name": "CaptureEndpointName",
+      "package": "pkg/ingestlog",
+      "file": "pkg/ingestlog/logger.go",
+      "line": 983,
+      "signature": "func CaptureEndpointName(endpoint string) (string, error)",
+      "parameters": [
+        {
+          "name": "endpoint",
+          "type": "string"
+        }
+      ],
+      "return_type": "string, error",
+      "return_components": null,
+      "category": "stream",
+      "purpose": "Captures and validates endpoint names from stream"
+    },
+    {
+      "name": "CaptureMethod",
+      "package": "pkg/ingestlog",
+      "file": "pkg/ingestlog/logger.go",
+      "line": 1000,
+      "signature": "func CaptureMethod(method string) (string, error)",
+      "parameters": [
+        {
+          "name": "method",
+          "type": "string"
+        }
+      ],
+      "return_type": "string, error",
+      "return_components": null,
+      "category": "stream",
+      "purpose": "Captures and validates HTTP methods from stream"
+    },
+    {
+      "name": "CapturePath",
+      "package": "pkg/ingestlog",
+      "file": "pkg/ingestlog/logger.go",
+      "line": 1017,
+      "signature": "func CapturePath(path string) (string, error)",
+      "parameters": [
+        {
+          "name": "path",
+          "type": "string"
+        }
+      ],
+      "return_type": "string, error",
+      "return_components": null,
+      "category": "stream",
+      "purpose": "Captures and validates URL paths from stream"
+    },
+    {
+      "name": "CaptureEndpointContext",
+      "package": "pkg/ingestlog",
+      "file": "pkg/ingestlog/logger.go",
+      "line": 1041,
+      "signature": "func CaptureEndpointContext(endpoint, method, path, url string, attemptNumber int, statusCode int, responseBody string) (EndpointContext, error)",
+      "parameters": [
+        {
+          "name": "endpoint",
+          "type": "string"
+        },
+        {
+          "name": "method",
+          "type": "string"
+        },
+        {
+          "name": "path",
+          "type": "string"
+        },
+        {
+          "name": "url",
+          "type": "string"
+        },
+        {
+          "name": "attemptNumber",
+          "type": "int"
+        },
+        {
+          "name": "statusCode",
+          "type": "int"
+        },
+        {
+          "name": "responseBody",
+          "type": "string"
+        }
+      ],
+      "return_type": "EndpointContext, error",
+      "return_components": null,
+      "category": "stream",
+      "purpose": "Captures and validates endpoint context data from stream"
+    },
+    {
+      "name": "IngestResolution",
+      "package": "pkg/identity",
+      "file": "pkg/identity/ingest.go",
+      "line": 140,
+      "signature": "func (i *Ingester) IngestResolution(ctx context.Context, rows []ResolutionRow) error",
+      "parameters": [
+        {
+          "name": "ctx",
+          "type": "context.Context"
+        },
+        {
+          "name": "rows",
+          "type": "[]ResolutionRow"
+        }
+      ],
+      "return_type": "error",
+      "return_components": null,
+      "category": "stream",
+      "purpose": "Main stream ingestion function for email resolution data"
+    },
+    {
+      "name": "IngestEmailResolution",
+      "package": "pkg/pg",
+      "file": "pkg/pg/identity.go",
+      "line": 94,
+      "signature": "func (i *IdentityIngester) IngestEmailResolution(ctx context.Context, rows []identity.ResolutionRow) (*identity.IngestResult, error)",
+      "parameters": [
+        {
+          "name": "ctx",
+          "type": "context.Context"
+        },
+        {
+          "name": "rows",
+          "type": "[]identity.ResolutionRow"
+        }
+      ],
+      "return_type": "*identity.IngestResult, error",
+      "return_components": null,
+      "category": "stream",
+      "purpose": "PostgreSQL bulk upsert implementation for email resolution stream"
+    },
+    {
+      "name": "UpsertAliases",
+      "package": "pkg/pg",
+      "file": "pkg/pg/user_aliases.go",
+      "line": 46,
+      "signature": "func (a *AliasIngester) UpsertAliases(ctx context.Context, rows []AliasRow) error",
+      "parameters": [
+        {
+          "name": "ctx",
+          "type": "context.Context"
+        },
+        {
+          "name": "rows",
+          "type": "[]AliasRow"
+        }
+      ],
+      "return_type": "error",
+      "return_components": null,
+      "category": "stream",
+      "purpose": "PostgreSQL bulk upsert implementation for user aliases stream"
+    }
+  ],
+  "summary": {
+    "total_functions": 22,
+    "parse_functions": 11,
+    "stream_functions": 11,
+    "unique_names": 20,
+    "packages": [
+      "cmd/audit-logs",
+      "cmd/verify-email-resolution-dump",
+      "cmd/get-audit-logs",
+      "pkg/warmstart",
+      "pkg/ingestlog",
+      "pkg/identity",
+      "pkg/pg",
+      "cmd/load-admin-aliases",
+      "cmd/load-email-resolution-from-queue-api",
+      "pkg/handler"
+    ],
+    "custom_types_count": 4
+  },
+  "source_files": [
+    "parse_entry_point_signatures.json",
+    "stream_entry_points.json",
+    "validate_parameter_extraction.go"
+  ],
+  "generated_at": "2026-08-08T18:30:00Z",
+  "generated_by_version": "1.0.0"
+}

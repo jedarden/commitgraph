@@ -239,3 +239,195 @@ func TestUpsertRepo_Integration(t *testing.T) {
 		t.Errorf("expected 1 row for acme/widgets, got %d (duplicate rows from upsert?)", count)
 	}
 }
+
+// TestRepoRename_Integration tests that repo_id is stable across a simulated
+// GitHub repo rename. Per docs/plan/plan.md edge case 4: "Repo renamed on
+// GitHub — the surrogate repo_id survives it; the repos.repo_full_name row is
+// updated. Without the surrogate this fragments the repo's history permanently."
+//
+// The caller detects renames via GitHub's stable numeric repo ID (the database
+// PK from GitHub's API, not the surrogate repo_id here). When GitHub returns a
+// different repo_full_name for the same numeric ID, the caller knows this is a
+// rename and must "explicitly re-key" before calling UpsertRepo: UPDATE the
+// repos row to the new name, then call UpsertRepo (which will now find the
+// existing row and return the same repo_id).
+//
+// This test verifies the full rename pattern including the caller's re-key step.
+func TestRepoRename_Integration(t *testing.T) {
+	db, cleanup := setupUpsertTestDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	// Add the repo_user_daily_tool table to test history preservation
+	schema := `
+		CREATE TABLE IF NOT EXISTS users (
+			user_id    BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+			login      TEXT NOT NULL UNIQUE,
+			profile_url TEXT,
+			avatar_url  TEXT
+		);
+
+		CREATE TABLE IF NOT EXISTS repo_user_daily_tool (
+			repo_id     BIGINT NOT NULL REFERENCES repos(repo_id),
+			user_id     BIGINT NOT NULL REFERENCES users(user_id),
+			tool        TEXT   NOT NULL,
+			day         DATE   NOT NULL,
+			commits     INT    NOT NULL,
+			insert_time TIMESTAMPTZ NOT NULL,
+			PRIMARY KEY (repo_id, user_id, tool, day)
+		);
+	`
+	if _, err := db.Exec(schema); err != nil {
+		t.Fatalf("failed to create rollup table: %v", err)
+	}
+
+	runInTx := func(t *testing.T, provider, repoFullName string) int64 {
+		t.Helper()
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatalf("begin tx: %v", err)
+		}
+		id, err := UpsertRepo(ctx, tx, provider, repoFullName)
+		if err != nil {
+			tx.Rollback()
+			t.Fatalf("UpsertRepo(%q, %q) error: %v", provider, repoFullName, err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatalf("commit: %v", err)
+		}
+		return id
+	}
+
+	// Scenario: GitHub repo "acme/widgets" (numeric ID 12345) is renamed to
+	// "acme/widget-lib" (same numeric ID 12345).
+	//
+	// How the caller detects "this is the same repo under a new name":
+	// - Caller tracks GitHub's numeric repo ID alongside repo_full_name
+	// - On scan, GitHub API returns: {id: 12345, full_name: "acme/widget-lib"}
+	// - Caller sees ID 12345 already exists in repos with name "acme/widgets"
+	// - Caller knows: this is a rename, not a new repo
+	//
+	// The caller must then "explicitly re-key": UPDATE the existing row's
+	// repo_full_name to the new name before calling UpsertRepo. Without this
+	// step, UpsertRepo's ON CONFLICT clause won't fire (it only matches exact
+	// (provider, repo_full_name) pairs), and a second row would be created.
+
+	// Initial scan: repo is known as "acme/widgets"
+	oldName := "acme/widgets"
+	newName := "acme/widget-lib"
+
+	repoIDOld := runInTx(t, "github", oldName)
+	if repoIDOld == 0 {
+		t.Fatal("expected non-zero repo_id on first insert")
+	}
+
+	// Insert a user and some rollup data under the old name to verify history
+	// preservation across the rename.
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	var userID int64
+	err = tx.QueryRowContext(ctx, `INSERT INTO users (login) VALUES ($1) RETURNING user_id`, "alice").Scan(&userID)
+	if err != nil {
+		tx.Rollback()
+		t.Fatalf("insert user: %v", err)
+	}
+
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO repo_user_daily_tool (repo_id, user_id, tool, day, commits, insert_time)
+		VALUES ($1, $2, $3, CURRENT_DATE, 5, NOW())
+	`, repoIDOld, userID, "claude")
+	if err != nil {
+		tx.Rollback()
+		t.Fatalf("insert rollup under old name: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit rollup: %v", err)
+	}
+
+	// Simulated rename: the repo is now known as "acme/widget-lib" but has the
+	// same GitHub numeric ID (12345). The caller detects the rename because
+	// GitHub's numeric ID is stable across renames, even though repo_full_name
+	// changes.
+	//
+	// To handle this correctly, the caller must "explicitly re-key" before calling
+	// UpsertRepo: UPDATE the existing row's repo_full_name to the new name, then
+	// call UpsertRepo with the new name (which will now find the existing row and
+	// return the same repo_id).
+	//
+	// Pattern:
+	//   1. Caller has repo_id=1 for (github, "acme/widgets")
+	//   2. Caller sees GitHub API returns name="acme/widget-lib" for numeric ID 12345
+	//   3. Caller UPDATEs repos SET repo_full_name='acme/widget-lib' WHERE repo_id=1
+	//   4. Caller calls UpsertRepo(github, acme/widget-lib) → returns repo_id=1
+	//
+	// Without the explicit re-key UPDATE, UpsertRepo creates a second row because
+	// its ON CONFLICT clause only fires when (provider, repo_full_name) matches
+	// exactly - it has no way to know that "acme/widget-lib" is the same repo as
+	// "acme/widgets" without the caller's help.
+
+	// Caller explicitly re-keys: UPDATE repo_full_name to the new name
+	tx, err = db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin tx for re-key: %v", err)
+	}
+	_, err = tx.ExecContext(ctx, `
+		UPDATE repos SET repo_full_name = $1 WHERE repo_id = $2
+	`, newName, repoIDOld)
+	if err != nil {
+		tx.Rollback()
+		t.Fatalf("re-key repo_full_name: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit re-key: %v", err)
+	}
+
+	// Now UpsertRepo with the new name finds the re-keyed row and returns the same repo_id
+	repoIDNew := runInTx(t, "github", newName)
+
+	// EXPECTED: repo_id is stable across the rename
+	if repoIDNew != repoIDOld {
+		t.Errorf("repo_id changed across rename: %d -> %d (should be stable per plan.md edge case 4)", repoIDOld, repoIDNew)
+	}
+
+	// EXPECTED: Exactly one row exists for this repo in the repos table
+	// (no orphaned row with the old name)
+	var rowCount int
+	err = db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM repos
+		WHERE provider = 'github' AND repo_full_name IN ($1, $2)
+	`, oldName, newName).Scan(&rowCount)
+	if err != nil {
+		t.Fatalf("count repos: %v", err)
+	}
+	if rowCount != 1 {
+		t.Errorf("expected 1 row for this repo after rename, got %d (orphaned old name row)", rowCount)
+	}
+
+	// EXPECTED: The rollup data inserted under the old name is still accessible
+	// via the same repo_id (history is not fragmented).
+	var commitCount int
+	err = db.QueryRowContext(ctx, `
+		SELECT commits FROM repo_user_daily_tool
+		WHERE repo_id = $1 AND user_id = $2 AND tool = 'claude'
+	`, repoIDOld, userID).Scan(&commitCount)
+	if err != nil {
+		t.Errorf("rollup data not accessible after rename: %v", err)
+	}
+	if commitCount != 5 {
+		t.Errorf("rollup commits changed after rename: got %d, want 5", commitCount)
+	}
+
+	// Verify the repo_full_name was updated to the new name
+	var currentName string
+	err = db.QueryRowContext(ctx, `
+		SELECT repo_full_name FROM repos WHERE repo_id = $1
+	`, repoIDOld).Scan(&currentName)
+	if err != nil {
+		t.Fatalf("get current repo_full_name: %v", err)
+	}
+	if currentName != newName {
+		t.Errorf("repo_full_name not updated: got %q, want %q", currentName, newName)
+	}
+}

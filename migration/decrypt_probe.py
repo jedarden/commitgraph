@@ -297,11 +297,14 @@ class DecryptProbe:
                     )
 
         # If we get here, key was found but no testable Parquet files
+        # Use epoch from the first partition we found
+        first_partition_epoch = partitions[0].epoch if partitions else ""
         return DecryptResult(
             key_id=key_id,
             success=False,
             outcome=DecryptOutcome.NO_DATA_FILES,
             error_message=f"key_id {key_id!r} found in {len(partitions)} partition(s) but no Parquet files available for testing",
+            epoch=first_partition_epoch,
             partitions_tested=len(partitions)
         )
 

@@ -158,7 +158,7 @@ class EpochPreflightChecker:
 
         return keys
 
-    def validate_decryption(self, keys_by_id: Dict[str, EncryptionKey]) -> List[ValidationResult]:
+    def validate_decryption(self, keys_by_id: Dict[str, EncryptionKey]) -> Tuple[bool, List[ValidationResult]]:
         """
         Validate that migration credentials can decrypt all discovered keys.
 
@@ -170,7 +170,8 @@ class EpochPreflightChecker:
             keys_by_id: Dict of key_id -> EncryptionKey
 
         Returns:
-            List of ValidationResult for each key_id
+            Tuple of (all_passed, validation_results) where all_passed is True
+            if all epochs can be decrypted, False otherwise.
         """
         results = []
 
@@ -186,7 +187,9 @@ class EpochPreflightChecker:
             else:
                 logger.error(f"  ✗ {result.key_id} (epoch={result.epoch}): {result.error_message}")
 
-        return results
+        # Compute overall pass/fail
+        all_passed = all(r.success for r in results)
+        return all_passed, results
 
     def _test_decrypt_one_key(self, key_info: EncryptionKey) -> ValidationResult:
         """
@@ -278,9 +281,9 @@ class EpochPreflightChecker:
 
         # Step 2: Validate decryption
         logger.info("\nTesting decryption for each epoch...")
-        results = self.validate_decryption(keys_by_id)
+        all_passed, results = self.validate_decryption(keys_by_id)
 
-        # Step 3: Report results
+        # Step 3: Report results (recompute all_passed for clarity)
         all_passed = all(r.success for r in results)
 
         logger.info("\n" + "=" * 70)

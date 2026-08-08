@@ -80,7 +80,7 @@ class TestMigrationSuccessAllEpochsPass(unittest.TestCase):
             'repo_full_name': ['test/example'] * num_commits,
             'provider': ['github'] * num_commits,
             'author_name': [f'Test Author {idx}' for idx in range(num_commits)],
-            'author_email': [f'test{idx}@example.com'] * num_commits,
+            'author_email': [f'test{idx}@example.com' for idx in range(num_commits)],
             'committed_at': [1609459200000 + idx * 1000 for idx in range(num_commits)],  # Timestamps
             'message': [f'Test commit message {idx}' for idx in range(num_commits)]
         }
@@ -351,7 +351,7 @@ class TestMigrationSuccessAllEpochsPass(unittest.TestCase):
         self.assertEqual(len(results), 2, "Must have results for all epochs")
         for result in results:
             self.assertTrue(result.success, f"Epoch {result.key_id} must pass for migration to proceed")
-            self.assertEqual(result.epoch[:4], "20", "Should have realistic epoch years")
+            self.assertTrue(result.epoch.startswith("20"), "Should have realistic epoch years starting with '20'")
             self.assertEqual(result.error_message, "", "Successful epochs have no error message")
 
     def test_decrypt_probe_success_for_all_epochs(self):
@@ -431,11 +431,11 @@ class TestMigrationSuccessAllEpochsPass(unittest.TestCase):
         """
         # Step 1: Create realistic multi-epoch corpus
         epochs_to_create = [
-            ("2024-08", "epoch-2024-08", "current", 100),
-            ("2023-06", "epoch-2023-06", "retired", 85),
-            ("2022-04", "epoch-2022-04", "retired", 72),
-            ("2021-02", "epoch-2021-02", "retired", 58),
-            ("2020-01", "epoch-2020-01", "retired", 45),
+            ("2024-08", "epoch-2024-08-current", "current", 100),
+            ("2023-06", "epoch-2023-06-retired", "retired", 85),
+            ("2022-04", "epoch-2022-04-retired", "retired", 72),
+            ("2021-02", "epoch-2021-02-retired", "retired", 58),
+            ("2020-01", "epoch-2020-01-retired", "retired", 45),
         ]
 
         for month, key_id, status, num_commits in epochs_to_create:
@@ -460,7 +460,7 @@ class TestMigrationSuccessAllEpochsPass(unittest.TestCase):
 
         # Verify current and retired are both discovered
         current_keys = [k for k in keys_by_id.values() if "current" in k.key_id]
-        retired_keys = [k for k in keys_by_id.values() if "retired" in k.key_id or "2020" in k.key_id]
+        retired_keys = [k for k in keys_by_id.values() if "retired" in k.key_id]
 
         self.assertEqual(len(current_keys), 1, "Must have 1 current epoch")
         self.assertEqual(len(retired_keys), 4, "Must have 4 retired epochs")

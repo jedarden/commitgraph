@@ -119,3 +119,56 @@ func TestExclusionRequestValidation(t *testing.T) {
 		})
 	}
 }
+
+// TestRepoExcluder_GetExclusion_Success tests the GetExclusion method
+// when no database error occurs. The mock returns no error but no data,
+// which represents the "no exclusion found" case.
+func TestRepoExcluder_GetExclusion_Success(t *testing.T) {
+	db := &mockExecutor{} // shouldError defaults to false
+	excluder := NewRepoExcluder(db)
+
+	excludedAt, reason, err := excluder.GetExclusion(context.Background(), "github", "owner/repo")
+
+	// Success means no error from the database operation
+	if err != nil {
+		t.Fatalf("GetExclusion() unexpected error: %v", err)
+	}
+
+	// No exclusion data found (mock doesn't populate values)
+	// This is the "success" case where the query runs but finds no exclusion
+	if excludedAt != nil {
+		t.Errorf("GetExclusion() excludedAt = %v, want nil (no exclusion found)", excludedAt)
+	}
+
+	if reason != "" {
+		t.Errorf("GetExclusion() reason = %q, want empty string (no exclusion found)", reason)
+	}
+}
+
+// TestRepoExcluder_GetExclusion_DatabaseError tests the GetExclusion method
+// when the database returns an error (after mock fix).
+func TestRepoExcluder_GetExclusion_DatabaseError(t *testing.T) {
+	db := &mockExecutor{shouldError: true} // Error flag set
+	excluder := NewRepoExcluder(db)
+
+	excludedAt, reason, err := excluder.GetExclusion(context.Background(), "github", "owner/repo")
+
+	// Should get an error from the mock scan
+	if err == nil {
+		t.Fatal("GetExclusion() expected error, got nil")
+	}
+
+	// Error case should return nil values
+	if excludedAt != nil {
+		t.Errorf("GetExclusion() excludedAt = %v, want nil on error", excludedAt)
+	}
+
+	if reason != "" {
+		t.Errorf("GetExclusion() reason = %q, want empty string on error", reason)
+	}
+
+	// Verify error message contains expected context
+	if err.Error() == "" {
+		t.Error("GetExclusion() error message is empty")
+	}
+}

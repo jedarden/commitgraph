@@ -324,7 +324,7 @@ class TestAcceptanceCriteria(unittest.TestCase):
             keys = checker.discover_all_keys()
 
             # AC: Must attempt decrypt probe (will fail without Parquet, but attempt is made)
-            results = checker.validate_decryption(keys)
+            all_passed, results = checker.validate_decryption(keys)
 
             self.assertEqual(len(results), 1, "AC2: Must report result for each key")
             # Result should have key_id, epoch, success status

@@ -97,7 +97,7 @@
       "name": "parseDump",
       "package": "cmd/load-email-resolution-from-queue-api",
       "file": "cmd/load-email-resolution-from-queue-api/main.go",
-      "line": 163,
+      "line": 169,
       "signature": "func parseDump(dump string) ([]QueueAPIRow, error)",
       "parameters": [
         {
@@ -121,7 +121,7 @@
           "name": "QueueAPIRow",
           "kind": "struct",
           "file": "cmd/load-email-resolution-from-queue-api/main.go",
-          "line": 147
+          "line": 153
         }
       ],
       "category": "parse"
@@ -130,7 +130,7 @@
       "name": "parseValuesString",
       "package": "cmd/load-email-resolution-from-queue-api",
       "file": "cmd/load-email-resolution-from-queue-api/main.go",
-      "line": 197,
+      "line": 203,
       "signature": "func parseValuesString(valuesStr string) (QueueAPIRow, error)",
       "parameters": [
         {
@@ -155,7 +155,7 @@
       "name": "parseTime",
       "package": "cmd/load-email-resolution-from-queue-api",
       "file": "cmd/load-email-resolution-from-queue-api/main.go",
-      "line": 290,
+      "line": 296,
       "signature": "func parseTime(s string) (time.Time, error)",
       "parameters": [
         {
@@ -180,7 +180,7 @@
       "name": "parseTimePtr",
       "package": "cmd/load-email-resolution-from-queue-api",
       "file": "cmd/load-email-resolution-from-queue-api/main.go",
-      "line": 312,
+      "line": 318,
       "signature": "func parseTimePtr(s string) *time.Time",
       "parameters": [
         {
@@ -201,7 +201,7 @@
       "name": "parseDate",
       "package": "cmd/get-audit-logs",
       "file": "cmd/get-audit-logs/main.go",
-      "line": 219,
+      "line": 216,
       "signature": "func parseDate(dateStr string) (time.Time, error)",
       "parameters": [
         {
@@ -226,7 +226,7 @@
       "name": "parseConfigKey",
       "package": "pkg/warmstart",
       "file": "pkg/warmstart/extract.go",
-      "line": 465,
+      "line": 474,
       "signature": "func parseConfigKey(key string) (string, string)",
       "parameters": [
         {
@@ -322,7 +322,22 @@
         }
       ],
       "return_type": "UserContext, error",
-      "return_components": null,
+      "return_components": [
+        {
+          "type": "UserContext"
+        },
+        {
+          "type": "error"
+        }
+      ],
+      "custom_types": [
+        {
+          "name": "UserContext",
+          "kind": "struct",
+          "file": "pkg/ingestlog/logger.go",
+          "line": 64
+        }
+      ],
       "category": "stream",
       "purpose": "Captures and validates user context data during stream processing"
     },
@@ -339,7 +354,11 @@
         }
       ],
       "return_type": "string",
-      "return_components": null,
+      "return_components": [
+        {
+          "type": "string"
+        }
+      ],
       "category": "stream",
       "purpose": "Captures and validates user ID from stream"
     },
@@ -356,7 +375,11 @@
         }
       ],
       "return_type": "string",
-      "return_components": null,
+      "return_components": [
+        {
+          "type": "string"
+        }
+      ],
       "category": "stream",
       "purpose": "Captures and validates session ID from stream"
     },
@@ -373,7 +396,11 @@
         }
       ],
       "return_type": "string",
-      "return_components": null,
+      "return_components": [
+        {
+          "type": "string"
+        }
+      ],
       "category": "stream",
       "purpose": "Captures and validates request ID from stream"
     },
@@ -390,7 +417,14 @@
         }
       ],
       "return_type": "string, error",
-      "return_components": null,
+      "return_components": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "error"
+        }
+      ],
       "category": "stream",
       "purpose": "Captures and validates endpoint names from stream"
     },
@@ -407,7 +441,14 @@
         }
       ],
       "return_type": "string, error",
-      "return_components": null,
+      "return_components": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "error"
+        }
+      ],
       "category": "stream",
       "purpose": "Captures and validates HTTP methods from stream"
     },
@@ -424,7 +465,14 @@
         }
       ],
       "return_type": "string, error",
-      "return_components": null,
+      "return_components": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "error"
+        }
+      ],
       "category": "stream",
       "purpose": "Captures and validates URL paths from stream"
     },
@@ -465,7 +513,22 @@
         }
       ],
       "return_type": "EndpointContext, error",
-      "return_components": null,
+      "return_components": [
+        {
+          "type": "EndpointContext"
+        },
+        {
+          "type": "error"
+        }
+      ],
+      "custom_types": [
+        {
+          "name": "EndpointContext",
+          "kind": "struct",
+          "file": "pkg/ingestlog/logger.go",
+          "line": 73
+        }
+      ],
       "category": "stream",
       "purpose": "Captures and validates endpoint context data from stream"
     },
@@ -473,7 +536,7 @@
       "name": "IngestResolution",
       "package": "pkg/identity",
       "file": "pkg/identity/ingest.go",
-      "line": 140,
+      "line": 237,
       "signature": "func (i *Ingester) IngestResolution(ctx context.Context, rows []ResolutionRow) error",
       "parameters": [
         {
@@ -486,7 +549,19 @@
         }
       ],
       "return_type": "error",
-      "return_components": null,
+      "return_components": [
+        {
+          "type": "error"
+        }
+      ],
+      "custom_types": [
+        {
+          "name": "ResolutionRow",
+          "kind": "struct",
+          "file": "pkg/identity/ingest.go",
+          "line": 18
+        }
+      ],
       "category": "stream",
       "purpose": "Main stream ingestion function for email resolution data"
     },
@@ -507,7 +582,14 @@
         }
       ],
       "return_type": "*identity.IngestResult, error",
-      "return_components": null,
+      "return_components": [
+        {
+          "type": "*identity.IngestResult"
+        },
+        {
+          "type": "error"
+        }
+      ],
       "category": "stream",
       "purpose": "PostgreSQL bulk upsert implementation for email resolution stream"
     },
@@ -528,7 +610,11 @@
         }
       ],
       "return_type": "error",
-      "return_components": null,
+      "return_components": [
+        {
+          "type": "error"
+        }
+      ],
       "category": "stream",
       "purpose": "PostgreSQL bulk upsert implementation for user aliases stream"
     }
@@ -540,15 +626,15 @@
     "unique_names": 20,
     "packages": [
       "cmd/audit-logs",
-      "cmd/verify-email-resolution-dump",
-      "cmd/get-audit-logs",
-      "pkg/warmstart",
-      "pkg/ingestlog",
-      "pkg/identity",
-      "pkg/pg",
       "cmd/load-admin-aliases",
       "cmd/load-email-resolution-from-queue-api",
-      "pkg/handler"
+      "pkg/warmstart",
+      "pkg/handler",
+      "pkg/identity",
+      "pkg/pg",
+      "cmd/verify-email-resolution-dump",
+      "cmd/get-audit-logs",
+      "pkg/ingestlog"
     ],
     "custom_types_count": 4
   },
